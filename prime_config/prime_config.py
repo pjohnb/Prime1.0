@@ -104,9 +104,10 @@ class RiskManagementConfig:
 
 @dataclass
 class OpsConfig:
-    scan_schedule: Any = "TBD"
+    scan_schedule: Any = field(default_factory=dict)
     notification_channels: Any = "TBD"
-    health_check_interval: Any = "TBD"
+    health_check_interval: int = 900
+    retry: Any = field(default_factory=lambda: {"max_attempts": 3, "interval_seconds": 300})
 
 
 @dataclass
