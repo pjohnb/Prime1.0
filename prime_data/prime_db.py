@@ -4,9 +4,11 @@ All DB access goes through this module — no other module imports sqlite3 direc
 """
 
 import sqlite3
+import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from prime_config.prime_config import get_config
 
@@ -107,3 +109,157 @@ def get_table_columns(table_name: str, db_path: Optional[Path] = None) -> list[s
     with get_connection(db_path) as conn:
         cursor = conn.execute(f"PRAGMA table_info({table_name})")
         return [row[1] for row in cursor.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Trade log CRUD
+# ---------------------------------------------------------------------------
+
+class TradeRecordError(Exception):
+    """Raised when a trade record fails validation."""
+
+
+def insert_trade(
+    strategy: str,
+    symbol: str,
+    direction: str,
+    mode: str,
+    order_type: str,
+    shares: int,
+    entry_time: str,
+    price_at_scan: float,
+    score: float = 0.0,
+    entry_price: Optional[float] = None,
+    eps_beat_pct: Optional[float] = None,
+    signal_source: Optional[str] = None,
+    order_id: Optional[str] = None,
+    account: Optional[str] = None,
+    routed_to: Optional[str] = None,
+    notes: Optional[str] = None,
+    mata_batch_id: Optional[str] = None,
+    trade_factors: str = "{}",
+    claude_advisory: str = "",
+    advisory_timestamp: str = "",
+    advisory_history: str = "[]",
+    dark_pool_eval: str = "{}",
+    db_path: Optional[Path] = None,
+) -> str:
+    """Insert a new trade record. Returns the generated log_id.
+
+    price_at_scan is required and must be > 0. This is the v1.0 architectural
+    fix for FIX-4: scanners must capture the market price at signal time and
+    pass it here. The DB layer rejects records without a valid price.
+    """
+    if not price_at_scan or price_at_scan <= 0:
+        raise TradeRecordError(
+            f"price_at_scan must be > 0 for {symbol}, got {price_at_scan}. "
+            "Scanners must capture the live price at signal time."
+        )
+
+    log_id = str(uuid.uuid4())
+
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """INSERT INTO prime_trade_log (
+                log_id, strategy, symbol, direction, mode, order_type, shares,
+                entry_price, entry_time, score, eps_beat_pct, signal_source,
+                order_id, account, routed_to, notes, mata_batch_id, status,
+                price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
+                advisory_history, dark_pool_eval
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                log_id, strategy, symbol, direction, mode, order_type, shares,
+                entry_price, entry_time, score, eps_beat_pct, signal_source,
+                order_id, account, routed_to, notes, mata_batch_id, "OPEN",
+                price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
+                advisory_history, dark_pool_eval,
+            ),
+        )
+        conn.commit()
+
+    return log_id
+
+
+def get_open_trades(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return all OPEN trade records as dicts."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM prime_trade_log WHERE status = 'OPEN'"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def close_trade(
+    log_id: str,
+    exit_price: float,
+    exit_time: str,
+    exit_reason: str,
+    pnl_dollars: float,
+    pnl_pct: float,
+    hold_minutes: int,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Close a trade record."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """UPDATE prime_trade_log SET
+                exit_price=?, exit_time=?, exit_reason=?,
+                pnl_dollars=?, pnl_pct=?, hold_minutes=?,
+                status='CLOSED'
+            WHERE log_id=?""",
+            (exit_price, exit_time, exit_reason, pnl_dollars, pnl_pct,
+             hold_minutes, log_id),
+        )
+        conn.commit()
+
+
+def get_trade(log_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM prime_trade_log WHERE log_id=?", (log_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Ops health logging
+# ---------------------------------------------------------------------------
+
+def log_ops_event(
+    event_type: str,
+    component: str,
+    symbol: Optional[str] = None,
+    detail: Optional[str] = None,
+    severity: str = "INFO",
+    db_path: Optional[Path] = None,
+) -> None:
+    """Write an event to prime_ops_health."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """INSERT INTO prime_ops_health
+                (timestamp, event_type, component, symbol, detail, severity)
+            VALUES (?,?,?,?,?,?)""",
+            (datetime.utcnow().isoformat(), event_type, component,
+             symbol, detail, severity),
+        )
+        conn.commit()
+
+
+def get_ops_events(
+    component: Optional[str] = None,
+    limit: int = 100,
+    db_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        if component:
+            rows = conn.execute(
+                "SELECT * FROM prime_ops_health WHERE component=? "
+                "ORDER BY id DESC LIMIT ?",
+                (component, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM prime_ops_health ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
