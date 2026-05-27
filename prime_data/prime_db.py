@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS prime_trade_log (
     advisory_timestamp  TEXT NOT NULL DEFAULT '',
     advisory_history    TEXT NOT NULL DEFAULT '[]',
     dark_pool_eval      TEXT NOT NULL DEFAULT '{}',
+    trade_source        TEXT NOT NULL DEFAULT 'PAPER',
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -142,6 +143,7 @@ def insert_trade(
     advisory_timestamp: str = "",
     advisory_history: str = "[]",
     dark_pool_eval: str = "{}",
+    trade_source: str = "PAPER",
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -158,6 +160,11 @@ def insert_trade(
 
     log_id = str(uuid.uuid4())
 
+    if trade_source not in ("PAPER", "LIVE", "LEGACY"):
+        raise TradeRecordError(
+            f"trade_source must be PAPER, LIVE, or LEGACY, got '{trade_source}'"
+        )
+
     with get_connection(db_path) as conn:
         conn.execute(
             """INSERT INTO prime_trade_log (
@@ -165,14 +172,14 @@ def insert_trade(
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
                 order_id, account, routed_to, notes, mata_batch_id, status,
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
-                advisory_history, dark_pool_eval
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                advisory_history, dark_pool_eval, trade_source
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
                 order_id, account, routed_to, notes, mata_batch_id, "OPEN",
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
-                advisory_history, dark_pool_eval,
+                advisory_history, dark_pool_eval, trade_source,
             ),
         )
         conn.commit()
@@ -187,6 +194,33 @@ def get_open_trades(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
             "SELECT * FROM prime_trade_log WHERE status = 'OPEN'"
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def get_open_positions(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return all OPEN positions regardless of trade_source (LEGACY, PAPER, LIVE)."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM prime_trade_log WHERE status = 'OPEN'"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def update_trade_source(
+    log_id: str,
+    trade_source: str,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Update trade_source for an existing record."""
+    if trade_source not in ("PAPER", "LIVE", "LEGACY"):
+        raise TradeRecordError(
+            f"trade_source must be PAPER, LIVE, or LEGACY, got '{trade_source}'"
+        )
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE prime_trade_log SET trade_source=? WHERE log_id=?",
+            (trade_source, log_id),
+        )
+        conn.commit()
 
 
 def close_trade(

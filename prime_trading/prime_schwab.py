@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from prime_config.prime_config import get_config, ConfigError
 from prime_data.prime_db import (
     close_trade,
+    get_open_positions,
     get_open_trades,
     init_db,
     log_ops_event,
