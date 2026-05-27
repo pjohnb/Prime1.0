@@ -260,6 +260,29 @@ def get_trade(log_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str,
         return dict(row) if row else None
 
 
+def get_all_trades(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return all trade records (all statuses) ordered by entry_time desc."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM prime_trade_log ORDER BY entry_time DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def bulk_delete_trades(log_ids: List[str], db_path: Optional[Path] = None) -> int:
+    """Delete multiple trade records in a single transaction. Returns count deleted."""
+    if not log_ids:
+        return 0
+    with get_connection(db_path) as conn:
+        placeholders = ",".join("?" for _ in log_ids)
+        cursor = conn.execute(
+            f"DELETE FROM prime_trade_log WHERE log_id IN ({placeholders})",
+            log_ids,
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Signal deduplication
 # ---------------------------------------------------------------------------

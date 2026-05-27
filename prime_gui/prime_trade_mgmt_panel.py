@@ -12,8 +12,8 @@ No factor evaluation logic inside this GUI file.
 
 import logging
 import tkinter as tk
-from tkinter import ttk
-from typing import Any, Dict, Optional
+from tkinter import messagebox, ttk
+from typing import Any, Callable, Dict, List, Optional
 
 from prime_intelligence.prime_dark_pool import get_nullifier_flags
 
@@ -39,10 +39,16 @@ class TradeManagementPanel(ttk.LabelFrame):
     Embeddable in any trader tab. Constructed once, updated via update_display().
     """
 
-    def __init__(self, parent, strategy: str, on_refresh_advisory=None, **kwargs):
+    def __init__(self, parent, strategy: str, on_refresh_advisory=None,
+                 on_delete_trades: Optional[Callable[[List[str]], int]] = None,
+                 on_load_trades: Optional[Callable[[], List[Dict[str, Any]]]] = None,
+                 **kwargs):
         super().__init__(parent, text=f"{strategy} Trade Management", **kwargs)
         self.strategy = strategy
         self._on_refresh_advisory = on_refresh_advisory
+        self._on_delete_trades = on_delete_trades
+        self._on_load_trades = on_load_trades
+        self._selected_ids: set = set()
         self._build_ui()
 
     def _build_ui(self):
@@ -114,6 +120,28 @@ class TradeManagementPanel(ttk.LabelFrame):
         self._txt_advisory = tk.Text(self, height=4, width=70, font=("Consolas", 9),
                                      state="disabled", wrap="word")
         self._txt_advisory.pack(fill="x", padx=5, pady=(1, 5))
+
+        # Trade log table with checkbox selection (CIL-100)
+        log_frame = ttk.LabelFrame(self, text="Trade Log")
+        log_frame.pack(fill="both", expand=True, padx=5, pady=(3, 5))
+
+        cols = ("symbol", "strategy", "direction", "shares", "entry_price", "status", "trade_source")
+        self._trade_tree = ttk.Treeview(log_frame, columns=cols, show="headings", height=6,
+                                        selectmode="extended")
+        for col in cols:
+            self._trade_tree.heading(col, text=col.replace("_", " ").title())
+            self._trade_tree.column(col, width=90, anchor="center")
+        self._trade_tree.pack(fill="both", expand=True, padx=2, pady=2)
+
+        btn_frame = ttk.Frame(log_frame)
+        btn_frame.pack(fill="x", padx=2, pady=2)
+        self._btn_delete = ttk.Button(btn_frame, text="Delete Selected",
+                                      command=self._delete_selected, state="disabled")
+        self._btn_delete.pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Refresh Log",
+                   command=self.refresh_trade_log).pack(side="left", padx=5)
+
+        self._trade_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
     def update_display(
         self,
@@ -187,6 +215,51 @@ class TradeManagementPanel(ttk.LabelFrame):
             foreground=STATUS_COLORS.get(status, "#000000"),
         )
         self._lbl_null_detail.config(text=rationale[:80] if rationale else "")
+
+    # --- Trade log table (CIL-100) ---
+
+    def _on_tree_select(self, _event=None):
+        sel = self._trade_tree.selection()
+        self._btn_delete.config(state="normal" if sel else "disabled")
+
+    def refresh_trade_log(self):
+        """Reload trade log table from DB via callback."""
+        if not self._on_load_trades:
+            return
+        for item in self._trade_tree.get_children():
+            self._trade_tree.delete(item)
+        try:
+            trades = self._on_load_trades()
+            for t in trades:
+                self._trade_tree.insert("", "end", iid=t.get("log_id", ""),
+                                        values=(
+                                            t.get("symbol", ""),
+                                            t.get("strategy", ""),
+                                            t.get("direction", ""),
+                                            t.get("shares", 0),
+                                            f"{t.get('entry_price') or t.get('price_at_scan', 0):.2f}",
+                                            t.get("status", ""),
+                                            t.get("trade_source", ""),
+                                        ))
+        except Exception as e:
+            logger.warning("Failed to load trade log: %s", e)
+
+    def _delete_selected(self):
+        """Delete selected trade log rows after confirmation."""
+        selected = self._trade_tree.selection()
+        if not selected:
+            return
+        n = len(selected)
+        if not messagebox.askyesno(
+            "Confirm Delete",
+            f"Delete {n} selected trade{'s' if n > 1 else ''}? This cannot be undone.",
+        ):
+            return
+        if self._on_delete_trades:
+            deleted = self._on_delete_trades(list(selected))
+            logger.info("Bulk delete: %d rows removed", deleted)
+        self.refresh_trade_log()
+        self._btn_delete.config(state="disabled")
 
     def _update_advisory(self, adv: Dict[str, Any]):
         rec = adv.get("recommendation", "--")
