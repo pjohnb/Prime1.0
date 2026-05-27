@@ -118,6 +118,25 @@ class SchwabClient:
         ]
 
 
+    def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch status of a specific Schwab order."""
+        if not self.connected:
+            return None
+        resp = self.client.get_order(order_id, self.account_hash)
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+
+    def get_quotes(self, symbols: List[str]) -> Dict[str, Any]:
+        """Fetch current quotes for a list of symbols."""
+        if not self.connected:
+            return {}
+        resp = self.client.get_quotes(symbols)
+        if resp.status_code != 200:
+            return {}
+        return resp.json()
+
+
 def _extract_schwab_symbols(positions: List[Dict[str, Any]]) -> set:
     """Extract the set of equity symbols from Schwab position data."""
     symbols = set()
