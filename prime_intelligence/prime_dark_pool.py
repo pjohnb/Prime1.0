@@ -323,3 +323,30 @@ class DarkPoolScanner:
                 f"{duration}-duration -- flag displayed in Trade Management Panel "
                 f"and incorporated into Claude advisory; entry not blocked"
             )
+
+
+# ---------------------------------------------------------------------------
+# Convenience API for GUI consumption
+# ---------------------------------------------------------------------------
+
+_gui_scanner = DarkPoolScanner()
+
+
+def get_nullifier_flags(symbol: str, signal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return nullifier status for a symbol in a GUI-friendly dict.
+
+    Called by TradeManagementPanel to display traffic-light indicator.
+    If no signal context is available, evaluates with an empty signal dict.
+    """
+    if signal is None:
+        signal = {"symbol": symbol, "direction": "LONG", "duration_class": "MT"}
+    evaluation = _gui_scanner.evaluate(symbol, signal)
+    return {
+        "status": evaluation.status,
+        "flags": evaluation.flags,
+        "flag_count": evaluation.flag_count,
+        "rationale": evaluation.rationale,
+        "nullified": evaluation.nullified,
+        "suspect": evaluation.suspect,
+        "warning": evaluation.warning,
+    }

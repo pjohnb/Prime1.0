@@ -10,11 +10,12 @@ Architectural rule: panel logic calls prime_intelligence functions.
 No factor evaluation logic inside this GUI file.
 """
 
-import json
 import logging
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Dict, Optional
+
+from prime_intelligence.prime_dark_pool import get_nullifier_flags
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class TradeManagementPanel(ttk.LabelFrame):
         self._lbl_entry = ttk.Label(entry_frame, text="--")
         self._lbl_entry.pack(side="left", padx=5)
 
-        # Nullifier status
+        # Nullifier status -- traffic-light indicator via prime_dark_pool
         null_frame = ttk.Frame(self)
         null_frame.pack(fill="x", padx=5, pady=1)
         ttk.Label(null_frame, text="Nullifier:").pack(side="left")
@@ -82,6 +83,8 @@ class TradeManagementPanel(ttk.LabelFrame):
         self._lbl_nullifier.pack(side="left", padx=5)
         self._lbl_null_detail = ttk.Label(null_frame, text="")
         self._lbl_null_detail.pack(side="left", padx=5)
+        ttk.Button(null_frame, text="Refresh DK",
+                   command=self._refresh_nullifier).pack(side="right", padx=5)
 
         # Exit triggers
         ttk.Label(self, text="Exit Triggers:").pack(anchor="w", padx=5, pady=(3, 0))
@@ -140,12 +143,7 @@ class TradeManagementPanel(ttk.LabelFrame):
         self._lbl_entry.config(text=f"{entry.get('method', '--')} {entry.get('rationale', '')[:50]}")
 
         null = tf.get("nullifier", {})
-        status = null.get("status", "CLEAR")
-        self._lbl_nullifier.config(
-            text=status,
-            foreground=STATUS_COLORS.get(status, "#000000"),
-        )
-        self._lbl_null_detail.config(text=null.get("rationale", "")[:60])
+        self._render_nullifier(null.get("status", "CLEAR"), null.get("rationale", ""))
 
         self._txt_exits.config(state="normal")
         self._txt_exits.delete("1.0", "end")
@@ -160,6 +158,35 @@ class TradeManagementPanel(ttk.LabelFrame):
         for flag in tf.get("maintenance_flags", []):
             self._txt_maint.insert("end", f"  - {flag}\n")
         self._txt_maint.config(state="disabled")
+
+    def _refresh_nullifier(self):
+        """On-demand nullifier refresh via prime_dark_pool.get_nullifier_flags()."""
+        symbol = self._lbl_symbol.cget("text")
+        if not symbol or symbol == "--":
+            return
+        try:
+            flags = get_nullifier_flags(symbol)
+            self._render_nullifier(flags["status"], flags["rationale"])
+        except Exception as e:
+            logger.warning("DK nullifier refresh failed for %s: %s", symbol, e)
+            self._render_nullifier("CLEAR", f"Refresh error: {e}")
+
+    def refresh_nullifier_display(self, symbol: str, signal: Optional[Dict[str, Any]] = None):
+        """Public API: refresh nullifier display for a symbol with optional signal context."""
+        try:
+            flags = get_nullifier_flags(symbol, signal)
+            self._render_nullifier(flags["status"], flags["rationale"])
+        except Exception as e:
+            logger.warning("DK nullifier display failed for %s: %s", symbol, e)
+            self._render_nullifier("CLEAR", f"Error: {e}")
+
+    def _render_nullifier(self, status: str, rationale: str):
+        """Render traffic-light nullifier indicator: green=CLEAR, amber=SUSPECT, red=NULLIFIED."""
+        self._lbl_nullifier.config(
+            text=status,
+            foreground=STATUS_COLORS.get(status, "#000000"),
+        )
+        self._lbl_null_detail.config(text=rationale[:80] if rationale else "")
 
     def _update_advisory(self, adv: Dict[str, Any]):
         rec = adv.get("recommendation", "--")
