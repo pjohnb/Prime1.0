@@ -156,6 +156,33 @@ def query_tasks() -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Post-scan notification hook
+# ---------------------------------------------------------------------------
+
+def post_scan_notify(scanner_name: str, scan_data: Dict[str, Any]) -> None:
+    """Called by scanners after a run to trigger digest + per-signal alerts."""
+    try:
+        from prime_data.prime_db import get_open_positions
+        from prime_notifications.prime_digest import assemble_digest
+        from prime_notifications.prime_notifier import send_digest
+        from prime_notifications.prime_push_signal import push_signal_alerts
+
+        signals = scan_data.get("signals", [])
+        open_positions = get_open_positions()
+
+        digest, text = assemble_digest(scanner_name, signals, open_positions)
+        send_digest(digest, text)
+
+        approved = [s for s in signals if s.get("score", 0) > 0]
+        if approved:
+            push_signal_alerts(approved)
+
+        logger.info("Post-scan notifications sent for %s (%d signals)", scanner_name, len(signals))
+    except Exception as e:
+        logger.error("Post-scan notification failed for %s: %s", scanner_name, e)
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 

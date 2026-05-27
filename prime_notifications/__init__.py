@@ -1,2 +1,3 @@
 from prime_notifications.prime_notifier import send_digest, send_signal_alert
 from prime_notifications.prime_digest import assemble_digest
+from prime_notifications.prime_push_signal import push_signal_alerts
