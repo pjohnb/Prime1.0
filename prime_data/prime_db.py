@@ -78,6 +78,11 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     try:
         conn.execute(_PRIME_TRADE_LOG_SCHEMA)
         conn.execute(_PRIME_OPS_HEALTH_SCHEMA)
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_dedup
+               ON prime_trade_log (symbol, strategy, entry_time)
+               WHERE status = 'OPEN'"""
+        )
         conn.commit()
     finally:
         conn.close()
@@ -253,6 +258,61 @@ def get_trade(log_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str,
             "SELECT * FROM prime_trade_log WHERE log_id=?", (log_id,)
         ).fetchone()
         return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Signal deduplication
+# ---------------------------------------------------------------------------
+
+def upsert_signal(
+    strategy: str,
+    symbol: str,
+    scan_date: str,
+    direction: str = "LONG",
+    mode: str = "PAPER",
+    order_type: str = "MARKET",
+    shares: int = 0,
+    price_at_scan: float = 0.0,
+    score: float = 0.0,
+    signal_source: Optional[str] = None,
+    trade_factors: str = "{}",
+    claude_advisory: str = "",
+    dark_pool_eval: str = "{}",
+    trade_source: str = "PAPER",
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """Insert a signal record only if no duplicate exists for (symbol, strategy, scan_date).
+
+    Returns log_id if inserted, None if duplicate skipped.
+    """
+    with get_connection(db_path) as conn:
+        existing = conn.execute(
+            """SELECT log_id FROM prime_trade_log
+               WHERE symbol=? AND strategy=? AND date(entry_time)=date(?)
+               AND status='OPEN'""",
+            (symbol, strategy, scan_date),
+        ).fetchone()
+
+        if existing:
+            return None
+
+    return insert_trade(
+        strategy=strategy,
+        symbol=symbol,
+        direction=direction,
+        mode=mode,
+        order_type=order_type,
+        shares=shares,
+        entry_time=scan_date,
+        price_at_scan=price_at_scan,
+        score=score,
+        signal_source=signal_source,
+        trade_factors=trade_factors,
+        claude_advisory=claude_advisory,
+        dark_pool_eval=dark_pool_eval,
+        trade_source=trade_source,
+        db_path=db_path,
+    )
 
 
 # ---------------------------------------------------------------------------
