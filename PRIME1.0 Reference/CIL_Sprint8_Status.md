@@ -10,7 +10,7 @@ Updated: 2026-05-27
 | CIL-091 | Digest Footer Stale Times | prime_digest.py (live ops_config read) | Item 2 |
 | CIL-095 | Duplicate WDC Entries | prime_db.upsert_signal + migration | Item 5 |
 | CIL-086 | Fill Confirmation Polling | prime_fill_poller.py | Item 6 |
-| AC-3.7 | DK Nullifier Display | prime_gui Trade Mgmt Panel wire | Item 8 |
+| AC-3.7 | DK Nullifier Display | prime_trade_mgmt_panel.py + prime_dark_pool.get_nullifier_flags() | Item 8 |
 
 ## Still Open
 
