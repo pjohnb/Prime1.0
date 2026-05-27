@@ -165,9 +165,10 @@ def insert_trade(
 
     log_id = str(uuid.uuid4())
 
-    if trade_source not in ("PAPER", "LIVE", "LEGACY"):
+    _VALID_SOURCES = ("PAPER", "LIVE", "LEGACY", "SCHWAB_IMPORT")
+    if trade_source not in _VALID_SOURCES:
         raise TradeRecordError(
-            f"trade_source must be PAPER, LIVE, or LEGACY, got '{trade_source}'"
+            f"trade_source must be one of {_VALID_SOURCES}, got '{trade_source}'"
         )
 
     with get_connection(db_path) as conn:
@@ -216,9 +217,10 @@ def update_trade_source(
     db_path: Optional[Path] = None,
 ) -> None:
     """Update trade_source for an existing record."""
-    if trade_source not in ("PAPER", "LIVE", "LEGACY"):
+    _VALID_SOURCES = ("PAPER", "LIVE", "LEGACY", "SCHWAB_IMPORT")
+    if trade_source not in _VALID_SOURCES:
         raise TradeRecordError(
-            f"trade_source must be PAPER, LIVE, or LEGACY, got '{trade_source}'"
+            f"trade_source must be one of {_VALID_SOURCES}, got '{trade_source}'"
         )
     with get_connection(db_path) as conn:
         conn.execute(
@@ -281,6 +283,32 @@ def bulk_delete_trades(log_ids: List[str], db_path: Optional[Path] = None) -> in
         )
         conn.commit()
         return cursor.rowcount
+
+
+def get_open_by_symbol(symbol: str, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return all OPEN records for a given symbol."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM prime_trade_log WHERE symbol=? AND status='OPEN'",
+            (symbol.upper(),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def close_trade_reconcile(
+    log_id: str,
+    close_reason: str = "SCHWAB_RECONCILE",
+    db_path: Optional[Path] = None,
+) -> None:
+    """Close a trade during reconciliation (no exit price/P&L calc)."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """UPDATE prime_trade_log SET
+                status='CLOSED', exit_reason=?, exit_time=?
+            WHERE log_id=?""",
+            (close_reason, datetime.utcnow().isoformat(), log_id),
+        )
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
