@@ -86,6 +86,11 @@ def init_db(db_path: Optional[Path] = None) -> Path:
         conn.commit()
     finally:
         conn.close()
+
+    init_batch_summary_table(db_path)
+    from prime_analytics.prime_signals_db import init_signals_table
+    init_signals_table(db_path)
+
     return path
 
 
