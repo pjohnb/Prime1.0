@@ -56,6 +56,14 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
         _migrate_add_column(conn, "prime_signals", "option_legs", "TEXT DEFAULT '[]'")
         _migrate_add_column(conn, "prime_signals", "max_loss", "REAL")
         _migrate_add_column(conn, "prime_signals", "dte_at_entry", "INTEGER")
+        # ML-15 migration: batch fields
+        _migrate_add_column(conn, "prime_signals", "batch_id", "TEXT")
+        _migrate_add_column(conn, "prime_signals", "batch_score", "REAL")
+        # ML-16 migration: entry timing
+        _migrate_add_column(conn, "prime_signals", "entry_timing", "TEXT DEFAULT 'UNKNOWN'")
+        # CIL-STAGE0-TAB migration: rejection fields
+        _migrate_add_column(conn, "prime_signals", "rejection_reason", "TEXT")
+        _migrate_add_column(conn, "prime_signals", "rejection_stage", "TEXT")
         conn.commit()
 
 

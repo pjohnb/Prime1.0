@@ -367,6 +367,85 @@ def upsert_signal(
 
 
 # ---------------------------------------------------------------------------
+# Batch summary (ML-15)
+# ---------------------------------------------------------------------------
+
+_PRIME_BATCH_SUMMARY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS prime_batch_summary (
+    batch_id            TEXT PRIMARY KEY,
+    scan_ts             TEXT NOT NULL,
+    signal_count        INTEGER DEFAULT 0,
+    sector_concentration TEXT DEFAULT '{}',
+    correlation_flags   TEXT DEFAULT '[]',
+    aggregate_risk      REAL DEFAULT 0.0,
+    batch_score         REAL DEFAULT 0.0,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+
+def init_batch_summary_table(db_path: Optional[Path] = None) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(_PRIME_BATCH_SUMMARY_SCHEMA)
+        conn.commit()
+
+
+def write_batch_summary(
+    batch_id: str,
+    scan_ts: str,
+    signal_count: int,
+    sector_concentration: str = "{}",
+    correlation_flags: str = "[]",
+    aggregate_risk: float = 0.0,
+    batch_score: float = 0.0,
+    db_path: Optional[Path] = None,
+) -> None:
+    init_batch_summary_table(db_path)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO prime_batch_summary
+                (batch_id, scan_ts, signal_count, sector_concentration,
+                 correlation_flags, aggregate_risk, batch_score)
+            VALUES (?,?,?,?,?,?,?)""",
+            (batch_id, scan_ts, signal_count, sector_concentration,
+             correlation_flags, aggregate_risk, batch_score),
+        )
+        conn.commit()
+
+
+def get_latest_batch_summary(db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    init_batch_summary_table(db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM prime_batch_summary ORDER BY scan_ts DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Stage0 rejections (CIL-STAGE0-TAB)
+# ---------------------------------------------------------------------------
+
+def write_stage0_rejection(
+    symbol: str,
+    reason: str,
+    scan_ts: str,
+    strategy: str = "UOA",
+    db_path: Optional[Path] = None,
+) -> str:
+    """Write a Stage0 rejection to prime_signals. Upsert on (symbol, scan_ts)."""
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal
+    init_signals_table(db_path)
+    return insert_signal(
+        symbol=symbol,
+        strategy=strategy,
+        scan_ts=scan_ts,
+        status="REJECTED_STAGE0",
+        db_path=db_path,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Ops health logging
 # ---------------------------------------------------------------------------
 
