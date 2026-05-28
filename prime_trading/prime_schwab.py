@@ -45,6 +45,7 @@ class SchwabClient:
         self.app_key = cfg.schwab_snapshot.schwab_app_key
         self.app_secret = cfg.schwab_snapshot.schwab_app_secret
         self.token_path = cfg.schwab_snapshot.schwab_token_path
+        self.callback_url = cfg.schwab_snapshot.callback_url
         self.client = None
         self.account_hash = None
         self.connected = False
@@ -81,6 +82,7 @@ class SchwabClient:
                 self.client = schwab.auth.client_from_login_flow(
                     self.app_key,
                     self.app_secret,
+                    self.callback_url,
                     self.token_path,
                 )
             except Exception as login_err:
