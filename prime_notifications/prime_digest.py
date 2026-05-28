@@ -110,6 +110,13 @@ def assemble_digest(
 
     next_scan = _get_next_scan_time(scanner_name)
 
+    # CIL-TS-001: include token refresh count metric
+    try:
+        from prime_trading.prime_ts_auth import get_refresh_count
+        token_refresh_count = get_refresh_count()
+    except Exception:
+        token_refresh_count = 0
+
     digest = {
         "scanner": scanner_name,
         "timestamp": run_timestamp,
@@ -117,6 +124,7 @@ def assemble_digest(
         "signals": signal_rows,
         "open_positions": position_rows,
         "next_scan_time": next_scan,
+        "token_refresh_count": token_refresh_count,
     }
 
     text = _format_plaintext(digest)
@@ -160,6 +168,7 @@ def _format_plaintext(digest: Dict[str, Any]) -> str:
 
     lines.append("")
     lines.append(f"Next scan: {digest['next_scan_time']}")
+    lines.append(f"TS token refreshes: {digest.get('token_refresh_count', 0)}")
     lines.append("")
 
     return "\n".join(lines)
