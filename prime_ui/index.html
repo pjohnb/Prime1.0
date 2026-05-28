@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRIME v1.0 Dashboard</title>
+<style>
+:root {
+  --bg: #0b0d10; --bg2: #111318; --bg3: #181b21; --bg4: #1e2128;
+  --border: #2a2f3a; --text: #f4f6fc; --text2: #d4daf0; --text3: #9ba8c4;
+  --amber: #f59e0b; --green: #22c55e; --red: #ef4444; --blue: #4a9eff;
+  --gray: #5c6478; --font: system-ui, sans-serif; --mono: 'Consolas', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; height: 100vh; display: flex; flex-direction: column; }
+.topbar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; height: 44px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.topbar h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.05em; }
+.topbar .status { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+.tabs { display: flex; gap: 2px; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; flex-shrink: 0; }
+.tab { padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer; color: var(--text3); border-bottom: 2px solid transparent; transition: all 0.15s; }
+.tab:hover { color: var(--text2); }
+.tab.active { color: var(--text); border-bottom-color: var(--amber); }
+.view { display: none; flex: 1; overflow-y: auto; padding: 20px; }
+.view.active { display: block; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.card { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.card-label { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono); margin-bottom: 6px; }
+.card-val { font-size: 24px; font-weight: 700; font-family: var(--mono); }
+.card-val.gain { color: var(--green); }
+.card-val.loss { color: var(--red); }
+.card-val.amber { color: var(--amber); }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; padding: 8px 10px; font-size: 10px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono); border-bottom: 1px solid var(--border); }
+td { padding: 10px; border-bottom: 1px solid var(--border); color: var(--text2); }
+tr:hover td { background: var(--bg3); }
+.badge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px; font-family: var(--mono); }
+.badge.confirming { background: rgba(34,197,94,0.15); color: var(--green); }
+.badge.nullifying { background: rgba(239,68,68,0.15); color: var(--red); }
+.badge.neutral { background: var(--bg4); color: var(--gray); }
+.badge.unavailable { background: rgba(245,158,11,0.15); color: var(--amber); }
+.filter-row { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
+.filter-row select, .filter-row input { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 4px; font-size: 12px; }
+.empty-state { text-align: center; padding: 40px; color: var(--text3); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>PRIME v1.0</h1>
+  <span class="status" id="api-status">API: checking...</span>
+</div>
+<div class="tabs">
+  <div class="tab active" onclick="showView('dashboard')">Dashboard</div>
+  <div class="tab" onclick="showView('positions')">Positions</div>
+  <div class="tab" onclick="showView('signals')">Signals</div>
+</div>
+
+<div class="view active" id="view-dashboard">
+  <div class="cards" id="dash-cards">
+    <div class="card"><div class="card-label">Open Positions</div><div class="card-val" id="d-open">--</div></div>
+    <div class="card"><div class="card-label">Unrealized P&L</div><div class="card-val amber" id="d-upnl">~$--</div></div>
+    <div class="card"><div class="card-label">Win Rate</div><div class="card-val" id="d-winrate">--%</div></div>
+    <div class="card"><div class="card-label">Total Signals (7d)</div><div class="card-val" id="d-signals">--</div></div>
+  </div>
+  <h3 style="font-size:13px;color:var(--text3);margin-bottom:12px;font-family:var(--mono);">STRATEGY BREAKDOWN</h3>
+  <table id="dash-strategy-table">
+    <thead><tr><th>Strategy</th><th>Signals</th><th>Traded</th><th>Win Rate</th><th>P&L</th></tr></thead>
+    <tbody id="dash-strategy-body"></tbody>
+  </table>
+</div>
+
+<div class="view" id="view-positions">
+  <table id="pos-table">
+    <thead><tr><th>Symbol</th><th>Strategy</th><th>Type</th><th>Shares</th><th>Entry</th><th>Source</th><th>Status</th></tr></thead>
+    <tbody id="pos-body"></tbody>
+  </table>
+</div>
+
+<div class="view" id="view-signals">
+  <div class="filter-row">
+    <select id="sig-strategy" onchange="loadSignals()">
+      <option value="">All Strategies</option>
+      <option value="UOA">UOA</option><option value="PEAD">PEAD</option>
+      <option value="SRS">SRS</option><option value="PSA">PSA</option>
+      <option value="MTS">MTS</option><option value="IDX">IDX</option>
+      <option value="UOA_INDEX">UOA_INDEX</option>
+    </select>
+    <select id="sig-type" onchange="loadSignals()">
+      <option value="">All Types</option>
+      <option value="EQUITY">Equity</option>
+      <option value="INDEX_ETF">Index ETF</option>
+      <option value="INDEX_OPTION">Index Option</option>
+      <option value="EQUITY_OPTION">Equity Option</option>
+    </select>
+  </div>
+  <table id="sig-table">
+    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Score</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
+    <tbody id="sig-body"></tbody>
+  </table>
+</div>
+
+<script src="dashboard.js"></script>
+<script src="positions.js"></script>
+<script src="signals.js"></script>
+<script>
+const API = 'http://localhost:5001/api/v1';
+
+function showView(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('view-' + id).classList.add('active');
+  event.target.classList.add('active');
+  if (id === 'dashboard') loadDashboard();
+  if (id === 'positions') loadPositions();
+  if (id === 'signals') loadSignals();
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    document.getElementById('api-status').textContent = d.status === 'ok' ? 'API: connected' : 'API: degraded';
+    document.getElementById('api-status').style.color = d.status === 'ok' ? '#22c55e' : '#ef4444';
+  } catch(e) {
+    document.getElementById('api-status').textContent = 'API: offline';
+    document.getElementById('api-status').style.color = '#ef4444';
+  }
+}
+
+checkHealth();
+loadDashboard();
+</script>
+</body>
+</html>
