@@ -43,11 +43,28 @@ ON prime_signals (symbol, strategy, scan_ts)
 
 
 def init_signals_table(db_path: Optional[Path] = None) -> None:
-    """Create the prime_signals table if it doesn't exist."""
+    """Create the prime_signals table and apply migrations if needed."""
     with get_connection(db_path) as conn:
         conn.execute(_PRIME_SIGNALS_SCHEMA)
         conn.execute(_PRIME_SIGNALS_INDEX)
+        # DK-001 migration: add dk_score and dk_status columns
+        _migrate_add_column(conn, "prime_signals", "dk_score", "REAL")
+        _migrate_add_column(conn, "prime_signals", "dk_status", "TEXT DEFAULT 'PENDING'")
+        # IDX-001 migration: add instrument_type column
+        _migrate_add_column(conn, "prime_signals", "instrument_type", "TEXT DEFAULT 'EQUITY'")
+        # IDX-OPT-001 migration: add option fields
+        _migrate_add_column(conn, "prime_signals", "option_legs", "TEXT DEFAULT '[]'")
+        _migrate_add_column(conn, "prime_signals", "max_loss", "REAL")
+        _migrate_add_column(conn, "prime_signals", "dte_at_entry", "INTEGER")
         conn.commit()
+
+
+def _migrate_add_column(conn, table: str, column: str, col_type: str) -> None:
+    """Idempotent ALTER TABLE -- adds column if it doesn't exist."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    except Exception:
+        pass  # Column already exists
 
 
 def insert_signal(

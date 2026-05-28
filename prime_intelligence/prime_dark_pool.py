@@ -326,6 +326,79 @@ class DarkPoolScanner:
 
 
 # ---------------------------------------------------------------------------
+# DK Composite Scoring (CIL-PRIME-DK-001)
+# ---------------------------------------------------------------------------
+
+def score_dk_signal(symbol: str) -> Dict[str, Any]:
+    """Combine three DK data sources into a composite score.
+
+    Returns {dk_score: float 0-100, dk_status: str, detail: dict}.
+    dk_status: CONFIRMING | NULLIFYING | NEUTRAL | UNAVAILABLE
+    """
+    from prime_intelligence.prime_dk_data import (
+        get_finra_ats_volume,
+        get_short_volume,
+        get_tape_prints,
+    )
+
+    ats = get_finra_ats_volume(symbol)
+    prints = get_tape_prints(symbol)
+    short = get_short_volume(symbol)
+
+    if ats is None and prints is None and short is None:
+        return {
+            "dk_score": None,
+            "dk_status": "UNAVAILABLE",
+            "detail": {"reason": "All three DK data sources unavailable"},
+        }
+
+    score = 0.0
+    detail: Dict[str, Any] = {}
+
+    # ATS component: ats_pct > 45% AND rising = +30
+    if ats is not None:
+        ats_pct = ats.get("ats_pct", 0)
+        ats_rising = ats.get("ats_rising", False)
+        detail["ats_pct"] = ats_pct
+        detail["ats_rising"] = ats_rising
+        if ats_pct > 45 and ats_rising:
+            score += 30
+
+    # Tape prints component: large block at mid within 5 days = +25 each (cap +50)
+    if prints is not None:
+        block_count = len(prints)
+        detail["block_prints"] = block_count
+        score += min(block_count * 25, 50)
+
+    # Short volume: spike > 1.5x 20-day avg = NULLIFYING override
+    if short is not None:
+        short_pct = short.get("short_pct", 0)
+        short_avg = short.get("short_avg_20d", short_pct)
+        detail["short_pct"] = short_pct
+        detail["short_avg_20d"] = short_avg
+        if short_avg > 0 and short_pct > short_avg * 1.5:
+            detail["short_spike"] = True
+            return {
+                "dk_score": 0.0,
+                "dk_status": "NULLIFYING",
+                "detail": {**detail, "reason": (
+                    f"Short volume spike: {short_pct:.1f}% vs "
+                    f"{short_avg:.1f}% 20d avg (>{1.5}x)"
+                )},
+            }
+
+    score = min(score, 100.0)
+    if score >= 50:
+        dk_status = "CONFIRMING"
+    elif score > 0:
+        dk_status = "NEUTRAL"
+    else:
+        dk_status = "NEUTRAL"
+
+    return {"dk_score": score, "dk_status": dk_status, "detail": detail}
+
+
+# ---------------------------------------------------------------------------
 # Convenience API for GUI consumption
 # ---------------------------------------------------------------------------
 
@@ -336,17 +409,32 @@ def get_nullifier_flags(symbol: str, signal: Optional[Dict[str, Any]] = None) ->
     """Return nullifier status for a symbol in a GUI-friendly dict.
 
     Called by TradeManagementPanel to display traffic-light indicator.
-    If no signal context is available, evaluates with an empty signal dict.
+    Integrates DK composite score when available.
     """
+    dk = score_dk_signal(symbol)
+
     if signal is None:
         signal = {"symbol": symbol, "direction": "LONG", "duration_class": "MT"}
     evaluation = _gui_scanner.evaluate(symbol, signal)
+
+    # DK status overrides pattern-based evaluation when NULLIFYING
+    status = evaluation.status
+    rationale = evaluation.rationale
+    if dk["dk_status"] == "NULLIFYING":
+        status = "NULLIFIED"
+        rationale = dk["detail"].get("reason", "DK NULLIFYING override")
+    elif dk["dk_status"] == "CONFIRMING" and status == "CLEAR":
+        rationale = f"DK CONFIRMING (score={dk['dk_score']:.0f}); {rationale}"
+
     return {
-        "status": evaluation.status,
+        "status": status,
         "flags": evaluation.flags,
         "flag_count": evaluation.flag_count,
-        "rationale": evaluation.rationale,
-        "nullified": evaluation.nullified,
+        "rationale": rationale,
+        "nullified": status == "NULLIFIED",
         "suspect": evaluation.suspect,
         "warning": evaluation.warning,
+        "dk_score": dk["dk_score"],
+        "dk_status": dk["dk_status"],
+        "dk_detail": dk["detail"],
     }
