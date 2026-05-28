@@ -66,11 +66,28 @@ class SchwabClient:
                 "schwab_token_path not configured in config.json"
             )
 
-        self.client = schwab.auth.client_from_token_file(
-            token_path=self.token_path,
-            api_key=self.app_key,
-            app_secret=self.app_secret,
-        )
+        try:
+            self.client = schwab.auth.client_from_token_file(
+                token_path=self.token_path,
+                api_key=self.app_key,
+                app_secret=self.app_secret,
+            )
+        except Exception as token_err:
+            logger.warning(
+                "Schwab token load failed (%s); falling back to browser OAuth login flow",
+                token_err,
+            )
+            try:
+                self.client = schwab.auth.client_from_login_flow(
+                    self.app_key,
+                    self.app_secret,
+                    self.token_path,
+                )
+            except Exception as login_err:
+                raise RuntimeError(
+                    f"Schwab authentication failed. Token load error: {token_err}. "
+                    f"Browser login flow also failed: {login_err}"
+                ) from login_err
 
         resp = self.client.get_account_numbers()
         if resp.status_code != 200:
