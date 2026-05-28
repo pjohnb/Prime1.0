@@ -564,6 +564,7 @@ def main():
     else:
         print(f"\nUOA Scan: {scan_data['signals_found']} signals "
               f"(Tier1={scan_data['tier1_count']} Tier2={scan_data['tier2_count']})")
+        print(f"APPROVED: {scan_data['signals_found']} stocks")
         for s in scan_data["signals"]:
             cc = s.get("covered_call_eval", {})
             cc_tag = ""

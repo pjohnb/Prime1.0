@@ -482,6 +482,7 @@ def run_psa_scan(
         "PSA complete: analyzed=%d approved=%d rejected=%d fetch_fail=%d",
         analyzed, len(signals), stage1_rejected, fetch_failures,
     )
+    logger.info("APPROVED: %d stocks", len(signals))
 
     return {
         "scan_time": scan_time.isoformat(),
@@ -551,6 +552,7 @@ def main():
     print(f"\nPSA Scan: analyzed={scan_data['analyzed']} "
           f"approved={scan_data['signals_found']} "
           f"rejected={scan_data['stage1_rejected']}")
+    print(f"APPROVED: {scan_data['signals_found']} stocks")
     for s in scan_data["signals"]:
         pats = ",".join(s["patterns"]) if s["patterns"] else "-"
         print(
