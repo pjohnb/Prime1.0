@@ -440,6 +440,7 @@ def run_psa_scan(
 
     signals: List[Dict[str, Any]] = []
     stage0_rejected = 0
+    stage0_rejections: List[Dict[str, Any]] = []
     stage1_rejected = 0
     analyzed = 0
     fetch_failures = 0
@@ -449,6 +450,16 @@ def run_psa_scan(
         bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
         if not bars:
             fetch_failures += 1
+            continue
+
+        last_price = bars[-1]["close"] if bars else 0
+        last_vol = bars[-1].get("volume", 0) if bars else 0
+        s0_reason = stage0_filter(symbol, {"price": last_price, "volume": last_vol},
+                                   min_price, max_price, min_daily_volume)
+        if s0_reason:
+            stage0_rejected += 1
+            stage0_rejections.append({"symbol": symbol, "reason": s0_reason,
+                                      "scan_ts": scan_time.isoformat()})
             continue
 
         analyzed += 1
@@ -479,10 +490,19 @@ def run_psa_scan(
     signals.sort(key=lambda s: s["score"], reverse=True)
 
     logger.info(
-        "PSA complete: analyzed=%d approved=%d rejected=%d fetch_fail=%d",
-        analyzed, len(signals), stage1_rejected, fetch_failures,
+        "PSA complete: analyzed=%d approved=%d stage0_rejected=%d stage1_rejected=%d fetch_fail=%d",
+        analyzed, len(signals), stage0_rejected, stage1_rejected, fetch_failures,
     )
     logger.info("APPROVED: %d stocks", len(signals))
+
+    # Persist Stage0 rejections to prime_signals
+    for rej in stage0_rejections:
+        try:
+            from prime_data.prime_db import write_stage0_rejection
+            write_stage0_rejection(rej["symbol"], rej["reason"], rej["scan_ts"],
+                                   strategy="PSA")
+        except Exception as e:
+            logger.debug("Stage0 rejection write failed for %s: %s", rej["symbol"], e)
 
     return {
         "scan_time": scan_time.isoformat(),
@@ -494,9 +514,11 @@ def run_psa_scan(
         "thresholds": thresholds,
         "analyzed": analyzed,
         "signals_found": len(signals),
+        "stage0_rejected": stage0_rejected,
         "stage1_rejected": stage1_rejected,
         "fetch_failures": fetch_failures,
         "signals": signals,
+        "stage0_rejections": stage0_rejections,
     }
 
 

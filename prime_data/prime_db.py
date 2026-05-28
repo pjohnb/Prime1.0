@@ -433,16 +433,23 @@ def write_stage0_rejection(
     strategy: str = "UOA",
     db_path: Optional[Path] = None,
 ) -> str:
-    """Write a Stage0 rejection to prime_signals. Upsert on (symbol, scan_ts)."""
+    """Write a Stage0 rejection to prime_signals with rejection detail."""
     from prime_analytics.prime_signals_db import init_signals_table, insert_signal
     init_signals_table(db_path)
-    return insert_signal(
+    signal_id = insert_signal(
         symbol=symbol,
         strategy=strategy,
         scan_ts=scan_ts,
         status="REJECTED_STAGE0",
         db_path=db_path,
     )
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE prime_signals SET rejection_reason=?, rejection_stage=? WHERE signal_id=?",
+            (reason, "STAGE0", signal_id),
+        )
+        conn.commit()
+    return signal_id
 
 
 # ---------------------------------------------------------------------------
