@@ -175,6 +175,8 @@ def post_scan_notify(scanner_name: str, scan_data: Dict[str, Any]) -> None:
 
         approved = [s for s in signals if s.get("score", 0) > 0]
         if approved:
+            from prime_intelligence.prime_smart_selector import select_entries
+            approved = select_entries(approved)
             push_signal_alerts(approved)
 
         logger.info("Post-scan notifications sent for %s (%d signals)", scanner_name, len(signals))
