@@ -1,0 +1,111 @@
+openapi: "3.0.3"
+info:
+  title: PRIME API
+  version: "1.0.0"
+  description: Read-only REST API for PRIME v1.0 Lovable UI consumption.
+servers:
+  - url: http://localhost:5001
+    description: Local development
+paths:
+  /api/v1/positions:
+    get:
+      summary: Get all OPEN positions
+      operationId: getPositions
+      responses:
+        "200":
+          description: List of open positions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  positions:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+  /api/v1/signals:
+    get:
+      summary: Get recent signals
+      operationId: getSignals
+      parameters:
+        - name: strategy
+          in: query
+          schema:
+            type: string
+        - name: instrument_type
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of signals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signals:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+  /api/v1/analytics/summary:
+    get:
+      summary: Analytics overview summary
+      operationId: getAnalyticsSummary
+      responses:
+        "200":
+          description: Analytics summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  strategies:
+                    type: array
+                    items:
+                      type: object
+                  total_pnl:
+                    type: number
+                  total_signals:
+                    type: integer
+  /api/v1/analytics/by-strategy:
+    get:
+      summary: Analytics by strategy
+      operationId: getAnalyticsByStrategy
+      parameters:
+        - name: strategy
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Strategy breakdown
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/v1/health:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Server healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  db_connected:
+                    type: boolean
+                  last_scan_event:
+                    type: string
+                    nullable: true
+        "503":
+          description: Server degraded
