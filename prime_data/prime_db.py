@@ -254,6 +254,54 @@ def close_trade(
         conn.commit()
 
 
+def close_trade_with_fill(
+    log_id: str,
+    fill_price: float,
+    fill_qty: int,
+    close_ts: str,
+    exit_reason: str = "FILL",
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Close a trade using actual fill data. Computes realized_pnl from fill.
+
+    realized_pnl = (fill_price - entry_price) * fill_qty for LONG
+    realized_pnl = (entry_price - fill_price) * fill_qty for SHORT
+    """
+    trade = get_trade(log_id, db_path=db_path)
+    if not trade:
+        return None
+
+    entry_price = trade.get("entry_price") or trade.get("price_at_scan", 0)
+    direction = trade.get("direction", "LONG").upper()
+
+    if direction == "SHORT":
+        realized_pnl = (entry_price - fill_price) * fill_qty
+    else:
+        realized_pnl = (fill_price - entry_price) * fill_qty
+
+    pnl_pct = (realized_pnl / (entry_price * fill_qty) * 100) if entry_price and fill_qty else 0
+
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """UPDATE prime_trade_log SET
+                exit_price=?, exit_time=?, exit_reason=?,
+                pnl_dollars=?, pnl_pct=?, shares=?,
+                status='CLOSED'
+            WHERE log_id=?""",
+            (fill_price, close_ts, exit_reason, round(realized_pnl, 2),
+             round(pnl_pct, 2), fill_qty, log_id),
+        )
+        conn.commit()
+
+    return {
+        "log_id": log_id,
+        "fill_price": fill_price,
+        "fill_qty": fill_qty,
+        "realized_pnl": round(realized_pnl, 2),
+        "pnl_pct": round(pnl_pct, 2),
+    }
+
+
 def get_trade(log_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     with get_connection(db_path) as conn:
         row = conn.execute(
