@@ -219,6 +219,102 @@ def save_results(scan_data: Dict) -> Path:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Index UOA Pipeline (CIL-PRIME-IDX-001 Sprint 10)
+# ---------------------------------------------------------------------------
+
+def run_index_uoa_scan(
+    market_data: Optional[List[Dict]] = None,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Run index UOA pipeline: scan -> nullifier checks -> write to prime_signals."""
+    from prime_scanners.prime_index_uoa import scan_index_uoa
+
+    result = {
+        "scanned": 0,
+        "approved": [],
+        "nullified": [],
+        "errors": [],
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    raw_signals = scan_index_uoa(market_data)
+    result["scanned"] = len(raw_signals) if market_data else 0
+
+    for signal in raw_signals:
+        symbol = signal["symbol"]
+        direction = signal["direction"]
+
+        # SRS regime nullifier
+        srs_null = _check_srs_regime(direction)
+        if srs_null:
+            result["nullified"].append({"symbol": symbol, "reason": srs_null})
+            continue
+
+        # DK nullifier
+        dk_null = _check_dk_status(symbol)
+        if dk_null:
+            result["nullified"].append({"symbol": symbol, "reason": dk_null})
+            continue
+
+        try:
+            _write_index_signal(signal, db_path)
+            result["approved"].append({
+                "symbol": symbol, "direction": direction,
+                "tier": signal["tier"], "score": signal["score"],
+            })
+        except Exception as e:
+            result["errors"].append({"symbol": symbol, "error": str(e)})
+
+    logger.info("Index UOA: %d raw, %d approved, %d nullified",
+                len(raw_signals), len(result["approved"]), len(result["nullified"]))
+    return result
+
+
+def _check_srs_regime(direction: str) -> Optional[str]:
+    """BROAD_DECLINE suppresses LONG; BROAD_RALLY suppresses SHORT."""
+    try:
+        from prime_scanners.prime_srs_scanner import get_broad_regime
+        regime = get_broad_regime()
+        if regime == "BROAD_DECLINE" and direction == "LONG":
+            return "SRS BROAD_DECLINE suppresses LONG index signal"
+        if regime == "BROAD_RALLY" and direction == "SHORT":
+            return "SRS BROAD_RALLY suppresses SHORT index signal"
+    except (ImportError, AttributeError):
+        pass
+    return None
+
+
+def _check_dk_status(symbol: str) -> Optional[str]:
+    try:
+        from prime_intelligence.prime_dark_pool import score_dk_signal
+        dk = score_dk_signal(symbol)
+        if dk["dk_status"] == "NULLIFYING":
+            return f"DK NULLIFYING: {dk['detail'].get('reason', 'dark pool')}"
+    except Exception:
+        pass
+    return None
+
+
+def _write_index_signal(signal: Dict[str, Any], db_path: Optional[Path] = None) -> None:
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal
+    from prime_intelligence.prime_portfolio_factor import sector_map
+
+    init_signals_table(db_path)
+    insert_signal(
+        symbol=signal["symbol"],
+        strategy="UOA_INDEX",
+        scan_ts=datetime.now().isoformat(),
+        entry_price=signal.get("price_at_scan", 0),
+        score=signal.get("score", 0),
+        sector=sector_map(signal["symbol"]),
+        tier=signal.get("tier", ""),
+        direction=signal.get("direction", "LONG"),
+        factors=json.dumps(signal.get("factors", {})),
+        db_path=db_path,
+    )
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,

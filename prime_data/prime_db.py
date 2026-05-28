@@ -165,7 +165,7 @@ def insert_trade(
 
     log_id = str(uuid.uuid4())
 
-    _VALID_SOURCES = ("PAPER", "LIVE", "LEGACY", "SCHWAB_IMPORT")
+    _VALID_SOURCES = ("PAPER", "LIVE", "LEGACY", "SCHWAB_IMPORT", "INDEX_ETF")
     if trade_source not in _VALID_SOURCES:
         raise TradeRecordError(
             f"trade_source must be one of {_VALID_SOURCES}, got '{trade_source}'"
@@ -217,7 +217,7 @@ def update_trade_source(
     db_path: Optional[Path] = None,
 ) -> None:
     """Update trade_source for an existing record."""
-    _VALID_SOURCES = ("PAPER", "LIVE", "LEGACY", "SCHWAB_IMPORT")
+    _VALID_SOURCES = ("PAPER", "LIVE", "LEGACY", "SCHWAB_IMPORT", "INDEX_ETF")
     if trade_source not in _VALID_SOURCES:
         raise TradeRecordError(
             f"trade_source must be one of {_VALID_SOURCES}, got '{trade_source}'"
