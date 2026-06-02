@@ -76,6 +76,22 @@ def get_signals():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/advisory/positions", methods=["GET"])
+def get_position_advisory():
+    """GET /api/v1/advisory/positions -- Claude HOLD/TRIM/EXIT per open position.
+
+    Degrades gracefully: when the API is unavailable each entry comes back with
+    recommendation 'UNAVAILABLE' rather than erroring.
+    """
+    from prime_ai.prime_position_advisor import advise_positions
+    try:
+        advisories = advise_positions()
+        return jsonify({"advisories": advisories, "count": len(advisories)}), 200
+    except Exception as e:
+        logger.error("position advisory error: %s", e)
+        return jsonify({"advisories": [], "count": 0, "error": str(e)}), 200
+
+
 @api_bp.route("/strategies", methods=["GET"])
 def get_strategies():
     """GET /api/v1/strategies -- distinct strategies for the UI filter (Item 3)."""

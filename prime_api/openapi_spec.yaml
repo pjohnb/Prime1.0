@@ -52,6 +52,34 @@ paths:
                       type: object
                   count:
                     type: integer
+  /api/v1/advisory/positions:
+    get:
+      summary: AI HOLD/TRIM/EXIT advisory per open position
+      operationId: getPositionAdvisory
+      description: >
+        Runs the Claude position advisor over all OPEN positions. Degrades
+        gracefully: each entry returns recommendation "UNAVAILABLE" when the
+        API is unreachable (HTTP 200, never an error to the UI).
+      responses:
+        "200":
+          description: Per-position recommendations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  advisories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        symbol: {type: string}
+                        recommendation: {type: string}
+                        confidence: {type: string}
+                        reasoning: {type: string}
+                        suggested_action: {type: string}
+                  count:
+                    type: integer
   /api/v1/strategies:
     get:
       summary: Distinct strategies present in prime_signals

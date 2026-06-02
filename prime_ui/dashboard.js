@@ -39,7 +39,39 @@ async function loadDashboard() {
     if (!strategies.length) {
       tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No analytics data yet</td></tr>';
     }
+    loadAdvisory();
   } catch(e) {
     console.error('loadDashboard:', e);
+  }
+}
+
+// Sprint 15 Item 2: AI Position Advisor panel (HOLD/TRIM/EXIT per open position).
+function advisoryBadgeClass(rec) {
+  if (rec === 'HOLD') return 'confirming';   // green
+  if (rec === 'TRIM') return 'unavailable';  // amber
+  if (rec === 'EXIT') return 'nullifying';   // red
+  return 'neutral';                          // UNAVAILABLE / unknown -> grey
+}
+
+async function loadAdvisory() {
+  const body = document.getElementById('ai-advisor-body');
+  if (!body) return;
+  try {
+    const resp = await fetch(API + '/advisory/positions');
+    const data = await resp.json();
+    const items = data.advisories || [];
+    if (!items.length) {
+      body.innerHTML = '<div class="empty-state" style="padding:14px">No open positions to advise on</div>';
+      return;
+    }
+    body.innerHTML = items.map(a => `
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-weight:600;min-width:60px">${a.symbol || '--'}</span>
+        <span class="badge ${advisoryBadgeClass((a.recommendation || '').toUpperCase())}">${a.recommendation || '--'}</span>
+        <span style="color:var(--text2);font-size:13px">${a.reasoning || ''}</span>
+      </div>`).join('');
+  } catch(e) {
+    console.error('loadAdvisory:', e);
+    body.innerHTML = '<div class="empty-state" style="padding:14px">Advisory unavailable</div>';
   }
 }
