@@ -21,7 +21,7 @@ async function loadSignals() {
       const dk = (s.dk_status || 'PENDING').toUpperCase();
       const dkClass = dk === 'CONFIRMING' ? 'confirming' : dk === 'NULLIFYING' ? 'nullifying' : dk === 'UNAVAILABLE' ? 'unavailable' : 'neutral';
       tbody.innerHTML += `<tr>
-        <td style="font-family:var(--mono);font-size:11px">${(s.scan_ts || '').substring(0, 16)}</td>
+        <td style="font-family:var(--mono);font-size:13px">${(s.scan_ts || '').substring(0, 16)}</td>
         <td style="font-weight:600">${s.symbol || '--'}</td>
         <td>${s.strategy || '--'}</td>
         <td style="font-family:var(--mono)">${s.score || 0}</td>
