@@ -8,6 +8,7 @@ query time -- no cached computed columns.
 DB access goes through prime_data/prime_db.py connection helpers.
 """
 
+import hashlib
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -102,6 +103,53 @@ def insert_signal(
         )
         conn.commit()
     return signal_id
+
+
+def make_signal_id(strategy: str, symbol: str, scan_ts: str) -> str:
+    """Deterministic signal_id from the natural key (strategy, symbol, scan_ts).
+
+    The same scan re-ingested produces the same id, so INSERT OR IGNORE in
+    insert_signal_dedup() makes bridge re-runs idempotent (no duplicates).
+    """
+    raw = f"{strategy}|{symbol.upper()}|{scan_ts}"
+    return "sig_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def insert_signal_dedup(
+    symbol: str,
+    strategy: str,
+    scan_ts: str,
+    entry_price: float = 0.0,
+    score: float = 0.0,
+    sector: str = "Unknown",
+    tier: str = "",
+    status: str = "NEW",
+    direction: str = "LONG",
+    factors: str = "{}",
+    instrument_type: str = "EQUITY",
+    signal_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """Insert a signal with a deterministic id, skipping exact duplicates.
+
+    Returns the signal_id if a new row was inserted, or None if a row with the
+    same deterministic id already existed (duplicate skipped). Used by the
+    scanner bridge so every scan can be re-ingested safely.
+    """
+    if signal_id is None:
+        signal_id = make_signal_id(strategy, symbol, scan_ts)
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO prime_signals
+                (signal_id, symbol, strategy, scan_ts, entry_price, score,
+                 sector, tier, status, direction, factors, instrument_type)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (signal_id, symbol.upper(), strategy, scan_ts, entry_price, score,
+             sector, tier, status, direction, factors, instrument_type),
+        )
+        conn.commit()
+        inserted = cursor.rowcount > 0
+    return signal_id if inserted else None
 
 
 def get_signals(
