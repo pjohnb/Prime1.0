@@ -76,6 +76,18 @@ def get_signals():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/strategies", methods=["GET"])
+def get_strategies():
+    """GET /api/v1/strategies -- distinct strategies for the UI filter (Item 3)."""
+    from prime_analytics.prime_signals_db import get_distinct_strategies
+    try:
+        strategies = get_distinct_strategies()
+        return jsonify({"strategies": strategies, "count": len(strategies)}), 200
+    except Exception as e:
+        logger.error("strategies endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/analytics/summary", methods=["GET"])
 def get_analytics_summary():
     """GET /api/v1/analytics/summary -- Overview tab data."""

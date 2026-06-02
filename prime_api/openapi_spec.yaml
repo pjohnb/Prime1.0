@@ -52,6 +52,24 @@ paths:
                       type: object
                   count:
                     type: integer
+  /api/v1/strategies:
+    get:
+      summary: Distinct strategies present in prime_signals
+      operationId: getStrategies
+      responses:
+        "200":
+          description: List of strategy names
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  strategies:
+                    type: array
+                    items:
+                      type: string
+                  count:
+                    type: integer
   /api/v1/analytics/summary:
     get:
       summary: Analytics overview summary

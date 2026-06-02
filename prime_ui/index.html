@@ -178,8 +178,20 @@ async function checkHealth() {
   }
 }
 
+// Item 3d: auto-refresh the active view every 60s without a page reload.
+function refreshActiveView() {
+  const active = document.querySelector('.view.active');
+  if (!active) return;
+  if (active.id === 'view-dashboard') loadDashboard();
+  else if (active.id === 'view-positions') loadPositions();
+  else if (active.id === 'view-signals') loadSignals();
+}
+
 checkHealth();
 loadDashboard();
+populateStrategyFilter();
+setInterval(refreshActiveView, 60000);
+setInterval(checkHealth, 60000);
 </script>
 </body>
 </html>

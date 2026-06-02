@@ -185,6 +185,17 @@ def get_signals(
         return [dict(row) for row in rows]
 
 
+def get_distinct_strategies(db_path: Optional[Path] = None) -> List[str]:
+    """Return the distinct, non-empty strategy names present in prime_signals,
+    sorted alphabetically. Used to populate the UI strategy filter dynamically."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT strategy FROM prime_signals "
+            "WHERE strategy IS NOT NULL AND strategy != '' ORDER BY strategy"
+        ).fetchall()
+        return [row[0] for row in rows]
+
+
 def link_signal_to_trade(
     signal_id: str,
     trade_id: str,
