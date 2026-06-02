@@ -5,7 +5,10 @@ Read-only REST endpoints for Lovable UI consumption.
 All reads delegate to prime_db.py -- zero direct SQL in this file.
 """
 
+import hmac
 import logging
+from datetime import datetime
+from functools import wraps
 from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request
@@ -13,6 +16,33 @@ from flask import Blueprint, jsonify, request
 logger = logging.getLogger(__name__)
 
 api_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+
+_LOCALHOST = {"127.0.0.1", "::1", "localhost"}
+
+
+def require_local_token(view):
+    """Auth guard for write endpoints (Sprint 14 Item 2).
+
+    Enforces: (1) request originates from localhost; (2) a non-empty bearer
+    token in the Authorization header matches config.api_token (constant-time
+    compare). The token lives in config.json, which is never committed.
+    """
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        from prime_config.prime_config import get_config
+
+        if request.remote_addr not in _LOCALHOST:
+            return jsonify({"error": "forbidden: localhost only"}), 403
+
+        expected = (get_config().api_token or "").strip()
+        header = request.headers.get("Authorization", "")
+        provided = header[7:].strip() if header.startswith("Bearer ") else ""
+        if not expected or not provided or not hmac.compare_digest(expected, provided):
+            return jsonify({"error": "unauthorized: invalid or missing token"}), 401
+
+        return view(*args, **kwargs)
+
+    return wrapper
 
 
 @api_bp.route("/positions", methods=["GET"])
@@ -91,3 +121,89 @@ def health_check():
 
     code = 200 if status["status"] == "ok" else 503
     return jsonify(status), code
+
+
+def _is_recent(entry_time: str, now: datetime, window_s: int = 60) -> bool:
+    """True if entry_time parses to within window_s seconds of now."""
+    try:
+        ts = datetime.fromisoformat(entry_time)
+    except (TypeError, ValueError):
+        return False
+    return abs((now - ts).total_seconds()) <= window_s
+
+
+@api_bp.route("/trades", methods=["POST"])
+@require_local_token
+def create_trade():
+    """POST /api/v1/trades -- submit a PAPER trade from the Lovable UI.
+
+    Body: {symbol, qty, strategy, direction, account, price}. Validates PAPER
+    mode (rejects when trading_mode != PAPER), guards against an accidental
+    duplicate submission within 60s, and writes to prime_trade_log via
+    prime_db.py. Returns 201 with the new log_id.
+    """
+    from prime_config.prime_config import get_config
+    from prime_data.prime_db import (
+        get_open_by_symbol,
+        insert_trade,
+        TradeRecordError,
+    )
+
+    if (get_config().trading_mode or "PAPER").upper() != "PAPER":
+        return jsonify({"error": "rejected: server is not in PAPER mode"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    symbol = str(payload.get("symbol", "")).strip().upper()
+    strategy = str(payload.get("strategy", "")).strip()
+    direction = str(payload.get("direction", "")).strip().upper()
+    account = str(payload.get("account", "")).strip() or None
+
+    try:
+        qty = int(payload.get("qty"))
+        price = float(payload.get("price"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "qty must be an integer and price a number"}), 400
+
+    if not symbol or not strategy:
+        return jsonify({"error": "symbol and strategy are required"}), 400
+    if direction not in ("LONG", "SHORT", "BUY", "SELL"):
+        return jsonify({"error": "direction must be LONG/SHORT/BUY/SELL"}), 400
+    if qty <= 0:
+        return jsonify({"error": "qty must be positive"}), 400
+    if price <= 0:
+        return jsonify({"error": "price must be positive"}), 400
+
+    direction = {"BUY": "LONG", "SELL": "SHORT"}.get(direction, direction)
+    now = datetime.now()
+
+    # Duplicate guard: identical OPEN order for the same symbol/strategy/
+    # direction/qty submitted within the last 60 seconds.
+    try:
+        for t in get_open_by_symbol(symbol):
+            if (t.get("strategy") == strategy
+                    and (t.get("direction") or "").upper() == direction
+                    and t.get("shares") == qty
+                    and _is_recent(t.get("entry_time", ""), now)):
+                return jsonify({"error": "duplicate trade within 60s"}), 409
+
+        log_id = insert_trade(
+            strategy=strategy,
+            symbol=symbol,
+            direction=direction,
+            mode="PAPER",
+            order_type="MARKET",
+            shares=qty,
+            entry_time=now.isoformat(),
+            price_at_scan=price,
+            entry_price=price,
+            account=account,
+            signal_source="UI",
+            trade_source="PAPER",
+        )
+    except TradeRecordError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error("create_trade error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"log_id": log_id, "status": "OPEN", "trade_source": "PAPER"}), 201

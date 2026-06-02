@@ -109,3 +109,61 @@ paths:
                     nullable: true
         "503":
           description: Server degraded
+  /api/v1/trades:
+    post:
+      summary: Submit a PAPER trade (write path)
+      operationId: createTrade
+      description: >
+        Localhost + bearer-token protected. Validates PAPER mode and writes to
+        prime_trade_log. Rejects in LIVE mode (403), without a valid token
+        (401), and on duplicate submission within 60s (409).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symbol, qty, strategy, direction, price]
+              properties:
+                symbol:
+                  type: string
+                qty:
+                  type: integer
+                strategy:
+                  type: string
+                direction:
+                  type: string
+                  enum: [LONG, SHORT, BUY, SELL]
+                account:
+                  type: string
+                price:
+                  type: number
+      responses:
+        "201":
+          description: Trade created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  log_id:
+                    type: string
+                  status:
+                    type: string
+                  trade_source:
+                    type: string
+        "400":
+          description: Invalid payload
+        "401":
+          description: Missing or invalid token
+        "403":
+          description: Not in PAPER mode or non-localhost
+        "409":
+          description: Duplicate trade within 60s
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

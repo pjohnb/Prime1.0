@@ -41,6 +41,28 @@ tr:hover td { background: var(--bg3); }
 .filter-row { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
 .filter-row select, .filter-row input { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 4px; font-size: 14px; }
 .empty-state { text-align: center; padding: 40px; color: var(--text3); font-size: 15px; }
+/* Sprint 14 Item 2: Order Entry panel + confirmation modal */
+.order-panel { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+.panel-title { font-size: 13px; color: var(--text3); margin-bottom: 12px; font-family: var(--mono); letter-spacing: 0.06em; }
+.order-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.order-form input, .order-form select { background: var(--bg2); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 4px; font-size: 14px; }
+.order-form input#ord-symbol { width: 90px; text-transform: uppercase; }
+.order-form input#ord-qty, .order-form input#ord-price { width: 80px; font-family: var(--mono); }
+.btn-buy, .btn-sell, .btn-confirm, .btn-cancel { border: none; padding: 8px 18px; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.btn-buy { background: var(--green); color: #06240f; }
+.btn-sell { background: var(--red); color: #2a0606; }
+.btn-confirm { background: var(--amber); color: #2a1d00; }
+.btn-cancel { background: var(--bg4); color: var(--text2); }
+.order-msg { margin-top: 10px; font-size: 13px; font-family: var(--mono); min-height: 16px; }
+.order-msg.ok { color: var(--green); }
+.order-msg.err { color: var(--red); }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 100; }
+.modal-overlay.open { display: flex; }
+.modal-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 360px; }
+.modal-box h3 { font-size: 16px; margin-bottom: 14px; }
+.modal-details { font-family: var(--mono); font-size: 14px; line-height: 1.7; color: var(--text2); margin-bottom: 18px; }
+.modal-details b { color: var(--text); }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -69,10 +91,38 @@ tr:hover td { background: var(--bg3); }
 </div>
 
 <div class="view" id="view-positions">
+  <div class="order-panel">
+    <div class="panel-title">ORDER ENTRY (PAPER)</div>
+    <div class="order-form">
+      <input id="ord-symbol" placeholder="Symbol" maxlength="6" autocomplete="off" />
+      <input id="ord-qty" type="number" min="1" placeholder="Qty" />
+      <input id="ord-price" type="number" min="0" step="0.01" placeholder="Price" />
+      <select id="ord-strategy">
+        <option value="UOA">UOA</option><option value="PEAD">PEAD</option>
+        <option value="SRS">SRS</option><option value="PSA">PSA</option>
+        <option value="MTS">MTS</option><option value="MANUAL">MANUAL</option>
+      </select>
+      <input id="ord-account" placeholder="Account" value="PAPER" />
+      <button class="btn-buy" onclick="openOrderConfirm('BUY')">BUY</button>
+      <button class="btn-sell" onclick="openOrderConfirm('SELL')">SELL</button>
+    </div>
+    <div id="ord-msg" class="order-msg"></div>
+  </div>
   <table id="pos-table">
     <thead><tr><th>Symbol</th><th>Strategy</th><th>Type</th><th>Shares</th><th>Entry</th><th>Source</th><th>Status</th></tr></thead>
     <tbody id="pos-body"></tbody>
   </table>
+</div>
+
+<div id="order-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>Confirm Paper Trade</h3>
+    <div id="modal-details" class="modal-details"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeOrderConfirm()">Cancel</button>
+      <button class="btn-confirm" id="modal-confirm-btn" onclick="submitOrder()">Confirm</button>
+    </div>
+  </div>
 </div>
 
 <div class="view" id="view-signals">
@@ -98,11 +148,13 @@ tr:hover td { background: var(--bg3); }
   </table>
 </div>
 
+<script src="ui-config.js"></script>
 <script src="dashboard.js"></script>
 <script src="positions.js"></script>
 <script src="signals.js"></script>
+<script src="orders.js"></script>
 <script>
-const API = 'http://localhost:5001/api/v1';
+const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
 
 function showView(id) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));

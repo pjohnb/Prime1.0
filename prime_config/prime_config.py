@@ -116,6 +116,9 @@ class PrimeConfig:
     finnhub_api_key: str = ""
     access_token: str = ""
     refresh_token: str = ""
+    # Sprint 14 Item 2: write-path auth + mode guard. Never committed.
+    api_token: str = ""
+    trading_mode: str = "PAPER"
     tradestation: TradeStationConfig = field(default_factory=TradeStationConfig)
     order_book: OrderBookConfig = field(default_factory=OrderBookConfig)
     polygon: PolygonConfig = field(default_factory=PolygonConfig)
@@ -177,6 +180,8 @@ def load_config(
         finnhub_api_key=raw.get("finnhub_api_key", ""),
         access_token=raw.get("access_token", ""),
         refresh_token=raw.get("refresh_token", ""),
+        api_token=raw.get("api_token", ""),
+        trading_mode=raw.get("trading_mode", "PAPER"),
         tradestation=_build_dataclass(TradeStationConfig, raw.get("tradestation", {})),
         order_book=_build_dataclass(OrderBookConfig, raw.get("order_book", {})),
         polygon=_build_dataclass(PolygonConfig, raw.get("polygon", {})),

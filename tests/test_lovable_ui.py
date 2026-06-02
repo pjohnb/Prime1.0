@@ -45,6 +45,23 @@ class TestUIServer(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"loadSignals", resp.data)
 
+    def test_orders_js_served(self):
+        resp = self.client.get("/orders.js")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"submitOrder", resp.data)
+
+    def test_ui_config_js_exposes_api_base(self):
+        resp = self.client.get("/ui-config.js")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"PRIME_CONFIG", resp.data)
+        self.assertIn(b"apiToken", resp.data)
+
+    def test_index_has_order_entry_panel(self):
+        resp = self.client.get("/")
+        self.assertIn(b"ORDER ENTRY", resp.data)
+        self.assertIn(b"order-modal", resp.data)
+        self.assertIn(b"openOrderConfirm", resp.data)
+
 
 class TestAPIDataBinding(unittest.TestCase):
     """AC: all data from Flask API on 5001; correct structure."""
