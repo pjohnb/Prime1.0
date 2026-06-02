@@ -28,6 +28,24 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.register_blueprint(api_bp)
 
+    # CORS: the Lovable UI is served from a different origin (port 5002) and
+    # fetches this API on 5001. Without these headers the browser blocks the
+    # response, surfacing as "API: offline" in the UI even though the endpoint
+    # itself returns 200. Server binds to 127.0.0.1, so a wildcard origin is
+    # acceptable for local-only read access.
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return response
+
+    @app.route("/<path:_path>", methods=["OPTIONS"])
+    @app.route("/", methods=["OPTIONS"])
+    def cors_preflight(_path=""):
+        # Answer CORS preflight requests; headers are added by add_cors_headers.
+        return ("", 204)
+
     @app.route("/")
     def index():
         return {"name": "PRIME API", "version": "1.0", "docs": "/api/v1/health"}, 200
