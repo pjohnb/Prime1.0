@@ -131,7 +131,10 @@ class TestDigestFooter(unittest.TestCase):
             digest2, _ = assemble_digest("test_scanner", [], [])
             time2 = digest2["next_scan_time"]
 
-        self.assertIn("14:00", time1 + " " + "16:00")
+        # time1 must reflect the first config (one of its scan times); which one
+        # is "next" depends on the wall clock, so accept either rather than
+        # assuming the test runs before 14:00 ET.
+        self.assertTrue("14:00" in time1 or "16:00" in time1)
         self.assertNotEqual(time1, time2)
 
     def test_unknown_scanner_shows_not_scheduled(self):
