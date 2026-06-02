@@ -40,8 +40,35 @@ async function loadDashboard() {
       tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No analytics data yet</td></tr>';
     }
     loadAdvisory();
+    loadBriefing();
   } catch(e) {
     console.error('loadDashboard:', e);
+  }
+}
+
+// Sprint 15 Item 4: AI Briefing card -- headline + recommended actions.
+async function loadBriefing() {
+  const headEl = document.getElementById('briefing-headline');
+  const actEl = document.getElementById('briefing-actions');
+  const detEl = document.getElementById('briefing-detail');
+  if (!headEl) return;
+  try {
+    const resp = await fetch(API + '/advisory/briefing');
+    const b = await resp.json();
+    headEl.textContent = b.headline || 'No briefing available';
+    const actions = b.recommended_actions || [];
+    actEl.innerHTML = actions.map(a => `<li>${a}</li>`).join('');
+    const warns = b.concentration_warnings || [];
+    const parts = [];
+    if (b.positions_summary) parts.push(b.positions_summary);
+    if (b.signals_summary) parts.push(b.signals_summary);
+    if (warns.length) parts.push('Warnings: ' + warns.join('; '));
+    detEl.textContent = parts.join('  ·  ');
+  } catch(e) {
+    console.error('loadBriefing:', e);
+    headEl.textContent = 'AI briefing unavailable';
+    actEl.innerHTML = '';
+    detEl.textContent = '';
   }
 }
 

@@ -80,6 +80,31 @@ paths:
                         suggested_action: {type: string}
                   count:
                     type: integer
+  /api/v1/advisory/briefing:
+    get:
+      summary: One-call AI portfolio briefing
+      operationId: getAdvisoryBriefing
+      description: >
+        Aggregates open positions, today's signal quality, and concentration
+        warnings, then asks Claude for a desk briefing. Degrades to a
+        deterministic summary (HTTP 200) when the API is unavailable.
+      responses:
+        "200":
+          description: Portfolio briefing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  headline: {type: string}
+                  positions_summary: {type: string}
+                  signals_summary: {type: string}
+                  concentration_warnings:
+                    type: array
+                    items: {type: string}
+                  recommended_actions:
+                    type: array
+                    items: {type: string}
   /api/v1/strategies:
     get:
       summary: Distinct strategies present in prime_signals

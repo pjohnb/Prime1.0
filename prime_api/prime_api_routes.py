@@ -92,6 +92,18 @@ def get_position_advisory():
         return jsonify({"advisories": [], "count": 0, "error": str(e)}), 200
 
 
+@api_bp.route("/advisory/briefing", methods=["GET"])
+def get_advisory_briefing():
+    """GET /api/v1/advisory/briefing -- one-call AI portfolio briefing (Item 4)."""
+    from prime_ai.prime_briefing import generate_briefing
+    try:
+        return jsonify(generate_briefing()), 200
+    except Exception as e:
+        logger.error("advisory briefing error: %s", e)
+        return jsonify({"headline": "AI briefing unavailable",
+                        "recommended_actions": [], "error": str(e)}), 200
+
+
 @api_bp.route("/strategies", methods=["GET"])
 def get_strategies():
     """GET /api/v1/strategies -- distinct strategies for the UI filter (Item 3)."""
