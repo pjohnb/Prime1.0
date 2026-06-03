@@ -175,8 +175,13 @@ def post_scan_notify(scanner_name: str, scan_data: Dict[str, Any]) -> None:
 
         approved = [s for s in signals if s.get("score", 0) > 0]
         if approved:
-            from prime_intelligence.prime_smart_selector import select_entries
-            approved = select_entries(approved)
+            # Sprint 16 Item 2: toggle-aware selection. With use_ai_ranker=True
+            # and an overflow (approvals > Max Trades) this routes through the
+            # AI signal ranker; otherwise deterministic score-sort. The chosen
+            # path is logged to prime_ops_health for every run.
+            from prime_ai.prime_signal_ranker import select_for_execution
+            approved = select_for_execution(
+                approved, open_positions=open_positions, scanner=scanner_name)
             push_signal_alerts(approved)
 
         logger.info("Post-scan notifications sent for %s (%d signals)", scanner_name, len(signals))

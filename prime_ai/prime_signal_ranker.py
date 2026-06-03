@@ -14,9 +14,29 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from prime_ai import _claude
-from prime_intelligence.prime_smart_selector import select_entries, _get_score
+from prime_intelligence.prime_smart_selector import (
+    select_entries, _get_score, _read_max_trades,
+)
 
 logger = logging.getLogger(__name__)
+
+# Sprint 16 Item 2: ops_config.json key toggling the AI ranker in the
+# execution path. Read fresh on every call so the toggle takes effect at
+# runtime without restarting the scanner or scheduler.
+USE_AI_RANKER_KEY = "use_ai_ranker"
+
+
+def _read_use_ai_ranker(config_path: Optional[Path] = None) -> bool:
+    """Read use_ai_ranker from ops_config.json at runtime. Default True."""
+    if config_path is None:
+        config_path = Path(__file__).resolve().parent.parent / "ops_config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            return bool(data.get(USE_AI_RANKER_KEY, True))
+    except Exception:
+        pass
+    return True
 
 SYSTEM_PROMPT = """You are the PRIME AI Signal Ranker. You are given a list of
 approved trade candidates, the current open positions, and a Max Trades limit N.
@@ -129,3 +149,50 @@ def select_top_n(
         logger.debug("could not log ranker event: %s", e)
 
     return ranked
+
+
+def select_for_execution(
+    approved: List[Dict[str, Any]],
+    open_positions: Optional[List[Dict[str, Any]]] = None,
+    max_trades: Optional[int] = None,
+    scanner: str = "PSA",
+    api_key: Optional[str] = None,
+    db_path: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Toggle-aware execution-path selection (Sprint 16 Item 2).
+
+    Routing:
+      * use_ai_ranker=True  AND approvals > max_trades -> AI ranker (select_top_n)
+      * otherwise (toggle off, or no overflow)          -> score-sort (select_entries)
+
+    The no-overflow case always uses select_entries() so there is no API cost
+    when nothing would be dropped. The chosen path is logged to prime_ops_health
+    for every run. The use_ai_ranker toggle is read fresh from ops_config.json on
+    each call, so flipping it takes effect at runtime without a restart.
+    """
+    if max_trades is None:
+        max_trades = _read_max_trades(config_path)
+    use_ai = _read_use_ai_ranker(config_path)
+    overflow = len(approved) > max_trades
+
+    if use_ai and overflow:
+        path = "ai_ranker"
+        selected = select_top_n(approved, open_positions, max_trades,
+                                api_key=api_key, db_path=db_path)
+    else:
+        path = "score_sort"
+        selected = select_entries(approved, max_trades=max_trades,
+                                  config_path=config_path)
+
+    try:
+        from prime_data.prime_db import log_ops_event
+        detail = ("path={0} use_ai_ranker={1} approvals={2} max_trades={3} "
+                  "overflow={4} selected={5}").format(
+            path, use_ai, len(approved), max_trades, overflow, len(selected))
+        log_ops_event("PSA_SELECT", "{0}_runner".format(str(scanner).lower()),
+                      detail=detail, severity="INFO", db_path=db_path)
+    except Exception as e:
+        logger.debug("could not log selection path: %s", e)
+
+    return selected
