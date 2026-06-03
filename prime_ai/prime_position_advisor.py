@@ -23,6 +23,13 @@ trading position, decide whether to HOLD, TRIM, or EXIT it. Weigh unrealized
 P&L, hold time, the originating strategy, sector exposure, dark-pool status
 (dk_status), batch and entry-timing quality. Be concise and concrete.
 
+DIRECTION MATTERS. The position has a "direction" field:
+- LONG: profit when price RISES; a rising price is favourable. EXIT = sell.
+- SHORT: profit when price FALLS; a RISING price is ADVERSE (loss). For a SHORT,
+  speak in short terms -- say "cover" rather than "sell", and treat a rising
+  price as the risk to manage, not good news.
+Unrealized P&L is already computed direction-correctly; interpret it as given.
+
 Respond ONLY with a JSON object, no prose outside it:
 {"symbol": str, "recommendation": "HOLD|TRIM|EXIT", "confidence": "HIGH|MEDIUM|LOW",
  "reasoning": "one or two sentences", "suggested_action": "short imperative"}"""

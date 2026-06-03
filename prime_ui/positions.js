@@ -26,7 +26,7 @@ async function loadPositions() {
     tbody.innerHTML = '';
     const positions = data.positions || [];
     if (!positions.length) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No open positions</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No open positions</td></tr>';
       return;
     }
     positions.forEach(p => {
@@ -39,8 +39,11 @@ async function loadPositions() {
       const stopCls = _STOP_CLASS[p.stop_badge] || 'neutral';
       const holdColor = p.time_stop_exceeded ? 'var(--amber)' : 'var(--text2)';
       const logId = p.log_id || '';
+      const dir = (p.direction || 'LONG').toUpperCase();
+      const dirCls = dir === 'SHORT' ? 'nullifying' : 'confirming';  // SHORT red, LONG green
       tbody.innerHTML += `<tr>
         <td style="font-weight:600">${p.symbol || '--'}</td>
+        <td><span class="badge ${dirCls}">${dir}</span></td>
         <td>${p.strategy || '--'}</td>
         <td style="font-family:var(--mono)">${p.shares || 0}</td>
         <td style="font-family:var(--mono)">$${Number(entry).toFixed(2)}</td>
@@ -56,7 +59,7 @@ async function loadPositions() {
   } catch(e) {
     console.error('loadPositions:', e);
     document.getElementById('pos-body').innerHTML =
-      '<tr><td colspan="10" class="empty-state">Failed to load positions</td></tr>';
+      '<tr><td colspan="11" class="empty-state">Failed to load positions</td></tr>';
   }
 }
 

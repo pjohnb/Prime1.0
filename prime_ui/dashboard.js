@@ -7,6 +7,10 @@ async function loadDashboard() {
     const pos = await posResp.json();
     const sum = await sumResp.json();
 
+    // Sprint 17 Item 5d: OPEN POSITIONS count includes shorts (pos.count) and
+    // UNREALIZED P&L aggregates every open position direction-correctly (the
+    // /positions feed already computes inverse P&L for SHORT).
+    const positions = pos.positions || [];
     document.getElementById('d-open').textContent = pos.count || 0;
 
     const strategies = sum.strategies || [];
@@ -16,10 +20,11 @@ async function loadDashboard() {
     const winRate = totalTrades > 0 ? Math.round(totalWins / totalTrades * 100) : 0;
     document.getElementById('d-winrate').textContent = winRate + '%';
 
-    const totalPnl = sum.total_pnl || 0;
+    const totalUpnl = positions.reduce((s, p) => s + (Number(p.unrealized_pnl) || 0), 0);
     const pnlEl = document.getElementById('d-upnl');
-    pnlEl.textContent = '~$' + totalPnl.toLocaleString();
-    pnlEl.className = 'card-val ' + (totalPnl >= 0 ? 'gain' : 'loss');
+    const upnlSign = totalUpnl > 0 ? '+' : '';
+    pnlEl.textContent = upnlSign + '$' + totalUpnl.toLocaleString(undefined, {maximumFractionDigits: 0});
+    pnlEl.className = 'card-val ' + (totalUpnl >= 0 ? 'gain' : 'loss');
 
     document.getElementById('d-signals').textContent = sum.total_signals || 0;
 
