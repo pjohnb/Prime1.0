@@ -65,6 +65,8 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
         # CIL-STAGE0-TAB migration: rejection fields
         _migrate_add_column(conn, "prime_signals", "rejection_reason", "TEXT")
         _migrate_add_column(conn, "prime_signals", "rejection_stage", "TEXT")
+        # Sprint 17 Item 3 migration: borrow rate for confirmed-borrowable shorts
+        _migrate_add_column(conn, "prime_signals", "borrow_rate_pct", "REAL")
         conn.commit()
 
 
@@ -128,13 +130,15 @@ def insert_signal_dedup(
     factors: str = "{}",
     instrument_type: str = "EQUITY",
     signal_id: Optional[str] = None,
+    borrow_rate_pct: Optional[float] = None,
     db_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Insert a signal with a deterministic id, skipping exact duplicates.
 
     Returns the signal_id if a new row was inserted, or None if a row with the
     same deterministic id already existed (duplicate skipped). Used by the
-    scanner bridge so every scan can be re-ingested safely.
+    scanner bridge so every scan can be re-ingested safely. borrow_rate_pct is
+    populated for confirmed-borrowable SHORT signals (Sprint 17 Item 3).
     """
     if signal_id is None:
         signal_id = make_signal_id(strategy, symbol, scan_ts)
@@ -142,10 +146,12 @@ def insert_signal_dedup(
         cursor = conn.execute(
             """INSERT OR IGNORE INTO prime_signals
                 (signal_id, symbol, strategy, scan_ts, entry_price, score,
-                 sector, tier, status, direction, factors, instrument_type)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 sector, tier, status, direction, factors, instrument_type,
+                 borrow_rate_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (signal_id, symbol.upper(), strategy, scan_ts, entry_price, score,
-             sector, tier, status, direction, factors, instrument_type),
+             sector, tier, status, direction, factors, instrument_type,
+             borrow_rate_pct),
         )
         conn.commit()
         inserted = cursor.rowcount > 0
