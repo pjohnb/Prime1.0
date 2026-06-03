@@ -231,6 +231,16 @@ def run_short_scan(
     uoa_by_symbol = uoa_by_symbol or {}
     pead_by_symbol = pead_by_symbol or {}
     now = now or datetime.now()
+    # Reference timestamp for the live trigger-recency window (Item 2).
+    ref_ts = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            ref_ts = datetime.strptime(str(scan_ts)[:19], fmt)
+            break
+        except ValueError:
+            continue
+    if ref_ts is None:
+        ref_ts = now
 
     summary: Dict[str, Any] = {
         "scan_ts": scan_ts, "scanned": 0, "written": [], "rejected": [],
@@ -265,8 +275,15 @@ def run_short_scan(
             summary["scanned"] += 1
 
             # PRIMARY TRIGGER -- required. Technical-only candidates never enter.
-            triggers = primary_triggers(uoa_by_symbol.get(symbol),
-                                        pead_by_symbol.get(symbol))
+            # Injected trigger dicts (tests) take precedence; otherwise read the
+            # live UOA-put / PEAD-miss feed from prime_signals (Sprint 18 Item 2).
+            if symbol in uoa_by_symbol or symbol in pead_by_symbol:
+                triggers = primary_triggers(uoa_by_symbol.get(symbol),
+                                            pead_by_symbol.get(symbol))
+            else:
+                from prime_intelligence.prime_signal_triggers import (
+                    short_primary_triggers_from_signals)
+                triggers = short_primary_triggers_from_signals(symbol, db_path, ref_ts)
             if not triggers:
                 summary["rejected"].append(symbol)
                 continue
@@ -339,16 +356,25 @@ def main():
     from prime_config.prime_config import get_config
     from prime_data.prime_db import init_db, log_ops_event
 
+    from prime_intelligence.prime_index_scanner import fetch_daily_bars
+
     cfg = get_config()
     if not cfg.polygon_api_key:
         logger.error("polygon_api_key not found in config.json")
         sys.exit(1)
     init_db()
     log_ops_event("SCAN_START", "short_scanner",
-                  detail="signal-led short scan (requires UOA/PEAD trigger)")
-    # Live trigger data (UOA/PEAD) and bars are supplied by the scan pipeline
-    # after the UOA and PEAD scans complete; run with injected data in tests.
-    summary = run_short_scan()
+                  detail="signal-led short scan (live UOA-put/PEAD-miss feed)")
+
+    # Sprint 18 Item 2: live feed. Fetch daily bars for technical confirmation;
+    # primary triggers (UOA put / PEAD miss) are read from prime_signals by
+    # run_short_scan when no trigger dicts are injected. Borrow uses the live
+    # Schwab locate (fail-safe to not-borrowable on any error).
+    universe = _default_universe()
+    bars_by_symbol = {BENCHMARK: fetch_daily_bars(BENCHMARK, cfg.polygon_api_key)}
+    for sym in universe:
+        bars_by_symbol.setdefault(sym, fetch_daily_bars(sym, cfg.polygon_api_key))
+    summary = run_short_scan(symbols=universe, bars_by_symbol=bars_by_symbol)
     log_ops_event("SCAN_COMPLETE", "short_scanner",
                   detail="written={0} borrow_blocked={1} dk_blocked={2}".format(
                       len(summary["written"]), len(summary["borrow_blocked"]),
