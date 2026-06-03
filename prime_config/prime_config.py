@@ -132,6 +132,9 @@ class OpsConfig:
     # Each entry: {name, type, buying_power, margin_available, weight}. SHORT
     # routing excludes IRA-type accounts and sizes against margin_available.
     mata_accounts: Any = field(default_factory=list)
+    # Sprint 18 Item 1: signal-led PSA approval. When true (default), PSA requires
+    # a UOA-call or PEAD-beat trigger before APPROVED; false = legacy technical-only.
+    use_signal_led_psa: bool = True
 
 
 @dataclass

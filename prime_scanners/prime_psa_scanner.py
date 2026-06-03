@@ -399,6 +399,63 @@ def stage0_filter(
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
+def _read_use_signal_led_psa(config_path: Optional[Path] = None) -> bool:
+    """Read use_signal_led_psa from ops_config.json at runtime. Default True."""
+    if config_path is None:
+        config_path = Path(__file__).resolve().parent.parent / "ops_config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            return bool(data.get("use_signal_led_psa", True))
+    except Exception:
+        pass
+    return True
+
+
+def apply_signal_led_psa(scan_result: Dict[str, Any],
+                         db_path: Optional[Path] = None,
+                         config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Annotate PSA technically-approved signals with a signal-led verdict.
+
+    Sprint 18 Item 1. For each technically-approved candidate, require a primary
+    predictive trigger (UOA call surge or PEAD earnings beat in prime_signals)
+    before APPROVED; technically-strong candidates without a trigger are WATCH
+    (visible, not auto-approved). Adds trigger_source ('UOA_CALL'|'PEAD_BEAT'|
+    'NONE') and approval_status ('APPROVED'|'WATCH') to each signal. When
+    use_signal_led_psa is false, reverts to legacy technical-only (all APPROVED).
+    """
+    from prime_intelligence.prime_signal_triggers import psa_trigger_source
+
+    use_signal_led = _read_use_signal_led_psa(config_path)
+    ref_ts = _parse_scan_time(scan_result.get("scan_time"))
+    approved = watch = 0
+    for sig in scan_result.get("signals", []):
+        if use_signal_led:
+            ts = psa_trigger_source(sig.get("symbol"), db_path=db_path, ref_ts=ref_ts)
+        else:
+            ts = "NONE"
+        sig["trigger_source"] = ts
+        if not use_signal_led or ts != "NONE":
+            sig["approval_status"] = "APPROVED"
+            approved += 1
+        else:
+            sig["approval_status"] = "WATCH"
+            watch += 1
+    scan_result["signal_led"] = use_signal_led
+    scan_result["approved_count"] = approved
+    scan_result["watch_count"] = watch
+    return scan_result
+
+
+def _parse_scan_time(ts: Any) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+
+
 def run_psa_scan(
     api_key: str,
     universe: Optional[List[str]] = None,
@@ -413,6 +470,8 @@ def run_psa_scan(
     min_price: float = DEFAULT_MIN_PRICE,
     max_price: float = DEFAULT_MAX_PRICE,
     min_daily_volume: float = DEFAULT_MIN_DAILY_VOLUME,
+    db_path: Optional[Path] = None,
+    config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     scan_time = datetime.now()
 
@@ -504,7 +563,7 @@ def run_psa_scan(
         except Exception as e:
             logger.debug("Stage0 rejection write failed for %s: %s", rej["symbol"], e)
 
-    return {
+    result = {
         "scan_time": scan_time.isoformat(),
         "scanner": "prime_psa_scanner",
         "version": "1.0",
@@ -520,6 +579,9 @@ def run_psa_scan(
         "signals": signals,
         "stage0_rejections": stage0_rejections,
     }
+    # Sprint 18 Item 1: signal-led approval gating (UOA call / PEAD beat trigger
+    # required to reach APPROVED; technical-only -> WATCH). Toggle via ops_config.
+    return apply_signal_led_psa(result, db_path=db_path, config_path=config_path)
 
 
 def save_results(scan_data: Dict) -> Path:
