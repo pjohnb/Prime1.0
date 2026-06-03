@@ -121,6 +121,13 @@ class OpsConfig:
     # Sprint 16 Item 3: MATA routing account for Index Trader (IDX) signals.
     # Index trades route to a single account (default "Joint Brokerage").
     index_account: str = "Joint Brokerage"
+    # Sprint 17 Item 2: short-side risk parameters. short_size_multiplier scales
+    # the equivalent long size (hard-capped at 2% of account in the sizer);
+    # short_stop_loss_pct is the +5% adverse-move stop (price rises = exit);
+    # short_time_stop_minutes mirrors the long time stop.
+    short_size_multiplier: float = 0.5
+    short_stop_loss_pct: float = 0.05
+    short_time_stop_minutes: int = 1950
 
 
 @dataclass
