@@ -47,11 +47,20 @@ def require_local_token(view):
 
 @api_bp.route("/positions", methods=["GET"])
 def get_positions():
-    """GET /api/v1/positions -- all OPEN positions from prime_trade_log."""
+    """GET /api/v1/positions -- OPEN positions with live P&L / stop / hold time.
+
+    Each position is enriched (Sprint 16 Item 5) with unrealized P&L, a stop
+    alert badge (GREEN/AMBER/RED), the computed stop price, and a human-readable
+    hold time + time-stop flag. Current price uses a live Schwab quote when
+    available, else the last known price.
+    """
     from prime_data.prime_db import get_open_positions
+    from prime_api.prime_positions import enrich_position
     try:
         positions = get_open_positions()
-        return jsonify({"positions": positions, "count": len(positions)}), 200
+        now = datetime.now()
+        enriched = [enrich_position(p, current_price=None, now=now) for p in positions]
+        return jsonify({"positions": enriched, "count": len(enriched)}), 200
     except Exception as e:
         logger.error("positions endpoint error: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -247,3 +256,44 @@ def create_trade():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"log_id": log_id, "status": "OPEN", "trade_source": "PAPER"}), 201
+
+
+@api_bp.route("/trades/close", methods=["POST"])
+@require_local_token
+def close_trade_endpoint():
+    """POST /api/v1/trades/close -- close an open PAPER position (Sprint 16 Item 5).
+
+    Body: {log_id, exit_price, exit_reason}. Requires the bearer token, enforces
+    PAPER mode, validates the inputs, and updates prime_trade_log via prime_db's
+    close_trade_manual() (direction-aware realized P&L + hold_minutes). Returns
+    200 with the realized P&L, 404 if the log_id is unknown.
+    """
+    from prime_config.prime_config import get_config
+    from prime_data.prime_db import close_trade_manual
+
+    if (get_config().trading_mode or "PAPER").upper() != "PAPER":
+        return jsonify({"error": "rejected: server is not in PAPER mode"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    log_id = str(payload.get("log_id", "")).strip()
+    exit_reason = str(payload.get("exit_reason", "")).strip() or "MANUAL"
+
+    if not log_id:
+        return jsonify({"error": "log_id is required"}), 400
+    try:
+        exit_price = float(payload.get("exit_price"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "exit_price must be a number"}), 400
+    if exit_price <= 0:
+        return jsonify({"error": "exit_price must be positive"}), 400
+
+    try:
+        result = close_trade_manual(log_id, exit_price, exit_reason,
+                                    close_ts=datetime.now().isoformat())
+    except Exception as e:
+        logger.error("close_trade error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+    if result is None:
+        return jsonify({"error": "unknown log_id"}), 404
+    return jsonify(result), 200

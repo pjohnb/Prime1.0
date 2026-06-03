@@ -119,9 +119,20 @@ tr:hover td { background: var(--bg3); }
     <div id="ord-msg" class="order-msg"></div>
   </div>
   <table id="pos-table">
-    <thead><tr><th>Symbol</th><th>Strategy</th><th>Type</th><th>Shares</th><th>Entry</th><th>Source</th><th>Status</th></tr></thead>
+    <thead><tr><th>Symbol</th><th>Strategy</th><th>Shares</th><th>Entry</th><th>Price</th><th>P&amp;L</th><th>Stop</th><th>Hold</th><th>Status</th><th>Action</th></tr></thead>
     <tbody id="pos-body"></tbody>
   </table>
+</div>
+
+<div id="close-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>Confirm Close Position</h3>
+    <div id="close-modal-details" class="modal-details"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeCloseConfirm()">Cancel</button>
+      <button class="btn-sell" id="close-confirm-btn" onclick="submitClose()">Close Position</button>
+    </div>
+  </div>
 </div>
 
 <div id="order-modal" class="modal-overlay">
@@ -202,6 +213,11 @@ loadDashboard();
 populateStrategyFilter();
 setInterval(refreshActiveView, 60000);
 setInterval(checkHealth, 60000);
+// Sprint 16 Item 5: Positions tab polls live P&L every 30s while it is active.
+setInterval(() => {
+  const active = document.querySelector('.view.active');
+  if (active && active.id === 'view-positions') loadPositions();
+}, 30000);
 </script>
 </body>
 </html>

@@ -348,6 +348,59 @@ def get_open_by_symbol(symbol: str, db_path: Optional[Path] = None) -> List[Dict
         return [dict(row) for row in rows]
 
 
+def _hold_minutes(entry_time: Optional[str], close_ts: str) -> int:
+    """Whole minutes between entry_time and close_ts (ISO-8601). 0 if unparseable."""
+    try:
+        start = datetime.fromisoformat(str(entry_time))
+        end = datetime.fromisoformat(str(close_ts))
+        return max(int((end - start).total_seconds() // 60), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def close_trade_manual(
+    log_id: str,
+    exit_price: float,
+    exit_reason: str = "MANUAL",
+    close_ts: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Close a position from a manual UI action (Sprint 16 Item 5).
+
+    Computes realized P&L (direction-aware) and hold_minutes from the stored
+    trade, then writes via close_trade(). Returns a summary dict, or None if the
+    log_id is unknown.
+    """
+    trade = get_trade(log_id, db_path=db_path)
+    if not trade:
+        return None
+    if close_ts is None:
+        close_ts = datetime.utcnow().isoformat()
+
+    entry_price = trade.get("entry_price") or trade.get("price_at_scan") or 0.0
+    shares = trade.get("shares") or 0
+    direction = (trade.get("direction") or "LONG").upper()
+
+    if direction == "SHORT":
+        pnl_dollars = (entry_price - exit_price) * shares
+    else:
+        pnl_dollars = (exit_price - entry_price) * shares
+    pnl_pct = (pnl_dollars / (entry_price * shares) * 100.0) if entry_price and shares else 0.0
+    hold_min = _hold_minutes(trade.get("entry_time"), close_ts)
+
+    close_trade(log_id, exit_price, close_ts, exit_reason,
+                round(pnl_dollars, 2), round(pnl_pct, 2), hold_min, db_path=db_path)
+    return {
+        "log_id": log_id,
+        "exit_price": exit_price,
+        "exit_reason": exit_reason,
+        "pnl_dollars": round(pnl_dollars, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "hold_minutes": hold_min,
+        "status": "CLOSED",
+    }
+
+
 def close_trade_reconcile(
     log_id: str,
     close_reason: str = "SCHWAB_RECONCILE",
