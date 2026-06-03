@@ -128,6 +128,10 @@ class OpsConfig:
     short_size_multiplier: float = 0.5
     short_stop_loss_pct: float = 0.05
     short_time_stop_minutes: int = 1950
+    # Sprint 17 Item 4: MATA account profiles for direction-aware allocation.
+    # Each entry: {name, type, buying_power, margin_available, weight}. SHORT
+    # routing excludes IRA-type accounts and sizes against margin_available.
+    mata_accounts: Any = field(default_factory=list)
 
 
 @dataclass
