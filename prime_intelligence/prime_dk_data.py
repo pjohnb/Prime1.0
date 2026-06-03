@@ -74,11 +74,24 @@ def get_tape_prints(
     """Fetch large block prints (>= 10,000 shares) at mid +/- 0.05.
 
     Returns list of {ts, size, price, mid_offset} or None if unavailable.
-    Source: Schwab time & sales when available.
+
+    Sprint 16 Item 4: dark-pool prints now flow through the single DK data
+    entry point, prime_data.prime_dk_feed.get_dk_prints(). This adapter maps the
+    feed's canonical print shape into the legacy tape-print shape and preserves
+    the None-on-empty contract (None == unavailable) the composite scorer relies
+    on. The Unusual Whales live feed swaps in behind prime_dk_feed.
     """
-    # Live tape print feed not yet integrated -- return None per tiebreaker
-    logger.debug("Tape print data unavailable for %s -- feed not integrated", symbol)
-    return None
+    try:
+        from prime_data.prime_dk_feed import get_dk_prints
+        prints = get_dk_prints([symbol])
+    except Exception as e:
+        logger.debug("DK feed unavailable for %s: %s", symbol, e)
+        return None
+    if not prints:
+        return None
+    return [{"ts": p.get("timestamp", ""), "size": p.get("volume", 0),
+             "price": p.get("price", 0.0), "mid_offset": 0.0,
+             "venue": p.get("venue", "")} for p in prints]
 
 
 def get_short_volume(symbol: str) -> Optional[Dict[str, Any]]:

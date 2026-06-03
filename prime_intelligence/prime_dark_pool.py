@@ -399,6 +399,106 @@ def score_dk_signal(symbol: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Matured DK print scoring (Sprint 16 Item 4)
+# ---------------------------------------------------------------------------
+#
+# The legacy score_dk_signal() above combines FINRA ATS %, block-print count,
+# and short-volume into a composite. Sprint 16 matures the DK *print* read with
+# three additional factors computed directly from the dark-pool prints supplied
+# by prime_data.prime_dk_feed.get_dk_prints():
+#
+#   volume_ratio   -- dark-pool print volume / total session volume. High ratio
+#                     = heavy off-exchange participation.
+#   price_proximity-- fraction of prints within PRICE_PROXIMITY_PCT of the
+#                     reference (current) price. High = accumulation at price;
+#                     low = prints away from price (absorption / distribution).
+#   repeat_activity-- number of prints for the symbol this session. More prints
+#                     = higher conviction.
+#
+# Verdict (thresholds documented in PRIME Documentation/DK_STRATEGY.md):
+#   SIGNAL    -- print_score >= SIGNAL_PRINT_SCORE AND proximity high: genuine
+#                accumulation near price with conviction.
+#   NULLIFIER -- volume_ratio heavy but proximity low: large off-exchange volume
+#                working against the visible price -- suppresses other signals.
+#   None      -- neither (NEUTRAL).
+
+PRICE_PROXIMITY_PCT = 0.5          # % of current price counted as "near"
+SIGNAL_PRINT_SCORE = 50.0          # matured print_score required for SIGNAL
+SIGNAL_MIN_PROXIMITY = 0.5         # fraction of prints near price for SIGNAL
+NULLIFIER_VOL_RATIO = 0.5          # dark/total volume that flags NULLIFIER
+NULLIFIER_MAX_PROXIMITY = 0.3      # prints scattered away from price
+
+
+def _median(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def score_dk_prints(
+    prints: List[Dict[str, Any]],
+    reference_price: Optional[float] = None,
+    total_volume: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Score dark-pool prints on volume_ratio, price_proximity, repeat_activity.
+
+    Pure function (no I/O). Returns:
+        {repeat_activity, price_proximity, volume_ratio, print_score, verdict}
+    verdict is "SIGNAL" | "NULLIFIER" | None.
+    """
+    prints = prints or []
+    repeat_activity = len(prints)
+    if repeat_activity == 0:
+        return {"repeat_activity": 0, "price_proximity": 0.0,
+                "volume_ratio": 0.0, "print_score": 0.0, "verdict": None}
+
+    prices = [float(p.get("price", 0) or 0) for p in prints]
+    volumes = [float(p.get("volume", 0) or 0) for p in prints]
+    ref = reference_price if reference_price else _median(prices)
+
+    # price_proximity: fraction of prints within PRICE_PROXIMITY_PCT of ref.
+    if ref and ref > 0:
+        near = sum(1 for px in prices
+                   if abs(px - ref) / ref * 100.0 <= PRICE_PROXIMITY_PCT)
+        price_proximity = near / repeat_activity
+    else:
+        price_proximity = 0.0
+
+    # volume_ratio: dark-pool volume / total session volume (if known).
+    dark_volume = sum(volumes)
+    if total_volume and total_volume > 0:
+        volume_ratio = min(dark_volume / total_volume, 1.0)
+    else:
+        # No session total available -> fall back to a per-print total field
+        # if the feed supplied one, else 0 (no volume contribution).
+        per_total = sum(float(p.get("total_volume", 0) or 0) for p in prints)
+        volume_ratio = min(dark_volume / per_total, 1.0) if per_total > 0 else 0.0
+
+    # Composite print_score 0-100 weighting all three factors.
+    proximity_component = price_proximity * 40.0
+    repeat_component = min(repeat_activity, 5) / 5.0 * 30.0
+    volume_component = min(volume_ratio, NULLIFIER_VOL_RATIO) / NULLIFIER_VOL_RATIO * 30.0
+    print_score = round(proximity_component + repeat_component + volume_component, 1)
+
+    verdict: Optional[str] = None
+    if print_score >= SIGNAL_PRINT_SCORE and price_proximity >= SIGNAL_MIN_PROXIMITY:
+        verdict = "SIGNAL"
+    elif volume_ratio >= NULLIFIER_VOL_RATIO and price_proximity < NULLIFIER_MAX_PROXIMITY:
+        verdict = "NULLIFIER"
+
+    return {
+        "repeat_activity": repeat_activity,
+        "price_proximity": round(price_proximity, 4),
+        "volume_ratio": round(volume_ratio, 4),
+        "print_score": print_score,
+        "verdict": verdict,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Convenience API for GUI consumption
 # ---------------------------------------------------------------------------
 

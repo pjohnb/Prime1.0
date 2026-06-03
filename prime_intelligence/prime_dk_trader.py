@@ -32,7 +32,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from prime_data.prime_db import get_connection
 from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
-from prime_intelligence.prime_dark_pool import score_dk_signal
+from prime_intelligence.prime_dark_pool import score_dk_signal, score_dk_prints
+from prime_data.prime_dk_feed import get_dk_prints
 
 logger = logging.getLogger("prime_dk_trader")
 
@@ -55,6 +56,35 @@ def classify_dk(dk: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _combine_verdicts(dk: Dict[str, Any], matured: Dict[str, Any]) -> Optional[str]:
+    """Combine the legacy composite verdict with the matured prints verdict.
+
+    The matured prints (volume_ratio / price_proximity / repeat_activity) refine
+    the classification:
+      * a matured NULLIFIER always wins (off-exchange volume working against the
+        move suppresses regardless of the composite);
+      * a matured SIGNAL upgrades a non-nullified symbol to SIGNAL;
+      * otherwise the legacy classify_dk() verdict stands.
+
+    When the matured verdict drives the classification, dk's dk_status/dk_score
+    are updated in place so the written row stays internally consistent.
+    """
+    base = classify_dk(dk)
+    verdict = (matured or {}).get("verdict")
+
+    if verdict == TIER_NULLIFIER:
+        dk["dk_status"] = "NULLIFYING"
+        dk["dk_score"] = 0.0
+        return TIER_NULLIFIER
+    if verdict == TIER_SIGNAL and base != TIER_NULLIFIER:
+        if base != TIER_SIGNAL:
+            dk["dk_status"] = "CONFIRMING"
+            dk["dk_score"] = max(dk.get("dk_score") or 0.0,
+                                 matured.get("print_score") or 0.0)
+        return TIER_SIGNAL
+    return base
+
+
 def _get_watchlist() -> List[str]:
     try:
         from prime_scanners.prime_uoa_scanner import get_watchlist
@@ -65,10 +95,25 @@ def _get_watchlist() -> List[str]:
 
 
 def _write_dk_row(symbol: str, dk: Dict[str, Any], classification: str,
-                  scan_ts: str, db_path: Optional[Path]) -> Optional[str]:
-    """Insert a strategy='DK' signal row and set its dk_score/dk_status."""
+                  scan_ts: str, db_path: Optional[Path],
+                  matured: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Insert a strategy='DK' signal row and set its dk_score/dk_status.
+
+    When `matured` (a score_dk_prints() result) is provided, its three factors
+    (volume_ratio, price_proximity, repeat_activity) are recorded in factors.
+    """
     status = "APPROVED" if classification == TIER_SIGNAL else "NULLIFIER"
     import json
+    factors: Dict[str, Any] = {"dk_status": dk.get("dk_status"),
+                               "detail": dk.get("detail", {})}
+    if matured is not None:
+        factors["matured"] = {
+            "volume_ratio": matured.get("volume_ratio"),
+            "price_proximity": matured.get("price_proximity"),
+            "repeat_activity": matured.get("repeat_activity"),
+            "print_score": matured.get("print_score"),
+            "verdict": matured.get("verdict"),
+        }
     signal_id = insert_signal_dedup(
         symbol=symbol,
         strategy="DK",
@@ -77,8 +122,7 @@ def _write_dk_row(symbol: str, dk: Dict[str, Any], classification: str,
         tier=classification,
         status=status,
         direction="LONG",
-        factors=json.dumps({"dk_status": dk.get("dk_status"),
-                            "detail": dk.get("detail", {})}),
+        factors=json.dumps(factors),
         instrument_type="EQUITY",
         db_path=db_path,
     )
@@ -111,16 +155,25 @@ def run_dk_trader_scan(
         "scanned": 0, "signals": [], "nullifiers": [],
         "neutral": [], "unavailable": [], "errors": [], "scan_ts": scan_ts,
     }
+    prints_date = scan_ts[:10] if scan_ts and len(scan_ts) >= 10 else None
     for symbol in symbols:
         try:
             dk = score_dk_signal(symbol)
             summary["scanned"] += 1
-            cls = classify_dk(dk)
+
+            # Matured factors from the single DK data entry point (prime_dk_feed).
+            prints = get_dk_prints([symbol], prints_date)
+            ref_price = (dk.get("detail") or {}).get("ref_price")
+            matured = score_dk_prints(prints, reference_price=ref_price)
+
+            # Combine the legacy composite verdict with the matured prints verdict.
+            cls = _combine_verdicts(dk, matured)
+
             if cls == TIER_SIGNAL:
-                _write_dk_row(symbol, dk, cls, scan_ts, db_path)
+                _write_dk_row(symbol, dk, cls, scan_ts, db_path, matured)
                 summary["signals"].append(symbol)
             elif cls == TIER_NULLIFIER:
-                _write_dk_row(symbol, dk, cls, scan_ts, db_path)
+                _write_dk_row(symbol, dk, cls, scan_ts, db_path, matured)
                 summary["nullifiers"].append(symbol)
             elif dk.get("dk_status") == "UNAVAILABLE":
                 summary["unavailable"].append(symbol)
