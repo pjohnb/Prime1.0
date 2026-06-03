@@ -108,6 +108,16 @@ class OpsConfig:
     notification_channels: Any = "TBD"
     health_check_interval: int = 900
     retry: Any = field(default_factory=lambda: {"max_attempts": 3, "interval_seconds": 300})
+    # Sprint 16 Item 1: fallback source for ANTHROPIC_API_KEY when not in env.
+    # Documented here as schema; the actual value lives only in the gitignored
+    # ops_config.json and is NEVER committed. Prefer the environment variable.
+    anthropic_api_key: str = ""
+    # Sprint 16 Item 2: toggle the AI signal ranker (select_top_n) in the PSA
+    # execution path. When false, PSA uses the deterministic score-sort selector.
+    use_ai_ranker: bool = True
+    # Sprint 16 Item 4: Unusual Whales API key for the future live DK feed.
+    # Schema-only; value lives in the gitignored ops_config.json, never committed.
+    uw_api_key: str = ""
 
 
 @dataclass

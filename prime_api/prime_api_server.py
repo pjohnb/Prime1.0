@@ -56,6 +56,11 @@ def create_app() -> Flask:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Sprint 16 Item 1: pre-flight check FIRST -- ensure ANTHROPIC_API_KEY is
+    # available (env, else ops_config.json fallback) so /advisory/* returns live
+    # Claude recommendations rather than graceful-degradation placeholders.
+    from prime_startup import run_startup_checks
+    run_startup_checks()
     app = create_app()
     logger.info("PRIME API server starting on port %d", API_PORT)
     app.run(host="127.0.0.1", port=API_PORT, debug=False)
