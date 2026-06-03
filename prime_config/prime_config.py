@@ -118,6 +118,9 @@ class OpsConfig:
     # Sprint 16 Item 4: Unusual Whales API key for the future live DK feed.
     # Schema-only; value lives in the gitignored ops_config.json, never committed.
     uw_api_key: str = ""
+    # Sprint 16 Item 3: MATA routing account for Index Trader (IDX) signals.
+    # Index trades route to a single account (default "Joint Brokerage").
+    index_account: str = "Joint Brokerage"
 
 
 @dataclass
