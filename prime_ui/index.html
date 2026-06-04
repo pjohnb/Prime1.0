@@ -33,10 +33,11 @@ table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; padding: 8px 10px; font-size: 12px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono); border-bottom: 1px solid var(--border); }
 td { padding: 10px; border-bottom: 1px solid var(--border); color: var(--text2); }
 tr:hover td { background: var(--bg3); }
-.badge { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 3px; font-family: var(--mono); }
-.badge.confirming { background: rgba(34,197,94,0.15); color: var(--green); }
-.badge.nullifying { background: rgba(239,68,68,0.15); color: var(--red); }
-.badge.neutral { background: var(--bg4); color: var(--gray); }
+.badge { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 3px; font-family: var(--mono); cursor: default; }
+/* Sprint 20 Item 3: three-state DK badge colors (PENDING/CONFIRMED/NULLIFIED retired). */
+.badge.confirming { background: rgba(31,122,31,0.12); color: #1F7A1F; }
+.badge.nullifying { background: rgba(192,0,0,0.12); color: #C00000; }
+.badge.neutral { background: rgba(136,136,136,0.12); color: #888888; }
 .badge.unavailable { background: rgba(245,158,11,0.15); color: var(--amber); }
 .filter-row { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
 .filter-row select, .filter-row input { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 4px; font-size: 14px; }

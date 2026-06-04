@@ -67,6 +67,8 @@ async function loadBriefing() {
     const parts = [];
     if (b.positions_summary) parts.push(b.positions_summary);
     if (b.signals_summary) parts.push(b.signals_summary);
+    // Sprint 20 Item 3: DK activity summary line from briefing payload.
+    if (b.dk_summary) parts.push(b.dk_summary);
     if (warns.length) parts.push('Warnings: ' + warns.join('; '));
     detEl.textContent = parts.join('  ·  ');
   } catch(e) {

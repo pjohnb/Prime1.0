@@ -1,10 +1,16 @@
-// Item 3b: DK STATUS badge colors -- PENDING grey, CONFIRMED green,
-// NULLIFIED red (legacy CONFIRMING/NULLIFYING/UNAVAILABLE values kept).
+// Sprint 20 Item 3: DK STATUS badge -- three-state (PENDING / CONFIRMED /
+// NULLIFIED retired; Sprint 20 vocabulary: CONFIRMING / NEUTRAL / NULLIFYING).
 function dkBadgeClass(dk) {
-  if (dk === 'CONFIRMED' || dk === 'CONFIRMING') return 'confirming';
-  if (dk === 'NULLIFIED' || dk === 'NULLIFYING') return 'nullifying';
-  if (dk === 'UNAVAILABLE') return 'unavailable';
-  return 'neutral'; // PENDING / NEUTRAL / unknown -> grey
+  if (dk === 'CONFIRMING') return 'confirming';   // green
+  if (dk === 'NULLIFYING') return 'nullifying';   // red
+  return 'neutral';                               // NEUTRAL / unknown -> grey
+}
+
+// Map raw dk_status to a short badge label (fits badge width).
+function dkBadgeLabel(dk) {
+  if (dk === 'CONFIRMING') return 'CONFIRM';
+  if (dk === 'NULLIFYING') return 'NULLIFY';
+  return 'NEUTRAL';
 }
 
 // Item 3c: populate the strategy filter from the actual strategies in the DB
@@ -47,8 +53,13 @@ async function loadSignals() {
       return;
     }
     signals.forEach(s => {
-      const dk = (s.dk_status || 'PENDING').toUpperCase();
+      // Sprint 20 Item 3: NEUTRAL is the default (PENDING retired).
+      const dk = (s.dk_status || 'NEUTRAL').toUpperCase();
       const dkClass = dkBadgeClass(dk);
+      const dkLabel = dkBadgeLabel(dk);
+      // Tooltip: show dk_conviction when available (e.g. "Conviction: 0.82").
+      const convTitle = (s.dk_conviction != null)
+        ? ` title="Conviction: ${Number(s.dk_conviction).toFixed(2)}"` : '';
       // Item 3a: show "--" instead of 0 when score is null/zero (no ML score yet)
       const scoreVal = s.score ? s.score : null;
       const scoreStr = scoreVal ? scoreVal : '--';
@@ -58,7 +69,7 @@ async function loadSignals() {
         <td>${s.strategy || '--'}</td>
         <td style="font-family:var(--mono)">${scoreStr}</td>
         <td>${s.tier || '--'}</td>
-        <td><span class="badge ${dkClass}">${dk}</span></td>
+        <td><span class="badge ${dkClass}"${convTitle}>${dkLabel}</span></td>
         <td style="font-family:var(--mono)">$${(s.entry_price || 0).toFixed(2)}</td>
         <td>${s.status || '--'}</td>
       </tr>`;
