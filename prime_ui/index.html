@@ -64,6 +64,15 @@ tr:hover td { background: var(--bg3); }
 .modal-details { font-family: var(--mono); font-size: 14px; line-height: 1.7; color: var(--text2); margin-bottom: 18px; }
 .modal-details b { color: var(--text); }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+/* Sprint 22: UI Modernization */
+.btn-close-pos { background: #8b1a1a; color: #ffd0d0; border: none; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.btn-close-pos:hover { background: #C00000; }
+.scope-btn { background: var(--bg4); border: 1px solid var(--border); color: var(--text3); padding: 4px 10px; border-radius: 4px; font-size: 12px; font-family: var(--mono); cursor: pointer; transition: all 0.12s; }
+.scope-btn.active, .scope-btn:hover { background: var(--amber); color: #1a1200; border-color: var(--amber); }
+.dk-chips { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+.pnl-spark { display: inline-flex; align-items: center; margin-left: 10px; vertical-align: middle; }
+.pos-search { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 4px; font-size: 13px; width: 200px; margin-bottom: 10px; }
+.pos-search::placeholder { color: var(--text3); }
 /* Sprint 21 Item 1: In-App Help System */
 .help-btn { background: var(--bg4); border: 1px solid var(--border); color: var(--text2); border-radius: 50%; width: 28px; height: 28px; font-size: 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; margin-left: 12px; transition: background 0.15s; }
 .help-btn:hover { background: var(--border); color: var(--text); }
@@ -111,7 +120,8 @@ tr:hover td { background: var(--bg3); }
 <body>
 <div class="topbar">
   <h1>PRIME v1.0</h1>
-  <div style="display:flex;align-items:center;gap:0">
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="status" id="market-status" style="font-family:var(--mono);font-size:12px;font-weight:700">--</span>
     <span class="status" id="api-status">API: checking...</span>
     <button class="help-btn" id="help-open-btn" onclick="openHelp()" title="PRIME Help &amp; Cheat Sheet">?</button>
   </div>
@@ -125,10 +135,18 @@ tr:hover td { background: var(--bg3); }
 <div class="view active" id="view-dashboard">
   <div class="cards" id="dash-cards">
     <div class="card"><div class="card-label">Open Positions</div><div class="card-val" id="d-open">--</div></div>
-    <div class="card"><div class="card-label">Unrealized P&L</div><div class="card-val amber" id="d-upnl">~$--</div></div>
+    <div class="card">
+      <div class="card-label">Unrealized P&L</div>
+      <div style="display:flex;align-items:center">
+        <div class="card-val amber" id="d-upnl" style="flex:1">$--</div>
+        <div class="pnl-spark" id="pnl-sparkline"></div>
+      </div>
+    </div>
     <div class="card"><div class="card-label">Win Rate</div><div class="card-val" id="d-winrate">--%</div></div>
     <div class="card"><div class="card-label">Total Signals (7d)</div><div class="card-val" id="d-signals">--</div></div>
   </div>
+  <!-- Sprint 22 Item 3: DK activity chips -->
+  <div class="dk-chips" id="dk-activity-chips"></div>
   <!-- Sprint 21 Item 1: Start of Day checklist panel (collapsed by default) -->
   <div class="sod-panel" id="sod-panel">
     <div class="sod-header" onclick="toggleSodPanel()" id="sod-header">
@@ -154,11 +172,9 @@ tr:hover td { background: var(--bg3); }
     <div class="panel-title">AI POSITION ADVISOR</div>
     <div id="ai-advisor-body"><div class="empty-state" style="padding:14px">Loading advisory…</div></div>
   </div>
-  <h3 style="font-size:15px;color:var(--text3);margin-bottom:12px;font-family:var(--mono);">STRATEGY BREAKDOWN</h3>
-  <table id="dash-strategy-table">
-    <thead><tr><th>Strategy</th><th>Signals</th><th>Traded</th><th>Win Rate</th><th>P&L</th></tr></thead>
-    <tbody id="dash-strategy-body"></tbody>
-  </table>
+  <!-- Sprint 22 Item 3: strategy bar chart (renderStrategyChart targets this div) -->
+  <h3 style="font-size:12px;color:var(--text3);margin-bottom:10px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Strategy Breakdown</h3>
+  <div id="strategy-chart" style="margin-bottom:24px"></div>
 </div>
 
 <div class="view" id="view-positions">
@@ -179,8 +195,11 @@ tr:hover td { background: var(--bg3); }
     </div>
     <div id="ord-msg" class="order-msg"></div>
   </div>
+  <!-- Sprint 22 Item 2: symbol search filter -->
+  <input class="pos-search" id="pos-search" type="text" placeholder="Search symbol or strategy…"
+         oninput="loadPositions()" autocomplete="off">
   <table id="pos-table">
-    <thead><tr><th>Symbol</th><th>Dir</th><th>Strategy</th><th>Shares</th><th>Entry</th><th>Price</th><th>P&amp;L</th><th>Stop</th><th>Hold</th><th>Status</th><th>Action</th></tr></thead>
+    <thead><tr><th>Symbol</th><th>Dir</th><th>Strategy</th><th>Shares</th><th>Entry</th><th>Price</th><th>P&amp;L</th><th>Stop</th><th>Hold</th><th>DK</th><th>Status</th><th>Action</th></tr></thead>
     <tbody id="pos-body"></tbody>
   </table>
 </div>
@@ -209,6 +228,19 @@ tr:hover td { background: var(--bg3); }
 
 <div class="view" id="view-signals">
   <div class="filter-row">
+    <!-- Sprint 22 Item 1: date scope toggle -->
+    <select id="sig-date-scope" onchange="loadSignals()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:14px">
+      <option value="TODAY">Today</option>
+      <option value="7D">Last 7d</option>
+      <option value="ALL">All</option>
+    </select>
+    <!-- Sprint 22 Item 1: tier filter -->
+    <select id="sig-tier" onchange="loadSignals()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:14px">
+      <option value="">All Tiers</option>
+      <option value="STRONG">STRONG</option>
+      <option value="WATCH">WATCH</option>
+      <option value="SUPPRESSED">SUPPRESSED</option>
+    </select>
     <select id="sig-strategy" onchange="loadSignals()">
       <option value="">All Strategies</option>
       <option value="UOA">UOA</option><option value="PEAD">PEAD</option>
@@ -236,7 +268,8 @@ tr:hover td { background: var(--bg3); }
     <button class="strat-info-btn" onclick="toggleStrategyInfo('SHORT', this)">SHORT ⓘ</button>
   </div>
   <table id="sig-table">
-    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Score</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
+    <!-- Sprint 22 Item 1: Score hidden, trigger_source column added -->
+    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
     <tbody id="sig-body"></tbody>
   </table>
 </div>
@@ -456,8 +489,10 @@ function refreshActiveView() {
 checkHealth();
 loadDashboard();
 populateStrategyFilter();
+updateMarketStatus();
 setInterval(refreshActiveView, 60000);
 setInterval(checkHealth, 60000);
+setInterval(updateMarketStatus, 60000);
 // Sprint 16 Item 5: Positions tab polls live P&L every 30s while it is active.
 setInterval(() => {
   const active = document.querySelector('.view.active');

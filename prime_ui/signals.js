@@ -1,20 +1,20 @@
-// Sprint 20 Item 3: DK STATUS badge -- three-state (PENDING / CONFIRMED /
-// NULLIFIED retired; Sprint 20 vocabulary: CONFIRMING / NEUTRAL / NULLIFYING).
+// Sprint 20 Item 3: DK STATUS badge colors -- NEUTRAL default (PENDING retired).
+// Sprint 22 Item 1: date scope, tier filter, trigger_source column, relative time,
+//                   SUPPRESSED row styling, Score column hidden.
+
 function dkBadgeClass(dk) {
   if (dk === 'CONFIRMING') return 'confirming';   // green
   if (dk === 'NULLIFYING') return 'nullifying';   // red
   return 'neutral';                               // NEUTRAL / unknown -> grey
 }
 
-// Map raw dk_status to a short badge label (fits badge width).
 function dkBadgeLabel(dk) {
   if (dk === 'CONFIRMING') return 'CONFIRM';
   if (dk === 'NULLIFYING') return 'NULLIFY';
   return 'NEUTRAL';
 }
 
-// Item 3c: populate the strategy filter from the actual strategies in the DB
-// instead of a hardcoded list. Preserves the current selection.
+// Item 3c: populate the strategy filter from the actual strategies in the DB.
 async function populateStrategyFilter() {
   try {
     const resp = await fetch(API + '/strategies');
@@ -27,9 +27,67 @@ async function populateStrategyFilter() {
       opt.value = s; opt.textContent = s;
       sel.appendChild(opt);
     });
-    sel.value = current; // keep selection if still present
+    sel.value = current;
   } catch (e) {
     console.error('populateStrategyFilter:', e);
+  }
+}
+
+// Sprint 22 Item 1: relative time formatting.
+function _fmtRelTime(scanTs) {
+  if (!scanTs) return '--';
+  try {
+    const d = new Date(scanTs.replace(' ', 'T'));
+    const now = new Date();
+    const todayStr = now.toISOString().substring(0, 10);
+    const tsStr = scanTs.substring(0, 10);
+    const timeStr = scanTs.substring(11, 16);
+    if (tsStr === todayStr) return 'Today ' + timeStr;
+    // Within last 7 days: show "Jun 2 10:12"
+    const diffMs = now - d;
+    if (diffMs < 7 * 86400 * 1000) {
+      const mo = d.toLocaleString('en-US', { month: 'short' });
+      return mo + ' ' + d.getDate() + ' ' + timeStr;
+    }
+    return scanTs.substring(0, 16);
+  } catch (e) {
+    return (scanTs || '').substring(0, 16);
+  }
+}
+
+// Sprint 22 Item 1: date scope filter.
+function _dateScopeFilter(signals) {
+  const scope = document.getElementById('sig-date-scope');
+  const val = scope ? scope.value : 'ALL';
+  if (val === 'ALL') return signals;
+  const now = new Date();
+  const todayStr = now.toISOString().substring(0, 10);
+  return signals.filter(s => {
+    const ts = (s.scan_ts || '').substring(0, 10);
+    if (val === 'TODAY') return ts === todayStr;
+    if (val === '7D') {
+      const d = new Date(ts);
+      return (now - d) <= 7 * 86400 * 1000;
+    }
+    return true;
+  });
+}
+
+// Sprint 22 Item 1: tier filter.
+function _tierFilter(signals) {
+  const sel = document.getElementById('sig-tier');
+  const val = sel ? sel.value : '';
+  if (!val) return signals;
+  return signals.filter(s => (s.tier || '').toUpperCase() === val);
+}
+
+// Sprint 22 Item 1: extract trigger_source from factors JSON.
+function _triggerSource(s) {
+  try {
+    const f = typeof s.factors === 'string' ? JSON.parse(s.factors || '{}') : (s.factors || {});
+    return f.trigger_source || s.trigger_source || '--';
+  } catch (e) {
+    return '--';
   }
 }
 
@@ -47,27 +105,33 @@ async function loadSignals() {
     const data = await resp.json();
     const tbody = document.getElementById('sig-body');
     tbody.innerHTML = '';
-    const signals = data.signals || [];
+    let signals = data.signals || [];
+
+    // Sprint 22 Item 1: client-side date scope and tier filters.
+    signals = _dateScopeFilter(signals);
+    signals = _tierFilter(signals);
+
     if (!signals.length) {
       tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No signals found</td></tr>';
       return;
     }
     signals.forEach(s => {
-      // Sprint 20 Item 3: NEUTRAL is the default (PENDING retired).
       const dk = (s.dk_status || 'NEUTRAL').toUpperCase();
       const dkClass = dkBadgeClass(dk);
       const dkLabel = dkBadgeLabel(dk);
-      // Tooltip: show dk_conviction when available (e.g. "Conviction: 0.82").
       const convTitle = (s.dk_conviction != null)
         ? ` title="Conviction: ${Number(s.dk_conviction).toFixed(2)}"` : '';
-      // Item 3a: show "--" instead of 0 when score is null/zero (no ML score yet)
-      const scoreVal = s.score ? s.score : null;
-      const scoreStr = scoreVal ? scoreVal : '--';
-      tbody.innerHTML += `<tr>
-        <td style="font-family:var(--mono);font-size:13px">${(s.scan_ts || '').substring(0, 16)}</td>
+      const trigger = _triggerSource(s);
+      const relTime = _fmtRelTime(s.scan_ts);
+      const isSuppressed = (s.status || '').toUpperCase() === 'SUPPRESSED';
+      // SUPPRESSED rows: muted opacity + red left border.
+      const rowStyle = isSuppressed
+        ? ' style="opacity:0.55;border-left:3px solid #C00000"' : '';
+      tbody.innerHTML += `<tr${rowStyle}>
+        <td style="font-family:var(--mono);font-size:13px" title="${s.scan_ts || ''}">${relTime}</td>
         <td style="font-weight:600">${s.symbol || '--'}</td>
         <td>${s.strategy || '--'}</td>
-        <td style="font-family:var(--mono)">${scoreStr}</td>
+        <td style="font-family:var(--mono);font-size:12px;color:var(--amber)">${trigger}</td>
         <td>${s.tier || '--'}</td>
         <td><span class="badge ${dkClass}"${convTitle}>${dkLabel}</span></td>
         <td style="font-family:var(--mono)">$${(s.entry_price || 0).toFixed(2)}</td>
