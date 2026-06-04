@@ -48,9 +48,13 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
     with get_connection(db_path) as conn:
         conn.execute(_PRIME_SIGNALS_SCHEMA)
         conn.execute(_PRIME_SIGNALS_INDEX)
-        # DK-001 migration: add dk_score and dk_status columns
+        # DK-001 migration: add dk_score and dk_status columns.
+        # Sprint 20 Item 1: dk_status is a three-state quality modifier
+        # (CONFIRMING / NEUTRAL / NULLIFYING); NEUTRAL is the default and the
+        # retired PENDING state. dk_conviction is a 0.0-1.0 confidence score.
         _migrate_add_column(conn, "prime_signals", "dk_score", "REAL")
-        _migrate_add_column(conn, "prime_signals", "dk_status", "TEXT DEFAULT 'PENDING'")
+        _migrate_add_column(conn, "prime_signals", "dk_status", "TEXT DEFAULT 'NEUTRAL'")
+        _migrate_add_column(conn, "prime_signals", "dk_conviction", "REAL")
         # IDX-001 migration: add instrument_type column
         _migrate_add_column(conn, "prime_signals", "instrument_type", "TEXT DEFAULT 'EQUITY'")
         # IDX-OPT-001 migration: add option fields
@@ -67,6 +71,11 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
         _migrate_add_column(conn, "prime_signals", "rejection_stage", "TEXT")
         # Sprint 17 Item 3 migration: borrow rate for confirmed-borrowable shorts
         _migrate_add_column(conn, "prime_signals", "borrow_rate_pct", "REAL")
+        # Sprint 20 Item 1: retire PENDING and the old CONFIRMED/NULLIFIED names;
+        # rename existing dk_status rows to the three-state vocabulary. Idempotent.
+        conn.execute("UPDATE prime_signals SET dk_status='NEUTRAL' WHERE dk_status='PENDING'")
+        conn.execute("UPDATE prime_signals SET dk_status='CONFIRMING' WHERE dk_status='CONFIRMED'")
+        conn.execute("UPDATE prime_signals SET dk_status='NULLIFYING' WHERE dk_status='NULLIFIED'")
         conn.commit()
 
 

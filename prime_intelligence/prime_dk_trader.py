@@ -11,10 +11,13 @@ Classification:
     NULLIFIER -- dk_status NULLIFYING: activity that suppresses other signals.
     (NEUTRAL / UNAVAILABLE produce no DK row.)
 
-dk_status propagation onto non-DK signals:
-    CONFIRMED -- a DK SIGNAL exists for the symbol (DK agrees).
-    NULLIFIED -- a DK NULLIFIER exists for the symbol (DK opposes).
-    PENDING   -- no DK verdict for the symbol.
+dk_status propagation onto non-DK signals (Sprint 20 three-state; PENDING retired):
+    CONFIRMING -- institutional dark-pool BUYING on the symbol (a DK SIGNAL row).
+    NULLIFYING -- institutional dark-pool SELLING on the symbol (a DK NULLIFIER row).
+    NEUTRAL    -- no significant DK activity for the symbol.
+dk_status is the ABSOLUTE dark-pool direction; the direction-aware EFFECT (upgrade
+vs suppress, per the Section 3 reference table) is applied by the PSA and short
+scanners. dk_conviction (0.0-1.0) is propagated alongside dk_status.
 
 Nullifier suppression: any APPROVED non-DK signal whose symbol carries an
 active DK NULLIFIER is flipped to status='SUPPRESSED', removing it from the
@@ -40,6 +43,29 @@ logger = logging.getLogger("prime_dk_trader")
 # DK row tiers (also used as the strategy-level classification label).
 TIER_SIGNAL = "SIGNAL"
 TIER_NULLIFIER = "NULLIFIER"
+
+# Sprint 20 Item 1: three-state dk_status vocabulary (PENDING retired).
+DK_CONFIRMING = "CONFIRMING"   # institutional dark-pool buying
+DK_NULLIFYING = "NULLIFYING"   # institutional dark-pool selling
+DK_NEUTRAL = "NEUTRAL"         # no significant DK activity
+
+# Map a DK row's tier to the absolute three-state dark-pool direction.
+_TIER_TO_STATE = {TIER_SIGNAL: DK_CONFIRMING, TIER_NULLIFIER: DK_NULLIFYING}
+
+
+def _compute_conviction(dk: Dict[str, Any],
+                        matured: Optional[Dict[str, Any]] = None) -> float:
+    """DK confidence in [0,1] for a CONFIRMING/NULLIFYING row (Sprint 20 Item 1).
+
+    Blends the legacy composite dk_score and the matured print_score. A NULLIFYING
+    short-volume override carries high conviction even when dk_score is 0.
+    """
+    dk_score = dk.get("dk_score") or 0.0
+    print_score = (matured or {}).get("print_score") or 0.0
+    base = max(dk_score, print_score) / 100.0
+    if (dk.get("dk_status") == DK_NULLIFYING) and base < 0.5:
+        base = 0.5  # a hard NULLIFYING override is high-conviction by construction
+    return round(min(max(base, 0.0), 1.0), 3)
 
 
 def classify_dk(dk: Dict[str, Any]) -> Optional[str]:
@@ -127,10 +153,12 @@ def _write_dk_row(symbol: str, dk: Dict[str, Any], classification: str,
         db_path=db_path,
     )
     if signal_id is not None:
+        conviction = _compute_conviction(dk, matured)
         with get_connection(db_path) as conn:
             conn.execute(
-                "UPDATE prime_signals SET dk_score=?, dk_status=? WHERE signal_id=?",
-                (dk.get("dk_score"), dk.get("dk_status"), signal_id),
+                "UPDATE prime_signals SET dk_score=?, dk_status=?, dk_conviction=? "
+                "WHERE signal_id=?",
+                (dk.get("dk_score"), dk.get("dk_status"), conviction, signal_id),
             )
             conn.commit()
     return signal_id
@@ -208,40 +236,87 @@ def get_dk_signals(db_path: Optional[Path] = None) -> Set[str]:
         return {r[0] for r in rows}
 
 
-def propagate_dk_status(db_path: Optional[Path] = None) -> Dict[str, int]:
-    """Set dk_status on all non-DK signals based on DK verdicts.
+def _dk_verdicts(db_path: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
+    """Per-symbol DK verdict {symbol: {state, conviction}} from DK rows.
 
-    CONFIRMED if a DK SIGNAL exists for the symbol, NULLIFIED if a DK NULLIFIER
-    exists (NULLIFIER takes precedence), otherwise PENDING.
+    NULLIFYING takes precedence over CONFIRMING for the same symbol. Conviction
+    is the DK row's dk_conviction.
     """
-    nullifiers = get_active_nullifiers(db_path)
-    signals = get_dk_signals(db_path) - nullifiers
-    counts = {"CONFIRMED": 0, "NULLIFIED": 0, "PENDING": 0}
+    out: Dict[str, Dict[str, Any]] = {}
     with get_connection(db_path) as conn:
-        if nullifiers:
-            q = ",".join("?" for _ in nullifiers)
-            counts["NULLIFIED"] = conn.execute(
-                f"UPDATE prime_signals SET dk_status='NULLIFIED' "
-                f"WHERE strategy!='DK' AND symbol IN ({q})", tuple(nullifiers),
+        rows = conn.execute(
+            "SELECT symbol, tier, dk_conviction FROM prime_signals WHERE strategy='DK'"
+        ).fetchall()
+    for r in rows:
+        sym = r["symbol"]
+        state = _TIER_TO_STATE.get(r["tier"])
+        if state is None:
+            continue
+        prev = out.get(sym)
+        # NULLIFYING wins; otherwise first/any CONFIRMING.
+        if prev is None or (state == DK_NULLIFYING and prev["state"] != DK_NULLIFYING):
+            out[sym] = {"state": state, "conviction": r["dk_conviction"]}
+    return out
+
+
+def propagate_dk_status(db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Set dk_status + dk_conviction on all non-DK signals from DK verdicts.
+
+    Sprint 20 three-state: CONFIRMING if institutional buying (a DK SIGNAL row),
+    NULLIFYING if institutional selling (a DK NULLIFIER row, precedence), else
+    NEUTRAL. dk_conviction is copied from the DK row (NULL for NEUTRAL).
+    Returns counts keyed by the three states.
+    """
+    verdicts = _dk_verdicts(db_path)
+    counts = {DK_CONFIRMING: 0, DK_NULLIFYING: 0, DK_NEUTRAL: 0}
+    with get_connection(db_path) as conn:
+        for sym, v in verdicts.items():
+            counts[v["state"]] += conn.execute(
+                "UPDATE prime_signals SET dk_status=?, dk_conviction=? "
+                "WHERE strategy!='DK' AND symbol=?",
+                (v["state"], v["conviction"], sym),
             ).rowcount
-        if signals:
-            q = ",".join("?" for _ in signals)
-            counts["CONFIRMED"] = conn.execute(
-                f"UPDATE prime_signals SET dk_status='CONFIRMED' "
-                f"WHERE strategy!='DK' AND symbol IN ({q})", tuple(signals),
-            ).rowcount
-        verdict = nullifiers | signals
-        if verdict:
-            q = ",".join("?" for _ in verdict)
-            counts["PENDING"] = conn.execute(
-                f"UPDATE prime_signals SET dk_status='PENDING' "
-                f"WHERE strategy!='DK' AND symbol NOT IN ({q})", tuple(verdict),
+        if verdicts:
+            q = ",".join("?" for _ in verdicts)
+            counts[DK_NEUTRAL] += conn.execute(
+                f"UPDATE prime_signals SET dk_status='NEUTRAL', dk_conviction=NULL "
+                f"WHERE strategy!='DK' AND symbol NOT IN ({q})", tuple(verdicts),
             ).rowcount
         else:
-            counts["PENDING"] = conn.execute(
-                "UPDATE prime_signals SET dk_status='PENDING' WHERE strategy!='DK'"
+            counts[DK_NEUTRAL] += conn.execute(
+                "UPDATE prime_signals SET dk_status='NEUTRAL', dk_conviction=NULL "
+                "WHERE strategy!='DK'"
             ).rowcount
         conn.commit()
+    return counts
+
+
+def get_dk_status(symbol: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Absolute DK verdict for a symbol: {dk_status, dk_conviction}.
+
+    CONFIRMING (buying) / NULLIFYING (selling, precedence) / NEUTRAL (none).
+    Used by the PSA + short scanners and the AI advisory layer (Sprint 20).
+    """
+    v = _dk_verdicts(db_path).get((symbol or "").upper())
+    if v is None:
+        return {"dk_status": DK_NEUTRAL, "dk_conviction": None}
+    return {"dk_status": v["state"], "dk_conviction": v["conviction"]}
+
+
+def get_dk_status_counts(db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Count non-DK signals by propagated dk_status (Sprint 20 dashboard/briefing).
+
+    Returns {CONFIRMING, NEUTRAL, NULLIFYING}.
+    """
+    counts = {DK_CONFIRMING: 0, DK_NEUTRAL: 0, DK_NULLIFYING: 0}
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT dk_status, COUNT(*) AS n FROM prime_signals "
+            "WHERE strategy!='DK' GROUP BY dk_status"
+        ).fetchall()
+    for r in rows:
+        state = r["dk_status"] if r["dk_status"] in counts else DK_NEUTRAL
+        counts[state] += r["n"]
     return counts
 
 

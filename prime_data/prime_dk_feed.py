@@ -44,7 +44,9 @@ _DEFAULT_SCAN_RESULTS = _PROJECT_ROOT / "scan_results"
 _USE_UNUSUAL_WHALES = False
 
 # Print record keys -- the stable contract every implementation must satisfy.
-PRINT_KEYS = ("symbol", "price", "volume", "timestamp", "venue")
+# Sprint 20 Item 1: `direction` (LONG = buy-side / bullish, SHORT = sell-side /
+# bearish) lets the DK three-state classifier assess alignment with a signal.
+PRINT_KEYS = ("symbol", "price", "volume", "timestamp", "venue", "direction")
 
 
 def _get_uw_api_key() -> Optional[str]:
@@ -69,12 +71,18 @@ def _shape_print(raw: Dict[str, Any], default_symbol: str = "") -> Dict[str, Any
     # Accept legacy tape-print keys (size/ts) as well as the canonical keys.
     volume = raw.get("volume", raw.get("size", 0)) or 0
     timestamp = raw.get("timestamp", raw.get("ts", "")) or ""
+    # direction: accept an explicit direction, or map a buy/sell `side`.
+    # BUY -> LONG (institutional buying), SELL -> SHORT (institutional selling).
+    raw_dir = str(raw.get("direction", raw.get("side", "")) or "").strip().upper()
+    direction = {"BUY": "LONG", "SELL": "SHORT", "B": "LONG", "S": "SHORT"}.get(
+        raw_dir, raw_dir if raw_dir in ("LONG", "SHORT") else "LONG")
     return {
         "symbol": symbol,
         "price": float(raw.get("price", 0) or 0),
         "volume": int(volume),
         "timestamp": str(timestamp),
         "venue": str(raw.get("venue", "") or ""),
+        "direction": direction,
     }
 
 

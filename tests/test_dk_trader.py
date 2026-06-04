@@ -85,13 +85,20 @@ class TestPropagateAndSuppress(_Base):
         insert_signal("TSLA", "MTS", "2026-06-02 10:00", status="APPROVED", db_path=self.db)
         self._seed_dk()
         counts = dkt.propagate_dk_status(db_path=self.db)
-        self.assertEqual(counts["CONFIRMED"], 1)
-        self.assertEqual(counts["NULLIFIED"], 1)
-        self.assertEqual(counts["PENDING"], 1)
-        byc = {r["symbol"]: r["dk_status"] for r in get_signals(db_path=self.db) if r["strategy"] != "DK"}
-        self.assertEqual(byc["SPY"], "CONFIRMED")
-        self.assertEqual(byc["QQQ"], "NULLIFIED")
-        self.assertEqual(byc["TSLA"], "PENDING")
+        # Sprint 20 three-state (PENDING retired)
+        self.assertEqual(counts["CONFIRMING"], 1)
+        self.assertEqual(counts["NULLIFYING"], 1)
+        self.assertEqual(counts["NEUTRAL"], 1)
+        rows = [r for r in get_signals(db_path=self.db) if r["strategy"] != "DK"]
+        byc = {r["symbol"]: r["dk_status"] for r in rows}
+        self.assertEqual(byc["SPY"], "CONFIRMING")
+        self.assertEqual(byc["QQQ"], "NULLIFYING")
+        self.assertEqual(byc["TSLA"], "NEUTRAL")
+        # dk_conviction propagated onto CONFIRMING/NULLIFYING signals, NULL on NEUTRAL
+        conv = {r["symbol"]: r["dk_conviction"] for r in rows}
+        self.assertIsNotNone(conv["SPY"])
+        self.assertIsNotNone(conv["QQQ"])
+        self.assertIsNone(conv["TSLA"])
 
     def test_nullifier_suppresses_other_strategy(self):
         # A UOA approved signal on QQQ should be suppressed by the DK NULLIFIER
