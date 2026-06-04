@@ -150,6 +150,44 @@ def get_analytics_by_strategy():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/analytics/pnl-history", methods=["GET"])
+def get_pnl_history():
+    """GET /api/v1/analytics/pnl-history -- daily realized P&L for last 7 days.
+
+    Sprint 22 Item 3: feeds the Dashboard P&L sparkline. Returns up to 7 date
+    buckets (YYYY-MM-DD) with total realized P&L from closed prime_trade_log rows.
+    """
+    from prime_data.prime_db import get_pnl_history
+    try:
+        history = get_pnl_history(days=7)
+        return jsonify({"history": history}), 200
+    except Exception as e:
+        logger.error("pnl-history error: %s", e)
+        return jsonify({"history": [], "error": str(e)}), 200
+
+
+@api_bp.route("/instrument/<string:symbol>", methods=["GET"])
+def get_instrument(symbol):
+    """GET /api/v1/instrument/{symbol} -- Instrument detail stub.
+
+    Sprint 22 Item 5 (UII Data Model): returns 501 Not Implemented.
+    Full implementation deferred to v1.2 (UII Instrument Detail page).
+    Schema will include: quote, options chain summary, DK history,
+    signal history, PEAD context, sector/industry metadata.
+    """
+    return jsonify({
+        "status": "not_implemented",
+        "symbol": symbol.upper(),
+        "message": "Instrument detail endpoint is reserved for v1.2. "
+                   "See PRIME_UII_DataModel_v1_2_2026-06-04.docx for the planned schema.",
+        "planned_fields": [
+            "quote", "dk_status", "dk_history_7d", "signal_history",
+            "pead_context", "uoa_recent", "sector", "industry",
+            "options_chain_summary", "borrow_rate",
+        ],
+    }), 501
+
+
 @api_bp.route("/health", methods=["GET"])
 def health_check():
     """GET /api/v1/health -- server status, DB connection, last scan."""

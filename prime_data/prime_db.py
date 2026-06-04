@@ -216,6 +216,24 @@ def get_open_positions(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def get_pnl_history(days: int = 7, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Daily realized P&L for the last `days` calendar days (Sprint 22 Item 3).
+
+    Returns a list of {day: YYYY-MM-DD, pnl: float} dicts ordered ascending,
+    covering only days with closed trades. Used by the Dashboard sparkline.
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            f"""SELECT date(exit_time) AS day, SUM(pnl_dollars) AS pnl
+                FROM prime_trade_log
+                WHERE status='CLOSED' AND exit_time IS NOT NULL
+                  AND exit_time >= date('now', '-{days - 1} days')
+                GROUP BY day ORDER BY day ASC LIMIT ?""",
+            (days,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def update_trade_source(
     log_id: str,
     trade_source: str,
