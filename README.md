@@ -1,55 +1,149 @@
-# PRIME 1.0
+# PRIME v1.0
 
-PRIME (Portfolio Risk & Intelligence Management Engine) is an automated equity trading system that scans for unusual options activity, evaluates multi-factor signals via Claude-powered intelligence, manages positions through Schwab and TradeStation APIs, and delivers real-time notifications and daily digest reports. Built for a single-operator trading desk running on Windows.
+**PRIME** (Portfolio Risk & Intelligence Management Engine) is a signal-led algorithmic trading assistant for a single-operator equity trading desk running on Windows with a Schwab/ThinkOrSwim account in PAPER mode.
 
-## Module Map
+PRIME is not a technical scanner. Every signal requires a **predictive trigger** (unusual options activity or post-earnings drift) before technical confirmation is evaluated, then a **DK three-state modifier** (institutional dark-pool intelligence) determines final tier and disposition. The result is a dramatically lower false-signal rate compared to standard technical scanners.
 
-| Directory | Purpose |
-|---|---|
-| `prime_scanners/` | Scanner modules (UOA, PEAD, dark pool, sector rotation) |
-| `prime_intelligence/` | Factor evaluation, Claude advisor, dark pool analysis |
-| `prime_data/` | Database layer (SQLite trades DB, schema, queries) |
-| `prime_notifications/` | Notifier service, daily digest generator |
-| `prime_ops/` | Scheduler, health monitor, ops automation |
-| `prime_trading/` | Schwab/TradeStation execution, MATA (Multi-Asset Trading Adapter) |
-| `prime_gui/` | Tkinter UI app and all trader tabs |
-| `prime_config/` | Config reader and validation |
-| `tests/` | One test file per module |
-| `data/` | Runtime data (prime_trades.db) -- not committed |
-| `scan_results/` | Scanner output files |
-| `logs/` | Run logs -- not committed |
-| `PRIME1.0 Roadmap/` | Strategy docs, sprint briefs, requirements |
-| `PRIME1.0 Documentation/` | Technical specs, architecture docs, TIP paper |
-| `PRIME1.0 Reference/` | CIL, handoff docs, digest archive |
+---
 
-## Setup
+## v1.0 Release (2026-06-04)
 
-### ANTHROPIC_API_KEY (live AI advisory)
+**What v1.0 delivers:**
+- 8 live strategies: PSA, PEAD, UOA, SRS, MTS, IDX, DK, SHORT
+- Signal-led architecture: UOA_CALL / UOA_PUT / PEAD_BEAT / PEAD_MISS triggers required
+- DK three-state modifier: CONFIRMING / NEUTRAL / NULLIFYING propagated to all signals
+- AI advisory layer: position advisor (HOLD/TRIM/EXIT), signal ranker, daily briefing
+- Lovable web UI: Dashboard, Positions, Signals tabs with live API binding
+- In-app help system: ? modal, strategy ⓘ popovers, Start of Day checklist, searchable glossary
+- PAPER mode only — all execution simulated via Schwab paper trading account
 
-PRIME's AI advisory features (position advisory, signal ranker, briefing panel)
-call Claude (`claude-sonnet-4-20250514`). Without a key, these features degrade
-gracefully to deterministic placeholders. To enable live recommendations, set
-the key **in your environment** before starting the API server:
+**Deferred to v1.1:** Unusual Whales live DK feed, ML signal scoring, UI modernization (Sprint 22).
 
+---
+
+## How to Start PRIME
+
+Open three terminals in `C:\Dev\PRIME1.0\`:
+
+**1. API Server (port 5001)**
 ```powershell
-# PowerShell (per-session)
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-# or persist for the user:
-setx ANTHROPIC_API_KEY "sk-ant-..."
-```
-
-The environment is the preferred and authoritative source. As a fallback, the
-key may be placed in the gitignored `ops_config.json` under `anthropic_api_key`
-(never committed). On startup, `prime_startup.run_startup_checks()` runs first:
-it uses the env var if present, otherwise loads the key from `ops_config.json`
-(with a WARN), otherwise prints a clear WARN and continues in degraded mode.
-
-```powershell
-# Verify the key resolves before starting the server:
-python prime_startup.py
-# Start the API server (runs the startup check first):
 python prime_api/prime_api_server.py
 ```
 
-The startup check is wired as the first call in `prime_api_server.py`. With a
-key set, `GET /api/v1/advisory/positions` returns live Claude recommendations.
+**2. UI Server (port 5002)**
+```powershell
+python prime_ui/prime_ui_server.py
+```
+
+**3. Open the Lovable UI**
+Navigate to `http://localhost:5002` in your browser.
+
+The v0.9 Tkinter desktop GUI (still active for scan execution) is launched separately:
+```powershell
+cd C:\Dev\PRIME
+python prime_gui_app.py
+```
+
+---
+
+## Documentation
+
+All reference documents are in `PRIME1.0 Reference\`:
+
+| Document | Purpose |
+|---|---|
+| `PRIME_UserManual_v1_0_2026-06-04.docx` | User manual for Christy beta — daily routine, all strategies, DK guide, position management |
+| `PRIME_UI_Audit_2026-06-04_v1_0.docx` | UI audit report — Sprint 22 execution roadmap |
+| `PRIME_ReleaseNotes_v1_0_2026-06-04.docx` | v1.0 release notes and v1.1 roadmap |
+| `PRIME_v1_0_FeatureMatrix.docx` | Feature status table — all strategies and systems |
+| `PRIME_WorkOrder_Sprint*.docx` | Per-sprint work orders |
+| `PRIME_ChatHandoff_Sprint*.docx` | Per-sprint handoff documents |
+
+---
+
+## Architecture
+
+### Signal Flow
+```
+Predictive Trigger (UOA / PEAD)
+        ↓
+Technical Confirmation (A-B-C-D, SMA, RS ratio)
+        ↓
+DK Three-State Modifier (dark-pool intelligence)
+        ↓
+prime_signals DB  →  PSA gate  →  short scanner  →  Lovable UI  →  AI advisory
+```
+
+### Module Map
+
+| Directory | Purpose |
+|---|---|
+| `prime_scanners/` | Scanner modules — PSA, PEAD, UOA, SRS, MTS, IDX |
+| `prime_intelligence/` | DK trader, short scanner, signal triggers, AI advisory |
+| `prime_ai/` | Claude-powered position advisor, signal ranker, briefing panel |
+| `prime_data/` | Database layer — prime_db.py, prime_dk_feed.py, prime_signals_db.py |
+| `prime_analytics/` | Unified signals DB layer, analytics queries |
+| `prime_api/` | Flask REST API (port 5001) serving the Lovable UI |
+| `prime_ui/` | Lovable web UI — index.html, dashboard.js, signals.js, help.js |
+| `prime_trading/` | Schwab execution, MATA account routing, borrow check |
+| `prime_config/` | Config reader, OpsConfig schema |
+| `prime_ops/` | Scheduler, health monitor, ops events |
+| `prime_gui/` | v1.0 trade management panel (v0.9 GUI is at C:\Dev\PRIME) |
+| `tests/` | 790 tests — one file per module |
+| `scan_results/` | Scanner output and DK print files |
+| `PRIME1.0 Reference/` | Sprint handoffs, work orders, user manual, release notes |
+
+---
+
+## Setup
+
+### Prerequisites
+- Python 3.10+
+- `pip install -r requirements.txt`
+- Schwab account with PAPER trading enabled
+- `ops_config.json` (gitignored) — see `ops_config.json.example` for schema
+
+### ANTHROPIC_API_KEY (AI advisory)
+
+PRIME's AI features call `claude-sonnet-4-20250514`. Without a key the advisory
+degrades gracefully to deterministic placeholders. Set the key before starting:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+# or persist:
+setx ANTHROPIC_API_KEY "sk-ant-..."
+```
+
+The startup check runs automatically when the API server starts. Verify first:
+```powershell
+python prime_startup.py
+```
+
+### ops_config.json (never committed)
+Controls runtime toggles:
+```json
+{
+  "use_signal_led_psa": true,
+  "use_ai_ranker": true,
+  "polygon_api_key": "...",
+  "anthropic_api_key": "..."
+}
+```
+
+---
+
+## Key Design Principles
+
+1. **Signal-led, not technical-led.** No signal ever enters `prime_signals` without a predictive trigger. Technical-only candidates are rejected or held at WATCH.
+
+2. **All DB access through `prime_db.py`.** No direct SQLite calls outside the data layer.
+
+3. **No trading logic in `prime_gui/`.** The GUI renders state; it does not compute signals.
+
+4. **PAPER mode always.** `config.json` enforces PAPER. No real execution in v1.0.
+
+5. **`config.json` and `ops_config.json` are never committed.** Both are gitignored.
+
+---
+
+*© 2026 xFormative AI · Provisional Patent #63/954,078 · INTERNAL*
