@@ -423,6 +423,11 @@ def apply_signal_led_psa(scan_result: Dict[str, Any],
     (visible, not auto-approved). Adds trigger_source ('UOA_CALL'|'PEAD_BEAT'|
     'NONE') and approval_status ('APPROVED'|'WATCH') to each signal. When
     use_signal_led_psa is false, reverts to legacy technical-only (all APPROVED).
+
+    Sprint 20 Item 2: after signal-led gating, apply DK three-state modifier.
+    CONFIRMING -> WATCH promoted to STRONG; APPROVED gains dk_confirming flag.
+    NULLIFYING -> signal SUPPRESSED (suppression_reason='DK_NULLIFYING').
+    NEUTRAL -> pass through. dk_status and dk_conviction stamped on every signal.
     """
     from prime_intelligence.prime_signal_triggers import psa_trigger_source
 
@@ -444,6 +449,56 @@ def apply_signal_led_psa(scan_result: Dict[str, Any],
     scan_result["signal_led"] = use_signal_led
     scan_result["approved_count"] = approved
     scan_result["watch_count"] = watch
+    # Sprint 20 Item 2: DK three-state modifier applied after signal-led gating.
+    return _apply_dk_modifier_psa(scan_result, db_path)
+
+
+def _apply_dk_modifier_psa(scan_result: Dict[str, Any],
+                            db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Sprint 20 Item 2: Apply DK three-state modifier to PSA signals.
+
+    Per the Sprint 20 DK reference table (long-signal effects):
+      CONFIRMING  -> WATCH promoted to STRONG; if already APPROVED, add
+                     dk_confirming=True flag for AI ranker weighting.
+      NEUTRAL     -> signal passes through unchanged.
+      NULLIFYING  -> signal suppressed: approval_status='SUPPRESSED',
+                     suppression_reason='DK_NULLIFYING'.
+    dk_status and dk_conviction are stamped on every signal dict (graceful
+    degradation: missing DK data defaults to NEUTRAL).
+    """
+    try:
+        from prime_intelligence.prime_dk_trader import get_dk_status
+    except Exception:
+        return scan_result  # DK layer unavailable; skip modifier silently
+
+    confirming_cnt = nullified_cnt = watch_upgraded_cnt = 0
+    for sig in scan_result.get("signals", []):
+        symbol = (sig.get("symbol") or "").upper()
+        try:
+            verdict = get_dk_status(symbol, db_path)
+        except Exception:
+            verdict = {"dk_status": "NEUTRAL", "dk_conviction": None}
+        dk_st = verdict.get("dk_status") or "NEUTRAL"
+        dk_conv = verdict.get("dk_conviction")
+        sig["dk_status"] = dk_st
+        sig["dk_conviction"] = dk_conv
+
+        if dk_st == "CONFIRMING":
+            confirming_cnt += 1
+            cur = sig.get("approval_status", "WATCH")
+            if cur == "WATCH":
+                sig["approval_status"] = "STRONG"
+                watch_upgraded_cnt += 1
+            else:
+                sig["dk_confirming"] = True
+        elif dk_st == "NULLIFYING":
+            sig["approval_status"] = "SUPPRESSED"
+            sig["suppression_reason"] = "DK_NULLIFYING"
+            nullified_cnt += 1
+
+    scan_result["dk_confirming_count"] = confirming_cnt
+    scan_result["dk_nullified_count"] = nullified_cnt
+    scan_result["dk_watch_upgraded"] = watch_upgraded_cnt
     return scan_result
 
 

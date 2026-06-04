@@ -217,10 +217,19 @@ def run_short_scan(
     pead_by_symbol: Optional[Dict[str, Dict[str, Any]]] = None,
     borrow_fn=None,
     dk_signals: Optional[Set[str]] = None,
+    dk_verdicts: Optional[Dict[str, Dict[str, Any]]] = None,
     now: Optional[datetime] = None,
     enforce_rth: bool = True,
 ) -> Dict[str, Any]:
-    """Signal-led short scan with RTH, DK-bullish, and borrow hard-gates."""
+    """Signal-led short scan with RTH, DK three-state, and borrow hard-gates.
+
+    Sprint 20 Item 2: dk_verdicts {symbol: {state, conviction}} replaces the
+    binary dk_signals set. Three-state logic per the DK reference table:
+      CONFIRMING -> dk_blocked (institutional buying opposes short thesis).
+      NULLIFYING -> tier upgrade WATCH->STRONG (institutional selling confirms).
+      NEUTRAL    -> signal passes through unchanged.
+    Legacy dk_signals (set of CONFIRMING symbols) still accepted for compat.
+    """
     from prime_data.prime_db import log_ops_event
 
     init_signals_table(db_path)
@@ -244,8 +253,8 @@ def run_short_scan(
 
     summary: Dict[str, Any] = {
         "scan_ts": scan_ts, "scanned": 0, "written": [], "rejected": [],
-        "unconfirmed": [], "dk_blocked": [], "borrow_blocked": [],
-        "errors": [], "rth_blocked": False,
+        "unconfirmed": [], "dk_blocked": [], "dk_upgraded": [],
+        "borrow_blocked": [], "errors": [], "rth_blocked": False,
     }
 
     if enforce_rth and not is_regular_hours(now):
@@ -255,12 +264,18 @@ def run_short_scan(
                       severity="INFO", db_path=db_path)
         return summary
 
-    if dk_signals is None:
-        try:
-            from prime_intelligence.prime_dk_trader import get_dk_signals
-            dk_signals = get_dk_signals(db_path)
-        except Exception:
-            dk_signals = set()
+    # Build the dk_verdicts lookup (three-state).
+    # dk_verdicts takes precedence; dk_signals (legacy set) is treated as CONFIRMING.
+    if dk_verdicts is None:
+        if dk_signals is not None:
+            dk_verdicts = {s.upper(): {"state": "CONFIRMING", "conviction": None}
+                           for s in dk_signals}
+        else:
+            try:
+                from prime_intelligence.prime_dk_trader import _dk_verdicts
+                dk_verdicts = {k.upper(): v for k, v in _dk_verdicts(db_path).items()}
+            except Exception:
+                dk_verdicts = {}
 
     def _bars(sym):
         return bars_by_symbol.get(sym) if bars_by_symbol is not None else None
@@ -302,8 +317,11 @@ def run_short_scan(
                 summary["unconfirmed"].append(symbol)
                 continue
 
-            # Gate: DK bullish hard-block (never short into accumulation).
-            if symbol in (dk_signals or set()):
+            # Sprint 20 Item 2: DK three-state gate.
+            sym_dk = (dk_verdicts or {}).get(symbol.upper(), {})
+            dk_state = sym_dk.get("state")
+            if dk_state == "CONFIRMING":
+                # institutional buying opposes short thesis -> hard-block.
                 summary["dk_blocked"].append(symbol)
                 log_ops_event("SHORT_BLOCK", "short_scanner", symbol=symbol,
                               detail="dk_bullish_block", severity="INFO", db_path=db_path)
@@ -313,6 +331,15 @@ def run_short_scan(
             if verdict is None:
                 summary["rejected"].append(symbol)
                 continue
+
+            # Sprint 20 Item 2: NULLIFYING = institutional selling confirms short.
+            # Upgrade tier WATCH -> STRONG.
+            if dk_state == "NULLIFYING" and verdict["tier"] == "WATCH":
+                verdict = dict(verdict)
+                verdict["tier"] = "STRONG"
+                verdict["classification"] = "STRONG_SHORT"
+                verdict["dk_tier_upgrade"] = True
+                summary["dk_upgraded"].append(symbol)
 
             # Gate: borrow hard-block (no borrow = no signal).
             borrow = check_borrow(symbol, borrow_fn=borrow_fn)
@@ -328,6 +355,8 @@ def run_short_scan(
                 "triggers": verdict["triggers"],
                 "metrics": metrics,
                 "borrow_source": borrow.get("source"),
+                "dk_state": dk_state or "NEUTRAL",
+                "dk_conviction": sym_dk.get("conviction"),
             }
             insert_signal_dedup(
                 symbol=symbol, strategy="SHORT", scan_ts=scan_ts,
@@ -343,10 +372,10 @@ def run_short_scan(
             summary["errors"].append({"symbol": symbol, "error": str(e)})
 
     logger.info("SHORT scan: %d scanned, %d written, %d rejected, %d unconfirmed, "
-                "%d dk-blocked, %d borrow-blocked", summary["scanned"],
+                "%d dk-blocked, %d dk-upgraded, %d borrow-blocked", summary["scanned"],
                 len(summary["written"]), len(summary["rejected"]),
                 len(summary["unconfirmed"]), len(summary["dk_blocked"]),
-                len(summary["borrow_blocked"]))
+                len(summary["dk_upgraded"]), len(summary["borrow_blocked"]))
     return summary
 
 
