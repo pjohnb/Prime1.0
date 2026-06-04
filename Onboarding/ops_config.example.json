@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy this file to ops_config.json (never committed). Replace PLACEHOLDER values with real keys.",
+
+  "anthropic_api_key": "sk-ant-PLACEHOLDER",
+  "polygon_api_key": "POLYGON_PLACEHOLDER",
+
+  "use_signal_led_psa": true,
+  "use_ai_ranker": true,
+
+  "schwab_client_id": "SCHWAB_APP_KEY_PLACEHOLDER",
+  "schwab_client_secret": "SCHWAB_APP_SECRET_PLACEHOLDER",
+  "schwab_redirect_uri": "https://127.0.0.1:8182",
+  "schwab_account_hash": "SCHWAB_ACCOUNT_HASH_PLACEHOLDER",
+
+  "mata_ira_accounts": [],
+  "mata_margin_accounts": [],
+  "mata_default": "margin",
+
+  "short_stop_loss_pct": 5.0,
+  "short_time_stop_minutes": 4320,
+
+  "api_token": "CHANGE_ME_BEFORE_RUNNING",
+
+  "scan_schedule": {
+    "psa":   "09:45,11:30,13:30",
+    "uoa":   "09:35,11:00,14:00",
+    "pead":  "09:40,13:00",
+    "short": "12:45"
+  }
+}

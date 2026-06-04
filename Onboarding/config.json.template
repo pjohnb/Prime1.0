@@ -1,0 +1,70 @@
+{
+  "_comment": "Copy this file to config.json at C:\\Dev\\PRIME1.0\\config.json. Replace PLACEHOLDER values. Never commit config.json.",
+
+  "trading_mode": "PAPER",
+  "api_token": "CHANGE_THIS_TO_A_RANDOM_SECRET_STRING",
+
+  "polygon_api_key": "POLYGON_API_KEY_PLACEHOLDER",
+  "finnhub_api_key": "",
+
+  "schwab_snapshot": {
+    "schwab_token_path": "C:\\Dev\\PRIME1.0\\cache\\schwab_token.json",
+    "schwab_app_key": "SCHWAB_APP_KEY_PLACEHOLDER",
+    "schwab_app_secret": "SCHWAB_APP_SECRET_PLACEHOLDER",
+    "schwab_callback_url": "https://127.0.0.1:8182",
+    "snapshot_batch_size": 500,
+    "snapshot_request_timeout": 30,
+    "snapshot_max_retries": 2,
+    "snapshot_retry_delay": 2
+  },
+
+  "polygon": {
+    "include_extended_hours": true,
+    "market_status": "ALL",
+    "after_hours": true,
+    "pre_market": true
+  },
+
+  "execution": {
+    "trailing_stop_pct": 5.0,
+    "position_size_pct": 2.0,
+    "max_position_value": 10000,
+    "auto_execute": false,
+    "market_orders_only": true
+  },
+
+  "risk_management": {
+    "max_portfolio_risk": 10.0,
+    "max_daily_orders": 5,
+    "account_balance": 100000,
+    "emergency_stop_loss": 8.0
+  },
+
+  "order_book": {
+    "enabled": true,
+    "mode": "supplement",
+    "max_spread_percentage": 0.5,
+    "min_liquidity_score": 7.0,
+    "max_imbalance_ratio": 3.0,
+    "min_stability": 5.0,
+    "confidence_threshold": 0.7,
+    "timeout": 10,
+    "retry_attempts": 2,
+    "bypass_reason": ""
+  },
+
+  "data_collection": {
+    "extended_hours_tracking": true,
+    "continue_after_market_close": true
+  },
+
+  "tradestation": {
+    "client_id": "",
+    "client_secret": "",
+    "account_id": "",
+    "access_token": "",
+    "refresh_token": "",
+    "token_expiry": "",
+    "last_refresh_date": ""
+  }
+}
