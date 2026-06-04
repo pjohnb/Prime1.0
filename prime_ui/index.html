@@ -64,12 +64,57 @@ tr:hover td { background: var(--bg3); }
 .modal-details { font-family: var(--mono); font-size: 14px; line-height: 1.7; color: var(--text2); margin-bottom: 18px; }
 .modal-details b { color: var(--text); }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+/* Sprint 21 Item 1: In-App Help System */
+.help-btn { background: var(--bg4); border: 1px solid var(--border); color: var(--text2); border-radius: 50%; width: 28px; height: 28px; font-size: 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; margin-left: 12px; transition: background 0.15s; }
+.help-btn:hover { background: var(--border); color: var(--text); }
+.help-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 200; align-items: flex-start; justify-content: center; padding-top: 40px; }
+.help-overlay.open { display: flex; }
+.help-modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; width: 820px; max-width: calc(100vw - 40px); max-height: calc(100vh - 80px); display: flex; flex-direction: column; }
+.help-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.help-modal-header h2 { font-size: 16px; font-weight: 700; }
+.help-close { background: none; border: none; color: var(--text3); font-size: 20px; cursor: pointer; line-height: 1; padding: 0 0 8px; }
+.help-close:hover { color: var(--text); }
+.help-tabs { display: flex; gap: 0; padding: 0 20px; flex-shrink: 0; }
+.htab { padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; color: var(--text3); border-bottom: 2px solid transparent; transition: all 0.15s; white-space: nowrap; }
+.htab:hover { color: var(--text2); }
+.htab.active { color: var(--amber); border-bottom-color: var(--amber); }
+.help-body { overflow-y: auto; padding: 20px; flex: 1; }
+.help-section { margin-bottom: 20px; }
+.help-section h3 { font-size: 13px; font-weight: 700; color: var(--amber); text-transform: uppercase; letter-spacing: .07em; font-family: var(--mono); margin-bottom: 8px; }
+.help-section p, .help-section li { font-size: 14px; color: var(--text2); line-height: 1.6; }
+.help-section ul { margin-left: 18px; }
+.help-section li { margin-bottom: 4px; }
+.help-row { display: flex; gap: 8px; margin-bottom: 6px; }
+.help-time { font-family: var(--mono); font-size: 12px; color: var(--amber); min-width: 120px; padding-top: 2px; }
+.help-desc { font-size: 14px; color: var(--text2); }
+.dk-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+.dk-badge-lg { font-family: var(--mono); font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 3px; min-width: 72px; text-align: center; }
+.glossary-search { width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 4px; font-size: 14px; margin-bottom: 12px; }
+/* Strategy ⓘ buttons */
+.strat-info-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.strat-info-btn { background: var(--bg4); border: 1px solid var(--border); color: var(--text3); border-radius: 4px; padding: 3px 8px; font-size: 12px; font-family: var(--mono); cursor: pointer; transition: all 0.15s; }
+.strat-info-btn:hover, .strat-info-btn.active { background: var(--border); color: var(--text); }
+.strat-popover { position: absolute; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; width: 370px; z-index: 300; box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-height: 80vh; overflow-y: auto; }
+/* Start of Day panel */
+.sod-panel { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
+.sod-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; cursor: pointer; user-select: none; }
+.sod-header:hover { background: var(--bg4); }
+.sod-title { font-size: 13px; font-weight: 700; color: var(--text3); text-transform: uppercase; letter-spacing: .06em; font-family: var(--mono); }
+.sod-arrow { font-size: 12px; color: var(--text3); }
+.sod-body { padding: 4px 16px 14px; display: none; }
+.sod-step { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.sod-step:last-child { border-bottom: none; }
+.sod-step input[type=checkbox] { margin-top: 2px; accent-color: var(--amber); cursor: pointer; }
+.sod-step label { font-size: 14px; color: var(--text2); cursor: pointer; line-height: 1.5; }
 </style>
 </head>
 <body>
 <div class="topbar">
   <h1>PRIME v1.0</h1>
-  <span class="status" id="api-status">API: checking...</span>
+  <div style="display:flex;align-items:center;gap:0">
+    <span class="status" id="api-status">API: checking...</span>
+    <button class="help-btn" id="help-open-btn" onclick="openHelp()" title="PRIME Help &amp; Cheat Sheet">?</button>
+  </div>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="showView('dashboard')">Dashboard</div>
@@ -83,6 +128,21 @@ tr:hover td { background: var(--bg3); }
     <div class="card"><div class="card-label">Unrealized P&L</div><div class="card-val amber" id="d-upnl">~$--</div></div>
     <div class="card"><div class="card-label">Win Rate</div><div class="card-val" id="d-winrate">--%</div></div>
     <div class="card"><div class="card-label">Total Signals (7d)</div><div class="card-val" id="d-signals">--</div></div>
+  </div>
+  <!-- Sprint 21 Item 1: Start of Day checklist panel (collapsed by default) -->
+  <div class="sod-panel" id="sod-panel">
+    <div class="sod-header" onclick="toggleSodPanel()" id="sod-header">
+      <span class="sod-title">Start of Day Checklist</span>
+      <span class="sod-arrow" id="sod-arrow">▼</span>
+    </div>
+    <div class="sod-body" id="sod-body">
+      <div class="sod-step"><input type="checkbox" id="sod-1"><label for="sod-1">Check AI Briefing headline — note any concentration warnings or DK NULLIFYING flags.</label></div>
+      <div class="sod-step"><input type="checkbox" id="sod-2"><label for="sod-2">Review open position advisory recommendations — act on any TRIM or EXIT before market open.</label></div>
+      <div class="sod-step"><input type="checkbox" id="sod-3"><label for="sod-3">Review overnight signals in the Signals tab — note STRONG candidates and DK states.</label></div>
+      <div class="sod-step"><input type="checkbox" id="sod-4"><label for="sod-4">Confirm Schwab connected and account is in PAPER mode.</label></div>
+      <div class="sod-step"><input type="checkbox" id="sod-5"><label for="sod-5">Note any TRIM/EXIT advisories from the AI Position Advisor before 09:30 ET.</label></div>
+      <div class="sod-step"><input type="checkbox" id="sod-6"><label for="sod-6">Set Max Trades for today based on market conditions and open position count.</label></div>
+    </div>
   </div>
   <div class="order-panel" id="ai-briefing-card">
     <div class="panel-title">AI BRIEFING</div>
@@ -164,17 +224,201 @@ tr:hover td { background: var(--bg3); }
       <option value="EQUITY_OPTION">Equity Option</option>
     </select>
   </div>
+  <!-- Sprint 21 Item 1: Strategy ⓘ info buttons -->
+  <div class="strat-info-strip" id="strat-info-strip">
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('PSA', this)">PSA ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('PEAD', this)">PEAD ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('UOA', this)">UOA ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('SRS', this)">SRS ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('MTS', this)">MTS ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('IDX', this)">IDX ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('DK', this)">DK ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('SHORT', this)">SHORT ⓘ</button>
+  </div>
   <table id="sig-table">
     <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Score</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
     <tbody id="sig-body"></tbody>
   </table>
 </div>
 
+<!-- Sprint 21 Item 1: Help modal -->
+<div id="help-overlay" class="help-overlay" onclick="if(event.target===this)closeHelp()">
+  <div class="help-modal" id="help-modal">
+    <div class="help-modal-header">
+      <h2>PRIME v1.0 — Help &amp; Cheat Sheet</h2>
+      <button class="help-close" onclick="closeHelp()">×</button>
+    </div>
+    <div class="help-tabs">
+      <div class="htab active" id="htab-daily-routine" onclick="showHelpTab('daily-routine')">Daily Routine</div>
+      <div class="htab" id="htab-signal-tiers" onclick="showHelpTab('signal-tiers')">Signal Tiers</div>
+      <div class="htab" id="htab-dk-states" onclick="showHelpTab('dk-states')">DK States</div>
+      <div class="htab" id="htab-risk-rules" onclick="showHelpTab('risk-rules')">Risk Rules</div>
+      <div class="htab" id="htab-glossary" onclick="showHelpTab('glossary')">Glossary</div>
+    </div>
+    <div class="help-body">
+
+      <!-- Daily Routine -->
+      <div id="hpane-daily-routine">
+        <div class="help-section">
+          <h3>Pre-Market  ·  08:00 – 09:29 ET</h3>
+          <div class="help-row"><span class="help-time">08:00–08:30</span><span class="help-desc">Check AI Briefing headline. Note concentration warnings and any DK NULLIFYING flags on open positions.</span></div>
+          <div class="help-row"><span class="help-time">08:30–09:00</span><span class="help-desc">Review AI Position Advisor. Action any TRIM or EXIT recommendations before the open. Set time stops on positions approaching max hold.</span></div>
+          <div class="help-row"><span class="help-time">09:00–09:29</span><span class="help-desc">Review overnight signals in the Signals tab. Note STRONG candidates and their DK states. Confirm Schwab connected + PAPER mode. Set Max Trades.</span></div>
+        </div>
+        <div class="help-section">
+          <h3>Market Open  ·  09:30 – 10:30 ET</h3>
+          <div class="help-row"><span class="help-time">09:30–09:45</span><span class="help-desc">Watch for early UOA call surges — first 15 min often has the day's strongest UOA activity. Do not chase gapped-up signals.</span></div>
+          <div class="help-row"><span class="help-time">09:45–10:30</span><span class="help-desc">Enter STRONG-tier signals with confirmed DK state. Check borrow on any SHORT candidates. Log entries.</span></div>
+        </div>
+        <div class="help-section">
+          <h3>Mid-Day  ·  10:30 – 14:00 ET</h3>
+          <div class="help-row"><span class="help-time">10:30–12:00</span><span class="help-desc">Monitor open positions. Watch for DK state changes — a CONFIRMING shifting to NULLIFYING is a trim signal.</span></div>
+          <div class="help-row"><span class="help-time">12:00–14:00</span><span class="help-desc">Review PEAD signals for post-earnings drift candidates. Avoid new entries after 13:30 unless STRONG + CONFIRMING.</span></div>
+        </div>
+        <div class="help-section">
+          <h3>Close  ·  14:00 – 16:00 ET</h3>
+          <div class="help-row"><span class="help-time">14:00–15:00</span><span class="help-desc">Tighten stops on positions approaching the 5-day hold limit. Close positions that have hit their profit target.</span></div>
+          <div class="help-row"><span class="help-time">15:00–15:45</span><span class="help-desc">Close any SHORT positions you do not want to carry overnight. Institutional order flow typically picks up in the last 45 min.</span></div>
+          <div class="help-row"><span class="help-time">15:45–16:00</span><span class="help-desc">Final review of open positions. Confirm stops are set. Log the day's outcomes for ML capture.</span></div>
+        </div>
+      </div>
+
+      <!-- Signal Tiers -->
+      <div id="hpane-signal-tiers" style="display:none">
+        <div class="help-section">
+          <h3>STRONG</h3>
+          <ul>
+            <li>Both primary triggers fired (e.g. UOA_CALL + PEAD_BEAT) OR single trigger with very high conviction score.</li>
+            <li>All technical confirmations pass.</li>
+            <li>DK state is CONFIRMING or NEUTRAL (CONFIRMING elevates a WATCH to STRONG automatically).</li>
+            <li><strong>Action:</strong> full-size entry at your configured max position size.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>WATCH</h3>
+          <ul>
+            <li>One primary trigger fired AND technical confirmation passes.</li>
+            <li>DK state is NEUTRAL (no institutional dark-pool signal either way).</li>
+            <li>The candidate is valid but lower conviction — institutional backing is absent.</li>
+            <li><strong>Action:</strong> reduced size (50% of normal) or wait for DK CONFIRMING before entry.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>SUPPRESSED</h3>
+          <ul>
+            <li>Technical signal and trigger are valid, but DK NULLIFYING overrides — institutional selling directly opposes the trade.</li>
+            <li><strong>Action:</strong> skip. Do not trade SUPPRESSED signals. If you are already in a position that becomes SUPPRESSED, tighten the stop immediately.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>trigger_source reference</h3>
+          <ul>
+            <li><strong>UOA_CALL</strong> — unusual call volume surge (bullish). Initiates PSA long candidates.</li>
+            <li><strong>UOA_PUT</strong> — unusual put volume surge (bearish). Initiates SHORT candidates.</li>
+            <li><strong>PEAD_BEAT</strong> — earnings beat (EPS surprise &gt; 0). Initiates PSA + PEAD long candidates.</li>
+            <li><strong>PEAD_MISS</strong> — earnings miss + guidance cut. Initiates PEAD + SHORT candidates.</li>
+            <li><strong>NONE</strong> — technical-only (no predictive trigger). PSA stays WATCH; SHORT is rejected.</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- DK States -->
+      <div id="hpane-dk-states" style="display:none">
+        <div class="help-section">
+          <h3>DK Three-State Modifier</h3>
+          <p style="margin-bottom:14px">Dark-pool (off-exchange) prints reveal institutional intent before it moves the public price. PRIME classifies every symbol's DK activity into one of three states and propagates it onto all non-DK signals for that symbol.</p>
+        </div>
+        <div class="dk-row">
+          <span class="dk-badge-lg badge confirming">CONFIRM</span>
+          <div>
+            <div style="font-weight:600;margin-bottom:4px;color:var(--text)">CONFIRMING — Institutional buying aligns with signal direction</div>
+            <ul class="help-section" style="margin-top:0"><li>Long signal: auto-upgrade WATCH → STRONG; if already APPROVED, dk_confirming flag added for AI ranker.</li><li>Short signal: <strong>danger</strong> — institutional buying opposes the short thesis → signal blocked (dk_blocked).</li><li>Open position: lean HOLD; institutional money is with you.</li></ul>
+          </div>
+        </div>
+        <div class="dk-row">
+          <span class="dk-badge-lg badge neutral">NEUTRAL</span>
+          <div>
+            <div style="font-weight:600;margin-bottom:4px;color:var(--text)">NEUTRAL — No significant dark-pool activity</div>
+            <ul class="help-section" style="margin-top:0"><li>Signal passes through unchanged — no upgrade, no suppression.</li><li>Trade on the technical merit and trigger quality alone.</li><li>Open position: standard management rules apply.</li></ul>
+          </div>
+        </div>
+        <div class="dk-row">
+          <span class="dk-badge-lg badge nullifying">NULLIFY</span>
+          <div>
+            <div style="font-weight:600;margin-bottom:4px;color:var(--text)">NULLIFYING — Institutional selling opposes signal direction</div>
+            <ul class="help-section" style="margin-top:0"><li>Long signal: suppressed (approval_status = SUPPRESSED). Do not enter.</li><li>Short signal: <strong>confirms</strong> — institutional selling aligns with short thesis → WATCH upgraded to STRONG.</li><li>Open long position: tighten stop immediately; consider TRIM or EXIT.</li></ul>
+          </div>
+        </div>
+        <div class="help-section" style="margin-top:14px">
+          <h3>dk_conviction</h3>
+          <p>The conviction score (0.0–1.0) behind the CONFIRMING or NULLIFYING verdict. A score of 0.8+ indicates very decisive institutional data. NULLIFYING rows floor at 0.5 — any hard NULLIFYING override is high-conviction by construction. NEUTRAL rows have no conviction score (null).</p>
+        </div>
+      </div>
+
+      <!-- Risk Rules -->
+      <div id="hpane-risk-rules" style="display:none">
+        <div class="help-section">
+          <h3>Stop Rules</h3>
+          <ul>
+            <li><strong>Long positions:</strong> –5% from entry price. Hard stop — no exceptions.</li>
+            <li><strong>Short positions:</strong> +5% from entry price. Hard stop — no exceptions.</li>
+            <li><strong>Index ETF (IDX):</strong> –3% (lower realized volatility).</li>
+            <li><strong>Time stop:</strong> maximum 5-session hold. Close before day 6 regardless of P&amp;L.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>Position Sizing</h3>
+          <ul>
+            <li><strong>STRONG tier:</strong> full configured max position size.</li>
+            <li><strong>WATCH tier:</strong> 50% of max (reduced conviction).</li>
+            <li><strong>SHORT strategy:</strong> always 50% of normal size (additional short-side rule).</li>
+            <li><strong>dk_conviction ≥ 0.8 + CONFIRMING:</strong> consider full size even on WATCH.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>Account Routing (MATA)</h3>
+          <ul>
+            <li>Short selling: not permitted in IRA-type accounts. MATA routes to margin/taxable only.</li>
+            <li>Options strategies: IRA excluded. Check MATA profile before placing any options trade.</li>
+            <li>Intraday (PSA/MTS): can route to any account type.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>Short-Selling Additional Rules</h3>
+          <ul>
+            <li>RTH only: entries restricted to 09:30–16:00 ET Mon–Fri.</li>
+            <li>Borrow required: Schwab locate must confirm borrowable before signal is written.</li>
+            <li>DK CONFIRMING = hard block: never short into institutional accumulation.</li>
+            <li>DK NULLIFYING = confirmation: institutional selling aligns with your short thesis.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h3>AI Advisor Overrides</h3>
+          <ul>
+            <li>HOLD: maintain current position. Review again at close.</li>
+            <li>TRIM: reduce to 50% of current size. Lock in partial gains.</li>
+            <li>EXIT: close the full position immediately. High urgency — institutional flow or risk factor present.</li>
+            <li>UNAVAILABLE: AI advisory offline. Apply standard stop and time-stop rules manually.</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Glossary -->
+      <div id="hpane-glossary" style="display:none">
+        <input class="glossary-search" id="glossary-input" type="text" placeholder="Search terms…" oninput="renderGlossary(this.value)" autocomplete="off">
+        <div id="glossary-list"></div>
+      </div>
+
+    </div><!-- help-body -->
+  </div><!-- help-modal -->
+</div><!-- help-overlay -->
+
 <script src="ui-config.js"></script>
 <script src="dashboard.js"></script>
 <script src="positions.js"></script>
 <script src="signals.js"></script>
 <script src="orders.js"></script>
+<script src="help.js"></script>
 <script>
 const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
 
