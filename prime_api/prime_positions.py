@@ -182,4 +182,13 @@ def enrich_position(position: Dict[str, Any], current_price: Optional[float] = N
     out["hold_minutes"] = held if held is not None else 0
     out["time_stop_min"] = effective_time_stop
     out["time_stop_exceeded"] = bool(held is not None and held >= effective_time_stop)
+    # Sprint 22 Item 2: DK status per position (graceful: NEUTRAL when unavailable).
+    try:
+        from prime_intelligence.prime_dk_trader import get_dk_status
+        dk = get_dk_status(position.get("symbol") or "")
+        out["dk_status"] = dk["dk_status"]
+        out["dk_conviction"] = dk["dk_conviction"]
+    except Exception:
+        out.setdefault("dk_status", "NEUTRAL")
+        out.setdefault("dk_conviction", None)
     return out
