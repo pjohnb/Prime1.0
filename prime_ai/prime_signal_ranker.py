@@ -43,6 +43,14 @@ approved trade candidates, the current open positions, and a Max Trades limit N.
 Rank the candidates by PORTFOLIO FIT (diversification vs. existing sector
 exposure, correlation, regime alignment) -- not by raw score alone.
 
+DK context (use to break ties and adjust ranking confidence):
+  dk_status CONFIRMING = institutional dark-pool buying aligns with signal --
+    prefer CONFIRMING over NEUTRAL when portfolio fit is otherwise equal.
+  dk_status NEUTRAL = no dark-pool signal; rank on portfolio fit alone.
+  dk_status NULLIFYING = dark-pool activity opposes signal direction -- rank
+    last within tier; note the opposition in rationale.
+dk_conviction (0-1) quantifies signal strength; higher = more decisive DK data.
+
 Respond ONLY with a JSON array, best first, no prose outside it:
 [{"symbol": str, "rank": int, "rationale": "one sentence",
   "portfolio_fit_score": number 0-100}]"""
@@ -85,8 +93,12 @@ def rank_signals(
     context = {
         "max_trades": max_trades,
         "candidates": [
+            # Sprint 20 Item 4: dk_status and dk_conviction included so the ranker
+            # can prefer CONFIRMING over NEUTRAL when portfolio fit is otherwise equal.
             {"symbol": s.get("symbol"), "strategy": s.get("strategy"),
-             "score": _get_score(s), "tier": s.get("tier"), "sector": s.get("sector")}
+             "score": _get_score(s), "tier": s.get("tier"), "sector": s.get("sector"),
+             "dk_status": s.get("dk_status") or "NEUTRAL",
+             "dk_conviction": s.get("dk_conviction")}
             for s in approved
         ],
         "open_positions": [

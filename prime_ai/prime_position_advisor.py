@@ -20,8 +20,15 @@ VALID_RECS = ("HOLD", "TRIM", "EXIT")
 
 SYSTEM_PROMPT = """You are the PRIME AI Position Advisor. Given a single open
 trading position, decide whether to HOLD, TRIM, or EXIT it. Weigh unrealized
-P&L, hold time, the originating strategy, sector exposure, dark-pool status
-(dk_status), batch and entry-timing quality. Be concise and concrete.
+P&L, hold time, the originating strategy, sector exposure, dark-pool status,
+batch and entry-timing quality. Be concise and concrete.
+
+DK three-state context (use to adjust urgency):
+  dk_status CONFIRMING + dk_conviction >= 0.7 = institutional dark-pool money
+    agrees with your position direction -- positive signal, lean HOLD.
+  dk_status NEUTRAL = no dark-pool signal either way -- no adjustment.
+  dk_status NULLIFYING = institutional dark-pool money is moving AGAINST your
+    position -- warning signal; consider tightening stop or exiting.
 
 DIRECTION MATTERS. The position has a "direction" field:
 - LONG: profit when price RISES; a rising price is favourable. EXIT = sell.
@@ -46,7 +53,12 @@ def _hold_minutes(entry_time: Optional[str]) -> Optional[int]:
 
 
 def build_context(position: Dict[str, Any]) -> Dict[str, Any]:
-    """Build the per-position payload sent to Claude."""
+    """Build the per-position payload sent to Claude.
+
+    Sprint 20 Item 4: dk_conviction added alongside dk_status so Claude can
+    calibrate how strongly the dark-pool signal opposes or supports the position.
+    Graceful degradation: missing DK data defaults to NEUTRAL.
+    """
     entry = position.get("entry_price") or position.get("price_at_scan")
     return {
         "symbol": position.get("symbol"),
@@ -58,7 +70,8 @@ def build_context(position: Dict[str, Any]) -> Dict[str, Any]:
         "hold_minutes": position.get("hold_minutes") or _hold_minutes(position.get("entry_time")),
         "unrealized_pnl_pct": position.get("pnl_pct"),
         "sector": position.get("sector"),
-        "dk_status": position.get("dk_status"),
+        "dk_status": position.get("dk_status") or "NEUTRAL",
+        "dk_conviction": position.get("dk_conviction"),
         "batch_score": position.get("batch_score"),
         "entry_timing": position.get("entry_timing"),
     }
