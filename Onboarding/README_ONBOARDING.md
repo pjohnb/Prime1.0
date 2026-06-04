@@ -3,6 +3,9 @@
 Everything you need to get started with PRIME v1.0 in PAPER mode.
 Read the files in the order listed below.
 
+**Visual index:** open `PRIME_Onboarding_Index.docx` for a formatted
+single-page table of all seven files with reading order and purpose descriptions.
+
 ---
 
 ## Reading Order
