@@ -77,9 +77,12 @@ class TestTradeWrite(unittest.TestCase):
         self.assertEqual(p["trade_source"], "PAPER")
 
     def test_live_mode_rejected(self):
+        # Sprint 24: LIVE mode goes through safety gates.
+        # Outside RTH → Gate 2 fires (400 RTH); inside RTH → no client → 503.
+        # Either way, no trade is written to DB.
         self.mode = "LIVE"
         resp = self._post(self._VALID)
-        self.assertEqual(resp.status_code, 403)
+        self.assertIn(resp.status_code, [400, 403, 503])
         self.assertEqual(len(get_open_positions(db_path=self.db)), 0)
 
     def test_missing_token_rejected(self):

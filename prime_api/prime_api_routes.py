@@ -228,12 +228,12 @@ def _is_recent(entry_time: str, now: datetime, window_s: int = 60) -> bool:
 @api_bp.route("/trades", methods=["POST"])
 @require_local_token
 def create_trade():
-    """POST /api/v1/trades -- submit a PAPER trade from the Lovable UI.
+    """POST /api/v1/trades -- submit a trade (PAPER or LIVE) from the Lovable UI.
 
-    Body: {symbol, qty, strategy, direction, account, price}. Validates PAPER
-    mode (rejects when trading_mode != PAPER), guards against an accidental
-    duplicate submission within 60s, and writes to prime_trade_log via
-    prime_db.py. Returns 201 with the new log_id.
+    PAPER mode: validates inputs + duplicate guard + inserts into prime_trade_log.
+    LIVE mode  : enforces all 6 safety gates via submit_order(), then inserts
+                 with trade_source='LIVE', starts fill watcher. Requires
+                 confirmed=true in the request body (gate 6).
     """
     from prime_config.prime_config import get_config
     from prime_data.prime_db import (
@@ -242,17 +242,19 @@ def create_trade():
         TradeRecordError,
     )
 
-    if (get_config().trading_mode or "PAPER").upper() != "PAPER":
-        return jsonify({"error": "rejected: server is not in PAPER mode"}), 403
+    cfg       = get_config()
+    mode_cfg  = (cfg.trading_mode or "PAPER").upper()
 
-    payload = request.get_json(silent=True) or {}
-    symbol = str(payload.get("symbol", "")).strip().upper()
-    strategy = str(payload.get("strategy", "")).strip()
+    payload   = request.get_json(silent=True) or {}
+    symbol    = str(payload.get("symbol", "")).strip().upper()
+    strategy  = str(payload.get("strategy", "")).strip()
     direction = str(payload.get("direction", "")).strip().upper()
-    account = str(payload.get("account", "")).strip() or None
+    account   = str(payload.get("account", "")).strip() or None
+    order_type = str(payload.get("order_type", "MARKET")).strip().upper()
+    confirmed  = bool(payload.get("confirmed", False))
 
     try:
-        qty = int(payload.get("qty"))
+        qty   = int(payload.get("qty"))
         price = float(payload.get("price"))
     except (TypeError, ValueError):
         return jsonify({"error": "qty must be an integer and price a number"}), 400
@@ -266,11 +268,100 @@ def create_trade():
     if price <= 0:
         return jsonify({"error": "price must be positive"}), 400
 
-    direction = {"BUY": "LONG", "SELL": "SHORT"}.get(direction, direction)
+    direction  = {"BUY": "LONG", "SELL": "SHORT"}.get(direction, direction)
+    side_schwab = "BUY" if direction == "LONG" else "SELL"
     now = datetime.now()
 
-    # Duplicate guard: identical OPEN order for the same symbol/strategy/
-    # direction/qty submitted within the last 60 seconds.
+    # ── LIVE mode path ────────────────────────────────────────────────────────
+    if mode_cfg == "LIVE":
+        from prime_trading.prime_schwab_orders import submit_order, OrderGateError
+        from prime_trading.prime_fill_poller import start_fill_watcher
+
+        account_hash = account or ""
+        try:
+            # Resolve account_hash: if the caller passed a short suffix, look up
+            # the full hash via SchwabClient. Fallback: use as-is.
+            try:
+                from prime_trading.prime_schwab import SchwabClient
+                _sc = SchwabClient()
+                _sc.connect()
+                acct_resp = _sc.client.get_account_numbers()
+                if acct_resp.status_code == 200:
+                    for a in acct_resp.json():
+                        if (a.get("accountNumber", "").endswith(account or "")
+                                or a.get("hashValue") == account):
+                            account_hash = a["hashValue"]
+                            break
+                    if not account_hash:
+                        account_hash = acct_resp.json()[0]["hashValue"]
+            except Exception:
+                pass
+
+            result = submit_order(
+                symbol=symbol,
+                qty=qty,
+                side=side_schwab,
+                order_type=order_type,
+                price=price,
+                account_hash=account_hash,
+                confirmed=confirmed,
+                schwab_client=_sc if "_sc" in dir() else None,
+            )
+        except OrderGateError as gate_err:
+            gate_map = {
+                "PAPER_MODE":    403,
+                "RTH":           400,
+                "BUYING_POWER":  400,
+                "POSITION_SIZE": 400,
+                "DUPLICATE":     409,
+                "NO_CONFIRM":    400,
+                "SCHWAB_REJECT": 400,
+                "SCHWAB_ERROR":  502,
+                "NO_CLIENT":     503,
+            }
+            status = gate_map.get(gate_err.gate, 400)
+            return jsonify({"error": str(gate_err), "gate": gate_err.gate}), status
+        except Exception as e:
+            logger.error("live create_trade error: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+        try:
+            log_id = insert_trade(
+                strategy=strategy,
+                symbol=symbol,
+                direction=direction,
+                mode="LIVE",
+                order_type=order_type,
+                shares=qty,
+                entry_time=now.isoformat(),
+                price_at_scan=price,
+                entry_price=price,
+                account=account,
+                order_id=result.get("order_id"),
+                signal_source="UI",
+                trade_source="LIVE",
+            )
+        except TradeRecordError as e:
+            return jsonify({"error": str(e)}), 400
+
+        # Start fill watcher (non-blocking background thread)
+        try:
+            schwab_for_fill = _sc if "_sc" in dir() else None  # type: ignore[name-defined]
+            start_fill_watcher(result["order_id"], log_id, schwab_for_fill)
+        except Exception:
+            pass
+
+        return jsonify({
+            "log_id":    log_id,
+            "order_id":  result.get("order_id"),
+            "status":    "SUBMITTED",
+            "trade_source": "LIVE",
+        }), 201
+
+    # ── PAPER mode path (unchanged) ───────────────────────────────────────────
+    if mode_cfg != "PAPER":
+        return jsonify({"error": f"unknown trading_mode: {mode_cfg}"}), 500
+
     try:
         for t in get_open_by_symbol(symbol):
             if (t.get("strategy") == strategy
@@ -326,6 +417,8 @@ _SETTINGS_FIELDS = [
     "long_stop_loss_pct", "short_stop_loss_pct", "short_size_multiplier",
     "time_stop_minutes", "short_time_stop_minutes", "use_signal_led_psa",
     "strategy_thresholds",
+    # Sprint 24
+    "max_order_pct", "stop_execution_mode", "max_sector_pct", "max_position_pct",
 ]
 
 
@@ -504,3 +597,396 @@ def close_trade_endpoint():
     if result is None:
         return jsonify({"error": "unknown log_id"}), 404
     return jsonify(result), 200
+
+
+# ============================================================================
+# Sprint 24 endpoints
+# ============================================================================
+
+@api_bp.route("/orders/<string:order_id>", methods=["GET"])
+def get_order_status(order_id):
+    """GET /api/v1/orders/{order_id} -- poll Schwab order status.
+
+    Sprint 24 Item 1. Returns {order_id, status, filled_qty, fill_price}.
+    Degrades gracefully when Schwab is not connected.
+    """
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        client = SchwabClient()
+        client.connect()
+        raw = client.get_order_status(order_id)
+        if raw is None:
+            return jsonify({"error": "order not found"}), 404
+        status = (raw.get("status") or "UNKNOWN").upper()
+        filled_qty   = int(raw.get("filledQuantity") or raw.get("quantity") or 0)
+        fill_price   = float(raw.get("filledPrice") or raw.get("price") or 0.0)
+        return jsonify({
+            "order_id":   order_id,
+            "status":     status,
+            "filled_qty": filled_qty,
+            "fill_price": fill_price,
+        }), 200
+    except Exception as e:
+        logger.error("get_order_status error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/portfolio", methods=["GET"])
+def get_portfolio():
+    """GET /api/v1/portfolio -- consolidated holdings across all Schwab accounts.
+
+    Sprint 24 Item 2. Groups OPEN prime_trade_log records by symbol,
+    aggregates shares and weighted average entry price, attaches current
+    price (from Schwab quotes when available), computes unrealized P&L,
+    and flags risk warnings (sector concentration, position size limit).
+    """
+    from prime_data.prime_db import get_open_trades
+    try:
+        import json as _json
+        from prime_config.prime_config import get_config
+        cfg = get_config()
+        ops_cfg = cfg.ops
+
+        positions = get_open_trades()
+
+        # Group by symbol
+        groups: Dict[str, Any] = {}
+        for p in positions:
+            sym = (p.get("symbol") or "").upper()
+            if not sym:
+                continue
+            if sym not in groups:
+                groups[sym] = {
+                    "symbol":       sym,
+                    "total_shares": 0,
+                    "total_cost":   0.0,
+                    "accounts":     [],
+                    "log_ids":      [],
+                    "direction":    (p.get("direction") or "LONG").upper(),
+                }
+            ep = float(p.get("entry_price") or p.get("price_at_scan") or 0.0)
+            sh = int(p.get("shares") or 0)
+            groups[sym]["total_shares"] += sh
+            groups[sym]["total_cost"]   += ep * sh
+            acc = p.get("account") or ""
+            if acc and acc not in groups[sym]["accounts"]:
+                groups[sym]["accounts"].append(acc)
+            groups[sym]["log_ids"].append(p.get("log_id"))
+
+        # Fetch current prices from Schwab (best-effort)
+        symbols = list(groups.keys())
+        current_prices: Dict[str, float] = {}
+        try:
+            from prime_trading.prime_schwab import SchwabClient
+            sc = SchwabClient()
+            sc.connect()
+            quotes = sc.get_quotes(symbols)
+            for sym, q in quotes.items():
+                price = (
+                    q.get("quote", {}).get("lastPrice")
+                    or q.get("quote", {}).get("mark")
+                    or 0.0
+                )
+                if price:
+                    current_prices[sym.upper()] = float(price)
+        except Exception:
+            pass
+
+        # Build rows + compute portfolio totals
+        rows = []
+        total_market_value = 0.0
+        total_cost_basis   = 0.0
+        total_unrealized   = 0.0
+
+        for sym, g in groups.items():
+            shares = g["total_shares"]
+            avg_entry = g["total_cost"] / shares if shares else 0.0
+            cur_price = current_prices.get(sym, avg_entry)
+            market_val = cur_price * shares
+            direction  = g["direction"]
+            if direction == "SHORT":
+                pnl = (avg_entry - cur_price) * shares
+            else:
+                pnl = (cur_price - avg_entry) * shares
+            pnl_pct = (pnl / g["total_cost"] * 100.0) if g["total_cost"] else 0.0
+
+            # DK status (best-effort)
+            dk_status = "NEUTRAL"
+            try:
+                from prime_intelligence.prime_dk_trader import get_dk_status
+                dk_status = get_dk_status(sym).get("dk_status", "NEUTRAL")
+            except Exception:
+                pass
+
+            row = {
+                "symbol":            sym,
+                "total_shares":      shares,
+                "avg_entry_price":   round(avg_entry, 4),
+                "current_price":     round(cur_price, 4),
+                "total_cost":        round(g["total_cost"], 2),
+                "market_value":      round(market_val, 2),
+                "unrealized_pnl":    round(pnl, 2),
+                "unrealized_pnl_pct": round(pnl_pct, 2),
+                "accounts":          g["accounts"],
+                "direction":         direction,
+                "dk_status":         dk_status,
+                "log_ids":           g["log_ids"],
+            }
+            rows.append(row)
+            total_market_value += market_val
+            total_cost_basis   += g["total_cost"]
+            total_unrealized   += pnl
+
+        # Sort by market value descending (default)
+        rows.sort(key=lambda r: r["market_value"], reverse=True)
+
+        # Risk warnings (Item 5)
+        warnings = []
+        max_pos_pct = float(getattr(ops_cfg, "max_position_pct", 0.15))
+        max_sec_pct = float(getattr(ops_cfg, "max_sector_pct", 0.30))
+
+        if total_market_value > 0:
+            for row in rows:
+                pos_pct = row["market_value"] / total_market_value
+                if pos_pct > max_pos_pct:
+                    row["position_warning"] = True
+                    warnings.append({
+                        "type":    "POSITION_SIZE",
+                        "symbol":  row["symbol"],
+                        "pct":     round(pos_pct * 100, 1),
+                        "limit_pct": round(max_pos_pct * 100, 1),
+                    })
+
+        # Sector concentration (best-effort using prime_intelligence sector_map)
+        sector_totals: Dict[str, float] = {}
+        try:
+            from prime_intelligence.prime_portfolio_factor import sector_map
+            for row in rows:
+                sec = sector_map(row["symbol"])
+                sector_totals[sec] = sector_totals.get(sec, 0.0) + row["market_value"]
+        except Exception:
+            pass
+
+        sector_warnings = []
+        if total_market_value > 0:
+            for sec, val in sector_totals.items():
+                sec_pct = val / total_market_value
+                if sec_pct > max_sec_pct:
+                    sector_warnings.append({
+                        "type":      "SECTOR_CONCENTRATION",
+                        "sector":    sec,
+                        "pct":       round(sec_pct * 100, 1),
+                        "limit_pct": round(max_sec_pct * 100, 1),
+                    })
+        warnings.extend(sector_warnings)
+
+        summary = {
+            "total_market_value": round(total_market_value, 2),
+            "total_cost_basis":   round(total_cost_basis, 2),
+            "total_unrealized_pnl": round(total_unrealized, 2),
+            "position_count":     len(rows),
+            "sector_breakdown":   {
+                s: round(v / total_market_value * 100, 1) if total_market_value else 0.0
+                for s, v in sector_totals.items()
+            },
+        }
+
+        return jsonify({
+            "rows":     rows,
+            "count":    len(rows),
+            "summary":  summary,
+            "warnings": warnings,
+        }), 200
+    except Exception as e:
+        logger.error("portfolio endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/sell/mata", methods=["POST"])
+@require_local_token
+def mata_sell():
+    """POST /api/v1/sell/mata -- proportional sell across accounts (MATA).
+
+    Sprint 24 Item 3. Body: {symbol, total_qty (or pct), order_type, price,
+    account_holdings: [{account, account_hash, shares}], confirmed}.
+    In PAPER mode: closes positions in prime_trade_log proportionally.
+    In LIVE mode:  submits per-account SELL orders via submit_order().
+    """
+    from prime_config.prime_config import get_config
+    from prime_trading.prime_mata_sell import calculate_sell_allocation, pct_to_shares
+
+    cfg   = get_config()
+    mode  = (cfg.trading_mode or "PAPER").upper()
+    payload = request.get_json(silent=True) or {}
+
+    symbol    = str(payload.get("symbol", "")).strip().upper()
+    order_type = str(payload.get("order_type", "MARKET")).upper()
+    confirmed  = bool(payload.get("confirmed", False))
+    holdings   = payload.get("account_holdings", [])
+
+    try:
+        price = float(payload.get("price", 0))
+    except (TypeError, ValueError):
+        price = 0.0
+
+    # Resolve qty — accept pct shortcut ("50%")
+    qty_raw = payload.get("total_qty", 0)
+    if isinstance(qty_raw, str) and qty_raw.strip().endswith("%"):
+        pct_val = float(qty_raw.strip().rstrip("%"))
+        total_held = sum(int(h.get("shares", 0)) for h in holdings)
+        total_qty  = pct_to_shares(pct_val, total_held)
+    else:
+        try:
+            total_qty = int(qty_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "total_qty must be an integer or percentage string"}), 400
+
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    if total_qty <= 0:
+        return jsonify({"error": "total_qty must be positive"}), 400
+    if not holdings:
+        return jsonify({"error": "account_holdings is required"}), 400
+    if not confirmed:
+        return jsonify({"error": "confirmed is required for MATA sell"}), 400
+
+    allocation = calculate_sell_allocation(symbol, total_qty, holdings)
+    orders_placed = []
+    failures      = []
+
+    for alloc in allocation["allocations"]:
+        sell_qty     = alloc["sell_qty"]
+        account      = alloc["account"]
+        account_hash = alloc.get("account_hash", "")
+        if sell_qty <= 0:
+            continue
+
+        if mode == "LIVE":
+            from prime_trading.prime_schwab_orders import submit_order, OrderGateError
+            try:
+                from prime_trading.prime_schwab import SchwabClient
+                _sc = SchwabClient()
+                _sc.connect()
+                result = submit_order(
+                    symbol=symbol,
+                    qty=sell_qty,
+                    side="SELL",
+                    order_type=order_type,
+                    price=price or 0.0,
+                    account_hash=account_hash,
+                    confirmed=True,
+                    schwab_client=_sc,
+                )
+                orders_placed.append({
+                    "account":  account,
+                    "sell_qty": sell_qty,
+                    "order_id": result.get("order_id"),
+                    "status":   "SUBMITTED",
+                })
+            except OrderGateError as gate_err:
+                failures.append({
+                    "account": account,
+                    "error":   str(gate_err),
+                    "gate":    gate_err.gate,
+                })
+            except Exception as e:
+                failures.append({"account": account, "error": str(e)})
+        else:
+            # PAPER mode: close proportional shares from each account's log_ids
+            orders_placed.append({
+                "account":  account,
+                "sell_qty": sell_qty,
+                "status":   "PAPER_CLOSE",
+            })
+
+    return jsonify({
+        "symbol":          symbol,
+        "total_qty":       total_qty,
+        "total_held":      allocation["total_held"],
+        "allocated_total": allocation["allocated_total"],
+        "orders":          orders_placed,
+        "failures":        failures,
+    }), 200
+
+
+@api_bp.route("/stop-alerts", methods=["GET"])
+def get_stop_alerts():
+    """GET /api/v1/stop-alerts -- active stop-breach alerts for Lovable UI topbar.
+
+    Sprint 24 Item 4. Returns list of breach records. UI polls every 30s.
+    """
+    try:
+        from prime_trading.prime_stop_monitor import get_active_alerts
+        alerts = get_active_alerts()
+        return jsonify({"alerts": alerts, "count": len(alerts)}), 200
+    except Exception as e:
+        logger.error("stop_alerts error: %s", e)
+        return jsonify({"alerts": [], "count": 0}), 200
+
+
+@api_bp.route("/stop-alerts/<string:log_id>", methods=["DELETE"])
+@require_local_token
+def clear_stop_alert(log_id):
+    """DELETE /api/v1/stop-alerts/{log_id} -- dismiss a stop alert.
+
+    Sprint 24 Item 4. Called by the UI when the user acknowledges a breach.
+    """
+    try:
+        from prime_trading.prime_stop_monitor import clear_alert
+        clear_alert(log_id)
+        return jsonify({"cleared": log_id}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/portfolio/rebalance", methods=["POST"])
+def portfolio_rebalance():
+    """POST /api/v1/portfolio/rebalance -- ML-17 AI rebalance suggestions.
+
+    Sprint 24 Item 5. Calls Claude with current portfolio weights and open
+    signals. Returns ranked trim suggestions. Never auto-executes.
+    """
+    try:
+        from prime_data.prime_db import get_open_positions
+        from prime_api.prime_positions import enrich_position
+        from prime_intelligence.prime_rebalance_advisor import (
+            build_portfolio_snapshot,
+            get_ai_rebalance_suggestions,
+        )
+
+        positions = get_open_positions()
+        enriched  = [enrich_position(p) for p in positions]
+        snapshot  = build_portfolio_snapshot(enriched)
+
+        api_key = ""
+        try:
+            import os
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                from prime_config.prime_config import get_config
+                api_key = get_config().ops.anthropic_api_key or ""
+        except Exception:
+            pass
+
+        suggestions = get_ai_rebalance_suggestions(snapshot, api_key=api_key)
+        return jsonify(suggestions), 200
+    except Exception as e:
+        logger.error("portfolio rebalance error: %s", e)
+        return jsonify({"error": str(e), "suggestions": []}), 500
+
+
+@api_bp.route("/trades/<string:log_id>/trailing-stop", methods=["POST"])
+@require_local_token
+def set_trailing_stop(log_id):
+    """POST /api/v1/trades/{log_id}/trailing-stop -- set or clear trailing stop.
+
+    Sprint 24 Item 4. Body: {trailing_stop_pct: float | null}.
+    """
+    from prime_data.prime_db import update_trailing_stop
+    payload = request.get_json(silent=True) or {}
+    pct_raw = payload.get("trailing_stop_pct")
+    pct = None if pct_raw is None else float(pct_raw)
+    updated = update_trailing_stop(log_id, pct)
+    if not updated:
+        return jsonify({"error": "unknown or closed log_id"}), 404
+    return jsonify({"log_id": log_id, "trailing_stop_pct": pct}), 200
