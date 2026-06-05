@@ -233,6 +233,81 @@ paths:
           description: Not in PAPER mode or non-localhost
         "409":
           description: Duplicate trade within 60s
+  /api/v1/sync/schwab:
+    get:
+      summary: Import Schwab holdings into prime_trade_log
+      operationId: syncSchwab
+      responses:
+        "200":
+          description: Sync result counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported:
+                    type: integer
+                  skipped:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+  /api/v1/settings:
+    get:
+      summary: Get UI-editable ops_config.json settings
+      operationId: getSettings
+      responses:
+        "200":
+          description: Current settings
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      summary: Partial-update ops_config.json settings
+      operationId: postSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/v1/trades/{log_id}:
+    delete:
+      summary: Hard-delete a manual PAPER trade
+      operationId: deleteTrade
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: log_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Trade deleted
+        "403":
+          description: LIVE mode or Schwab-imported position
+        "404":
+          description: Unknown log_id
+        "409":
+          description: Trade is not OPEN
+  /api/v1/shutdown:
+    post:
+      summary: Gracefully stop API and UI Flask servers
+      operationId: shutdownServers
+      responses:
+        "200":
+          description: Shutdown initiated
 components:
   securitySchemes:
     bearerAuth:
