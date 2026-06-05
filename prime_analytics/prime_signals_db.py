@@ -71,6 +71,8 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
         _migrate_add_column(conn, "prime_signals", "rejection_stage", "TEXT")
         # Sprint 17 Item 3 migration: borrow rate for confirmed-borrowable shorts
         _migrate_add_column(conn, "prime_signals", "borrow_rate_pct", "REAL")
+        # Sprint 23 Item 3: trigger_source column (UOA_CALL/UOA_PUT/PEAD_BEAT/PEAD_MISS/PSA_ONLY)
+        _migrate_add_column(conn, "prime_signals", "trigger_source", "TEXT")
         # Sprint 20 Item 1: retire PENDING and the old CONFIRMED/NULLIFIED names;
         # rename existing dk_status rows to the three-state vocabulary. Idempotent.
         conn.execute("UPDATE prime_signals SET dk_status='NEUTRAL' WHERE dk_status='PENDING'")
@@ -140,6 +142,7 @@ def insert_signal_dedup(
     instrument_type: str = "EQUITY",
     signal_id: Optional[str] = None,
     borrow_rate_pct: Optional[float] = None,
+    trigger_source: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Insert a signal with a deterministic id, skipping exact duplicates.
@@ -148,6 +151,8 @@ def insert_signal_dedup(
     same deterministic id already existed (duplicate skipped). Used by the
     scanner bridge so every scan can be re-ingested safely. borrow_rate_pct is
     populated for confirmed-borrowable SHORT signals (Sprint 17 Item 3).
+    trigger_source is set by the bridge adapters (Sprint 23 Item 3):
+    UOA_CALL / UOA_PUT / PEAD_BEAT / PEAD_MISS / PSA_ONLY / None.
     """
     if signal_id is None:
         signal_id = make_signal_id(strategy, symbol, scan_ts)
@@ -156,11 +161,11 @@ def insert_signal_dedup(
             """INSERT OR IGNORE INTO prime_signals
                 (signal_id, symbol, strategy, scan_ts, entry_price, score,
                  sector, tier, status, direction, factors, instrument_type,
-                 borrow_rate_pct)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 borrow_rate_pct, trigger_source)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (signal_id, symbol.upper(), strategy, scan_ts, entry_price, score,
              sector, tier, status, direction, factors, instrument_type,
-             borrow_rate_pct),
+             borrow_rate_pct, trigger_source),
         )
         conn.commit()
         inserted = cursor.rowcount > 0

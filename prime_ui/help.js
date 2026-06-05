@@ -36,6 +36,8 @@ const HELP_GLOSSARY = [
 
 const STRATEGY_INFO = {
   PSA: {
+    fullName: "Prime Segment Analysis",
+    summary: "A-B-C-D momentum scanner that requires a predictive trigger (UOA_CALL or PEAD_BEAT) before any candidate reaches APPROVED.",
     trigger: "UOA_CALL (call surge in last 2 sessions) or PEAD_BEAT (earnings beat in last 5 sessions). No trigger = technical-only candidate stays WATCH.",
     confirmation: "A-B-C-D momentum ratio above threshold; B-D direction positive; consecutive positive bars; max drawdown within limits.",
     dk: "CONFIRMING → WATCH upgraded to STRONG. NULLIFYING → SUPPRESSED (institutional selling opposes the setup).",
@@ -45,6 +47,8 @@ const STRATEGY_INFO = {
     bad: "Momentum barely above threshold, no trigger (WATCH), DK NEUTRAL at best. Reduce size or skip.",
   },
   PEAD: {
+    fullName: "Post-Earnings Announcement Drift",
+    summary: "Captures the multi-day price drift that follows an earnings beat (long) or earnings miss + guidance cut (short) within the 5-session post-announcement window.",
     trigger: "Earnings beat (EPS surprise > 0, long) or earnings miss + guidance cut (short) within the last 5 trading sessions.",
     confirmation: "Stock still within post-earnings drift window; price not fully gapped out; daily volume elevated.",
     dk: "CONFIRMING on the earnings drift confirms institutional positioning in the expected direction. NULLIFYING suggests smart money is fading the earnings reaction.",
@@ -54,6 +58,8 @@ const STRATEGY_INFO = {
     bad: "Day 4–5 of drift window, stock already moved 80% of typical PEAD range. Risk/reward is poor.",
   },
   UOA: {
+    fullName: "Unusual Options Activity",
+    summary: "Detects institutional-sized options flow (call surge for longs, put surge for shorts) that statistically precedes a directional price move.",
     trigger: "Self-triggering: unusual call volume IS the trigger. Call/put ratio ≥ 2.0 for longs. Put/call ratio ≥ 2.0 + premium > $250k + DTE ≤ 30 for shorts.",
     confirmation: "Institutional-sized premium; near-term expiry (DTE ≤ 30); volume surge > 3× 20-day average.",
     dk: "CONFIRMING aligns the off-exchange equity flow with the options signal — very high conviction. NULLIFYING means the equity dark pool is fading the options move.",
@@ -63,6 +69,8 @@ const STRATEGY_INFO = {
     bad: "Moderate volume (1.5× average), long-dated options (DTE > 30), DK NEUTRAL or NULLIFYING.",
   },
   SRS: {
+    fullName: "Short-term Reversal Signal",
+    summary: "Mean-reversion scanner that identifies overbought or oversold extremes with early reversal confirmation from volume or price action.",
     trigger: "Overbought/oversold extreme on the short-term momentum indicator with early reversal confirmation (volume or price action).",
     confirmation: "RSI or momentum extreme; volume spike at the reversal point.",
     dk: "CONFIRMING supports the reversal thesis (institutional accumulation at the low / distribution at the high). NULLIFYING means the institutional flow continues the trend, not a reversal.",
@@ -72,6 +80,8 @@ const STRATEGY_INFO = {
     bad: "Moderate momentum reading, no volume confirmation, DK NEUTRAL.",
   },
   MTS: {
+    fullName: "Multi-Timeframe Scanner",
+    summary: "Confirms momentum signals by requiring alignment across 5-min, 15-min, and 60-min bars simultaneously — eliminating false breakouts on any single timeframe.",
     trigger: "Momentum alignment across all three timeframes simultaneously (5-min, 15-min, 60-min).",
     confirmation: "Trend consistency; all timeframes pointing in the same direction; volume confirming.",
     dk: "CONFIRMING elevates a multi-timeframe alignment from WATCH to STRONG. NULLIFYING signals that institutional flow is not participating in the visible trend.",
@@ -81,6 +91,8 @@ const STRATEGY_INFO = {
     bad: "Two timeframes aligned, one lagging. Lower conviction — stay WATCH.",
   },
   IDX: {
+    fullName: "Index Trader",
+    summary: "Trades index ETFs (SPY, QQQ, IWM) on sector-rotation momentum signals, routing via MATA to the designated index account.",
     trigger: "Sector-rotation signal on an index ETF (SPY, QQQ, IWM). Relative sector strength divergence above threshold.",
     confirmation: "Index volume expansion; price above 50-SMA; sector rotation confirmed in breadth data.",
     dk: "DK activity on an index ETF represents very large institutional positioning — CONFIRMING is a very high conviction signal.",
@@ -90,6 +102,8 @@ const STRATEGY_INFO = {
     bad: "Weak rotation signal, low volume, DK NEUTRAL.",
   },
   DK: {
+    fullName: "Dark Pool Signal",
+    summary: "Identifies qualifying off-exchange block prints as standalone trade signals — institutional accumulation (CONFIRMING) or distribution (NULLIFYING) large enough to precede public price movement.",
     trigger: "Self-triggering: a qualifying dark-pool print IS the signal. Volume ratio > threshold, price proximity < 0.5%, and/or repeat activity detected.",
     confirmation: "Print size (volume ratio vs ADV), price proximity to last public trade, repeat activity across multiple print windows.",
     dk: "DK IS the signal — no external DK modifier applies. SIGNAL tier = CONFIRMING direction; NULLIFIER tier = NULLIFYING direction.",
@@ -99,6 +113,8 @@ const STRATEGY_INFO = {
     bad: "Single print, low volume ratio, no repeat activity.",
   },
   SHORT: {
+    fullName: "Short-Selling Strategy",
+    summary: "Initiates equity short positions on bearish confluence signals (UOA_PUT + PEAD_MISS) with mandatory borrow confirmation, 50% position size, and RTH-only entry rules.",
     trigger: "UOA_PUT (put/call ratio ≥ 2.0 + premium > $250k + DTE ≤ 30 + volume surge > 3×) or PEAD_MISS (earnings miss + guidance cut + still elevated + within 5 sessions). At least one required.",
     confirmation: "Price below 50-SMA; relative strength vs SPY < 0.95 (underperforming by > 5%); borrow available via Schwab locate.",
     dk: "CONFIRMING = danger — institutional buying actively opposes the short thesis. Signal blocked. NULLIFYING = institutional selling confirms short → WATCH upgraded to STRONG.",
@@ -182,11 +198,17 @@ function toggleStrategyInfo(stratKey, btnEl) {
   const pop = document.createElement("div");
   pop.id = "strat-popover";
   pop.className = "strat-popover";
+  // Sprint 23 Item 3: full strategy name + one-sentence summary at top.
+  const fullNameLine = info.fullName
+    ? `<div style="font-size:13px;color:var(--text2);margin-bottom:2px">${info.fullName}</div>` : '';
+  const summaryLine = info.summary
+    ? `<div style="font-size:13px;color:var(--text3);margin-bottom:10px;line-height:1.5">${info.summary}</div>` : '';
   pop.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <span style="font-weight:700;font-size:14px;color:var(--amber)">${stratKey} Strategy</span>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+      <span style="font-weight:700;font-size:15px;color:var(--amber)">${stratKey}</span>
       <button onclick="closeStratPopover()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1">×</button>
     </div>
+    ${fullNameLine}${summaryLine}
     ${_popRow("Trigger", info.trigger)}
     ${_popRow("Confirmation", info.confirmation)}
     ${_popRow("DK Effect", info.dk)}

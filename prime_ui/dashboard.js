@@ -41,7 +41,8 @@ async function loadSparkline() {
     const data = await resp.json();
     const hist = data.history || [];
     if (hist.length < 2) {
-      el.innerHTML = '<span style="font-size:11px;color:var(--text3)">no history</span>';
+      // Sprint 23 Item 5: show $0.00 with "no history" subtitle when no data.
+      el.innerHTML = '<div style="text-align:center"><div style="font-family:var(--mono);font-size:13px">$0.00</div><div style="font-size:11px;color:var(--text3)">no history</div></div>';
       return;
     }
     const vals = hist.map(h => Number(h.pnl) || 0);
@@ -65,15 +66,23 @@ async function loadSparkline() {
 }
 
 // ---------------------------------------------------------------------------
-// Sprint 22 Item 3: DK activity chips.
+// ---------------------------------------------------------------------------
+// Sprint 22 Item 3 / Sprint 23 Item 5: DK activity chips.
+// Sprint 23 Item 5: count=0 chips are grey regardless of type.
 // ---------------------------------------------------------------------------
 function renderDkChips(confirming, neutral, nullifying) {
   const el = document.getElementById('dk-activity-chips');
   if (!el) return;
+  // Sprint 23 Item 5: chips with count=0 are always grey.
+  const confCls = confirming > 0 ? 'confirming' : 'neutral';
+  const nullCls = nullifying > 0 ? 'nullifying' : 'neutral';
   el.innerHTML = `
-    <span class="badge confirming" style="margin-right:6px" title="Confirming signals today">${confirming} CONFIRM</span>
-    <span class="badge neutral" style="margin-right:6px" title="Neutral signals today">${neutral} NEUTRAL</span>
-    <span class="badge nullifying" title="Nullifying signals today">${nullifying} NULLIFY</span>`;
+    <span class="badge ${confCls}" style="margin-right:6px"
+      title="CONFIRMING: Institutional dark-pool buying aligns with signal direction — upgrades WATCH to STRONG">${confirming} CONFIRM</span>
+    <span class="badge neutral" style="margin-right:6px"
+      title="NEUTRAL: No significant dark-pool activity — signals pass through unchanged">${neutral} NEUTRAL</span>
+    <span class="badge ${nullCls}"
+      title="NULLIFYING: Institutional selling opposes signal direction — suppresses long signals">${nullifying} NULLIFY</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +92,14 @@ function renderStrategyChart(strategies) {
   const el = document.getElementById('strategy-chart');
   if (!el || !strategies.length) return;
   const maxCount = Math.max(...strategies.map(s => s.signal_count || 0), 1);
-  el.innerHTML = strategies.map(s => {
+  // Sprint 23 Item 5: column headers above bar chart.
+  const header = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    <span style="font-family:var(--mono);font-size:11px;min-width:52px;color:var(--text3)"></span>
+    <div style="flex:1"></div>
+    <span style="font-family:var(--mono);font-size:11px;min-width:52px;text-align:right;color:var(--text3)">P&amp;L</span>
+    <span style="font-family:var(--mono);font-size:11px;min-width:30px;text-align:right;color:var(--text3)">Win Rate</span>
+  </div>`;
+  const rows = strategies.map(s => {
     const pct = Math.round(((s.signal_count || 0) / maxCount) * 100);
     const pnlColor = (s.total_pnl || 0) >= 0 ? '#22c55e' : '#ef4444';
     const pnlStr = (s.total_pnl || 0) >= 0 ? '+$' + s.total_pnl.toLocaleString() : '-$' + Math.abs(s.total_pnl).toLocaleString();
@@ -96,6 +112,7 @@ function renderStrategyChart(strategies) {
       <span style="font-family:var(--mono);font-size:11px;min-width:30px;text-align:right;color:var(--text3)">${s.win_rate}%</span>
     </div>`;
   }).join('');
+  el.innerHTML = header + rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +206,32 @@ async function loadBriefing() {
     actEl.innerHTML = '';
     detEl.textContent = '';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 23 Item 4: Exit PRIME button handlers.
+// ---------------------------------------------------------------------------
+
+function openExitConfirm() {
+  document.getElementById('exit-modal').classList.add('open');
+}
+
+function closeExitConfirm() {
+  document.getElementById('exit-modal').classList.remove('open');
+}
+
+async function submitExit() {
+  const btn = document.getElementById('exit-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Stopping…';
+  closeExitConfirm();
+  try {
+    await fetch(API + '/shutdown', { method: 'POST' });
+  } catch (e) {
+    // Expected: server stops mid-response; swallow network error.
+  }
+  const overlay = document.getElementById('shutdown-overlay');
+  if (overlay) { overlay.style.display = 'flex'; }
 }
 
 function advisoryBadgeClass(rec) {

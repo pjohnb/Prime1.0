@@ -119,23 +119,55 @@ async function loadSignals() {
       const dk = (s.dk_status || 'NEUTRAL').toUpperCase();
       const dkClass = dkBadgeClass(dk);
       const dkLabel = dkBadgeLabel(dk);
-      const convTitle = (s.dk_conviction != null)
-        ? ` title="Conviction: ${Number(s.dk_conviction).toFixed(2)}"` : '';
-      const trigger = _triggerSource(s);
+      const convStr = (s.dk_conviction != null)
+        ? `  Conviction: ${Number(s.dk_conviction).toFixed(2)}` : '';
+      const dkTooltip = dk === 'CONFIRMING'
+        ? `CONFIRMING: Institutional dark-pool buying aligns with signal direction — auto-upgrades WATCH to STRONG.${convStr}`
+        : dk === 'NULLIFYING'
+        ? `NULLIFYING: Institutional selling opposes signal direction — long signal is SUPPRESSED.${convStr}`
+        : 'NEUTRAL: No significant dark-pool activity. Signal passes through unchanged.';
+      // Sprint 23 Item 3: trigger_source reads from dedicated column (bridge sets it) or factors fallback.
+      const trigger = s.trigger_source || _triggerSource(s);
+      const triggerTooltip = trigger === 'UOA_CALL'
+        ? 'UOA_CALL: Unusual call volume surge (bullish) — initiates PSA long candidates'
+        : trigger === 'UOA_PUT'
+        ? 'UOA_PUT: Unusual put volume surge (bearish) — initiates SHORT candidates'
+        : trigger === 'PEAD_BEAT'
+        ? 'PEAD_BEAT: Earnings beat (EPS surprise > 0) — initiates PSA + PEAD long candidates'
+        : trigger === 'PEAD_MISS'
+        ? 'PEAD_MISS: Earnings miss + guidance cut — initiates PEAD + SHORT candidates'
+        : trigger === 'PSA_ONLY'
+        ? 'PSA_ONLY: Technical pattern only (no predictive trigger) — stays WATCH tier'
+        : 'No trigger source. Possible values: UOA_CALL, UOA_PUT, PEAD_BEAT, PEAD_MISS, PSA_ONLY';
+      const tier = s.tier || '--';
+      const tierTooltip = tier === 'STRONG'
+        ? 'STRONG: All criteria met + trigger fired. DK CONFIRMING or NEUTRAL (CONFIRMING auto-upgrades WATCH). Full-size entry.'
+        : tier === 'WATCH'
+        ? 'WATCH: One trigger fired, technical confirmation passes. DK NEUTRAL. Reduced size or wait for DK CONFIRMING.'
+        : tier === 'SUPPRESSED'
+        ? 'SUPPRESSED: Technical setup valid but DK NULLIFYING overrides — institutional selling opposes the trade. Skip.'
+        : 'Tier: STRONG (high conviction), WATCH (lower conviction), SUPPRESSED (DK override)';
+      const status = s.status || '--';
+      const statusTooltip = status === 'APPROVED'
+        ? 'APPROVED: Signal passed all filters and is actionable'
+        : status === 'SUPPRESSED'
+        ? 'SUPPRESSED: DK NULLIFYING override — do not trade this signal'
+        : status === 'WATCH'
+        ? 'WATCH: Valid signal, lower conviction — reduced size'
+        : `Status: ${status}`;
       const relTime = _fmtRelTime(s.scan_ts);
-      const isSuppressed = (s.status || '').toUpperCase() === 'SUPPRESSED';
-      // SUPPRESSED rows: muted opacity + red left border.
+      const isSuppressed = status.toUpperCase() === 'SUPPRESSED';
       const rowStyle = isSuppressed
         ? ' style="opacity:0.55;border-left:3px solid #C00000"' : '';
       tbody.innerHTML += `<tr${rowStyle}>
         <td style="font-family:var(--mono);font-size:13px" title="${s.scan_ts || ''}">${relTime}</td>
         <td style="font-weight:600">${s.symbol || '--'}</td>
         <td>${s.strategy || '--'}</td>
-        <td style="font-family:var(--mono);font-size:12px;color:var(--amber)">${trigger}</td>
-        <td>${s.tier || '--'}</td>
-        <td><span class="badge ${dkClass}"${convTitle}>${dkLabel}</span></td>
-        <td style="font-family:var(--mono)">$${(s.entry_price || 0).toFixed(2)}</td>
-        <td>${s.status || '--'}</td>
+        <td style="font-family:var(--mono);font-size:12px;color:var(--amber)" title="${triggerTooltip}">${trigger || '--'}</td>
+        <td title="${tierTooltip}">${tier}</td>
+        <td><span class="badge ${dkClass}" title="${dkTooltip}">${dkLabel}</span></td>
+        <td style="font-family:var(--mono)" title="Price at time of scan — not a limit order price">$${(s.entry_price || 0).toFixed(2)}</td>
+        <td title="${statusTooltip}">${status}</td>
       </tr>`;
     });
   } catch(e) {

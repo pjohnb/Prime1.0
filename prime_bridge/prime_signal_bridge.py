@@ -74,6 +74,7 @@ def _insert(signal: Dict[str, Any], db_path: Optional[Path]) -> bool:
         direction=signal.get("direction", "LONG"),
         factors=json.dumps(signal.get("factors", {})),
         instrument_type=signal.get("instrument_type", INSTRUMENT_TYPE),
+        trigger_source=signal.get("trigger_source"),
         db_path=db_path,
     )
     return result is not None
@@ -92,6 +93,9 @@ def bridge_uoa_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
             continue
         date = (row.get("date") or "").strip()
         time = (row.get("time") or "").strip()
+        direction = (row.get("direction") or "LONG").strip().upper()
+        # Sprint 23 Item 3: map UOA direction to trigger_source.
+        trigger_source = "UOA_PUT" if direction == "SHORT" else "UOA_CALL"
         signal = {
             "symbol": (row.get("symbol") or "").strip(),
             "strategy": "UOA",
@@ -99,8 +103,9 @@ def bridge_uoa_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
             "entry_price": _to_float(row.get("underlying_price")),
             "score": _to_float(row.get("sizzle_index")),
             "tier": tier,
-            "direction": (row.get("direction") or "LONG").strip().upper(),
+            "direction": direction,
             "status": "APPROVED",
+            "trigger_source": trigger_source,
             "factors": {
                 "source": (row.get("data_source") or "").strip(),
                 "group": (row.get("group") or "").strip(),
@@ -133,6 +138,8 @@ def bridge_psa_rows(
             "tier": "",
             "direction": "LONG",
             "status": "APPROVED",
+            # Sprint 23 Item 3: PSA is a pattern-only scanner (no external trigger).
+            "trigger_source": "PSA_ONLY",
             "factors": {
                 "momentum_pct": _to_float(row.get("Momentum%"), None),
                 "volume_pct": _to_float(row.get("Volume%"), None),
@@ -151,6 +158,9 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
     for row in rows:
         if int(row.get("above_threshold") or 0) != 1:
             continue
+        direction = (row.get("direction") or "LONG").strip().upper()
+        # Sprint 23 Item 3: LONG = earnings beat, SHORT = earnings miss/cut.
+        trigger_source = "PEAD_BEAT" if direction == "LONG" else "PEAD_MISS"
         signal = {
             "symbol": (row.get("symbol") or "").strip(),
             "strategy": "PEAD",
@@ -158,8 +168,9 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
             "entry_price": _to_float(row.get("price_at_scan")),
             "score": _to_float(row.get("score")),
             "tier": "",
-            "direction": (row.get("direction") or "LONG").strip().upper(),
+            "direction": direction,
             "status": "APPROVED",
+            "trigger_source": trigger_source,
             "factors": {
                 "eps_surprise_pct": _to_float(row.get("eps_surprise_pct"), None),
                 "price_reaction_pct": _to_float(row.get("price_reaction_pct"), None),
