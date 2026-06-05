@@ -36,7 +36,7 @@ def create_app() -> Flask:
     @app.after_request
     def add_cors_headers(response):
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         return response
 
@@ -63,4 +63,15 @@ if __name__ == "__main__":
     run_startup_checks()
     app = create_app()
     logger.info("PRIME API server starting on port %d", API_PORT)
+    # Sprint 23 Item 1: auto-sync Schwab positions on startup if connected.
+    try:
+        from prime_trading.prime_schwab_sync import sync_schwab_positions
+        result = sync_schwab_positions()
+        logger.info(
+            "Schwab startup sync: imported=%d skipped=%d errors=%d",
+            result.get("imported", 0), result.get("skipped", 0),
+            len(result.get("errors", [])),
+        )
+    except Exception as e:
+        logger.info("Schwab startup sync skipped: %s", e)
     app.run(host="127.0.0.1", port=API_PORT, debug=False)

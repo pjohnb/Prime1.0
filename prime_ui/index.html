@@ -121,7 +121,7 @@ tr:hover td { background: var(--bg3); }
 <div class="topbar">
   <h1>PRIME v1.0</h1>
   <div style="display:flex;align-items:center;gap:12px">
-    <span class="status" id="market-status" style="font-family:var(--mono);font-size:12px;font-weight:700">--</span>
+    <span class="status" id="market-status" style="font-family:var(--mono);font-size:12px;font-weight:700" title="OPEN: 09:30–16:00 ET | PRE-MKT: 04:00–09:30 ET | CLOSED: 16:00–04:00 ET">--</span>
     <span class="status" id="api-status">API: checking...</span>
     <button class="help-btn" id="help-open-btn" onclick="openHelp()" title="PRIME Help &amp; Cheat Sheet">?</button>
   </div>
@@ -130,6 +130,7 @@ tr:hover td { background: var(--bg3); }
   <div class="tab active" onclick="showView('dashboard')">Dashboard</div>
   <div class="tab" onclick="showView('positions')">Positions</div>
   <div class="tab" onclick="showView('signals')">Signals</div>
+  <div class="tab" onclick="showView('settings')">Settings</div>
 </div>
 
 <div class="view active" id="view-dashboard">
@@ -143,7 +144,7 @@ tr:hover td { background: var(--bg3); }
       </div>
     </div>
     <div class="card"><div class="card-label">Win Rate</div><div class="card-val" id="d-winrate">--%</div></div>
-    <div class="card"><div class="card-label">Total Signals (7d)</div><div class="card-val" id="d-signals">--</div></div>
+    <div class="card"><div class="card-label" title="Signals generated across all strategies in the last 7 calendar days">Total Signals (7d)</div><div class="card-val" id="d-signals">--</div></div>
   </div>
   <!-- Sprint 22 Item 3: DK activity chips -->
   <div class="dk-chips" id="dk-activity-chips"></div>
@@ -175,9 +176,19 @@ tr:hover td { background: var(--bg3); }
   <!-- Sprint 22 Item 3: strategy bar chart (renderStrategyChart targets this div) -->
   <h3 style="font-size:12px;color:var(--text3);margin-bottom:10px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Strategy Breakdown</h3>
   <div id="strategy-chart" style="margin-bottom:24px"></div>
+  <!-- Sprint 23 Item 4: Exit PRIME button -->
+  <div style="display:flex;justify-content:flex-end;margin-top:8px">
+    <button class="btn-cancel" onclick="openExitConfirm()" style="font-size:12px;padding:5px 14px">Exit PRIME</button>
+  </div>
 </div>
 
 <div class="view" id="view-positions">
+  <!-- Sprint 23 Item 1: Sync Schwab header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Open Positions</span>
+    <button id="sync-schwab-btn" class="btn-confirm" onclick="syncSchwab()" style="font-size:12px;padding:5px 14px">Sync Schwab</button>
+  </div>
+  <div id="sync-msg" style="font-family:var(--mono);font-size:12px;min-height:16px;margin-bottom:8px;color:var(--text3)"></div>
   <div class="order-panel">
     <div class="panel-title">ORDER ENTRY (PAPER)</div>
     <div class="order-form">
@@ -272,6 +283,42 @@ tr:hover td { background: var(--bg3); }
     <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
     <tbody id="sig-body"></tbody>
   </table>
+</div>
+
+<!-- Sprint 23 Item 2: Settings view -->
+<div class="view" id="view-settings">
+  <div id="settings-body"><div class="empty-state">Loading settings…</div></div>
+</div>
+
+<!-- Sprint 23 Item 4: Delete paper trade confirmation modal -->
+<div id="delete-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>Delete Paper Trade</h3>
+    <div id="delete-modal-details" class="modal-details"></div>
+    <div style="color:var(--red);font-size:13px;margin-bottom:14px">This cannot be undone.</div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeDeleteConfirm()">Cancel</button>
+      <button class="btn-sell" id="delete-confirm-btn" onclick="submitDelete()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sprint 23 Item 4: Exit PRIME confirmation modal -->
+<div id="exit-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>Shut Down PRIME</h3>
+    <div class="modal-details">Shut down all PRIME servers?<br><span style="color:var(--text3);font-size:13px">(API server, UI server)<br>The Tkinter GUI is not affected.</span></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeExitConfirm()">Cancel</button>
+      <button class="btn-sell" id="exit-confirm-btn" onclick="submitExit()">Shut Down</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sprint 23 Item 4: Shutdown complete overlay -->
+<div id="shutdown-overlay" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+  <div style="font-size:20px;font-weight:700;color:var(--text)">PRIME servers stopped.</div>
+  <div style="color:var(--text3)">You may close this window.</div>
 </div>
 
 <!-- Sprint 21 Item 1: Help modal -->
@@ -450,6 +497,7 @@ tr:hover td { background: var(--bg3); }
 <script src="dashboard.js"></script>
 <script src="positions.js"></script>
 <script src="signals.js"></script>
+<script src="settings.js"></script>
 <script src="orders.js"></script>
 <script src="help.js"></script>
 <script>
@@ -463,6 +511,7 @@ function showView(id) {
   if (id === 'dashboard') loadDashboard();
   if (id === 'positions') loadPositions();
   if (id === 'signals') loadSignals();
+  if (id === 'settings') loadSettings();
 }
 
 async function checkHealth() {

@@ -6,9 +6,15 @@ All reads delegate to prime_db.py -- zero direct SQL in this file.
 """
 
 import hmac
+import json
 import logging
+import os
+import sys
+import threading
+import time
 from datetime import datetime
 from functools import wraps
+from pathlib import Path
 from typing import Any, Dict
 
 from flask import Blueprint, jsonify, request
@@ -294,6 +300,169 @@ def create_trade():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"log_id": log_id, "status": "OPEN", "trade_source": "PAPER"}), 201
+
+
+@api_bp.route("/sync/schwab", methods=["GET"])
+def sync_schwab():
+    """GET /api/v1/sync/schwab -- import current Schwab holdings into prime_trade_log.
+
+    Sprint 23 Item 1. Triggers a live Schwab position sync and returns a count
+    summary. Safe to call multiple times -- deduplication is enforced in the sync
+    module. Degrades gracefully when Schwab is not connected.
+    """
+    try:
+        from prime_trading.prime_schwab_sync import sync_schwab_positions
+        result = sync_schwab_positions()
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error("schwab sync error: %s", e)
+        return jsonify({"imported": 0, "skipped": 0, "errors": [str(e)]}), 200
+
+
+_OPS_CONFIG_PATH = Path(__file__).resolve().parent.parent / "ops_config.json"
+
+_SETTINGS_FIELDS = [
+    "max_trades", "mata_profile", "analysis_mode", "use_ai_ranker",
+    "long_stop_loss_pct", "short_stop_loss_pct", "short_size_multiplier",
+    "time_stop_minutes", "short_time_stop_minutes", "use_signal_led_psa",
+    "strategy_thresholds",
+]
+
+
+@api_bp.route("/settings", methods=["GET"])
+def get_settings():
+    """GET /api/v1/settings -- return current UI-editable ops_config.json values.
+
+    Sprint 23 Item 2.
+    """
+    try:
+        with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        payload = {k: raw.get(k) for k in _SETTINGS_FIELDS if k in raw}
+        return jsonify(payload), 200
+    except Exception as e:
+        logger.error("get_settings error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/settings", methods=["POST"])
+def post_settings():
+    """POST /api/v1/settings -- partial-update UI-editable fields in ops_config.json.
+
+    Sprint 23 Item 2. Writes changes to ops_config.json and reloads the config
+    singleton so updated values take effect on the next scan without a restart.
+    Returns the full updated settings payload.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        for key in _SETTINGS_FIELDS:
+            if key in payload:
+                raw[key] = payload[key]
+
+        with open(_OPS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2)
+
+        from prime_config.prime_config import reload_config
+        reload_config()
+
+        updated = {k: raw.get(k) for k in _SETTINGS_FIELDS if k in raw}
+        return jsonify(updated), 200
+    except Exception as e:
+        logger.error("post_settings error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/trades/<string:log_id>", methods=["DELETE"])
+@require_local_token
+def delete_trade_endpoint(log_id):
+    """DELETE /api/v1/trades/{log_id} -- hard-delete a manual PAPER trade.
+
+    Sprint 23 Item 4. Blocked in LIVE mode (403). Only removes records where
+    trade_source != 'SCHWAB_IMPORT' -- never deletes imported Schwab positions.
+    """
+    from prime_config.prime_config import get_config
+    from prime_data.prime_db import get_trade, delete_trade
+
+    if (get_config().trading_mode or "PAPER").upper() != "PAPER":
+        return jsonify({"error": "forbidden: delete is blocked in LIVE mode"}), 403
+
+    if not log_id:
+        return jsonify({"error": "log_id is required"}), 400
+
+    trade = get_trade(log_id)
+    if not trade:
+        return jsonify({"error": "unknown log_id"}), 404
+
+    if (trade.get("trade_source") or "").upper() == "SCHWAB_IMPORT":
+        return jsonify({"error": "forbidden: cannot delete Schwab-imported positions"}), 403
+
+    if (trade.get("status") or "").upper() != "OPEN":
+        return jsonify({"error": "only OPEN trades can be deleted"}), 409
+
+    try:
+        deleted = delete_trade(log_id)
+    except Exception as e:
+        logger.error("delete_trade error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+    if not deleted:
+        return jsonify({"error": "trade not found or already closed"}), 404
+    return jsonify({"deleted": log_id, "status": "ok"}), 200
+
+
+def _shutdown_servers() -> None:
+    """Deferred shutdown: wait for response to flush, then kill UI server and self."""
+    time.sleep(0.5)
+    _kill_port(5002)
+    time.sleep(0.1)
+    os._exit(0)
+
+
+def _kill_port(port: int) -> None:
+    """Kill the process listening on the given port (cross-platform)."""
+    try:
+        if sys.platform == "win32":
+            import subprocess
+            result = subprocess.run(
+                f"netstat -ano | findstr :{port}",
+                shell=True, capture_output=True, text=True,
+            )
+            for line in result.stdout.strip().splitlines():
+                if "LISTENING" in line:
+                    pid = int(line.split()[-1])
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True,
+                    )
+                    break
+        else:
+            import subprocess, signal as _signal
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True,
+            )
+            for pid_str in result.stdout.strip().splitlines():
+                try:
+                    os.kill(int(pid_str), _signal.SIGTERM)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("_kill_port(%d) error: %s", port, e)
+
+
+@api_bp.route("/shutdown", methods=["POST"])
+def shutdown_servers():
+    """POST /api/v1/shutdown -- gracefully stop the API and UI Flask servers.
+
+    Sprint 23 Item 4. Returns immediately; shutdown fires 500ms later so the
+    browser receives the response. Tkinter GUI (prime_gui_app.py) is not affected.
+    """
+    t = threading.Thread(target=_shutdown_servers, daemon=True)
+    t.start()
+    return jsonify({"status": "shutting_down", "message": "PRIME servers stopping"}), 200
 
 
 @api_bp.route("/trades/close", methods=["POST"])

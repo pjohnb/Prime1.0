@@ -1,6 +1,9 @@
 // Sprint 16 Item 5: Positions tab -- live P&L, stop badges, hold time, Close.
 // Sprint 22 Item 2: DK badge per row, P&L color coding, human-readable hold time,
 //                   red Close button styling, symbol search/filter.
+// Sprint 23 Item 1: Sync Schwab button.
+// Sprint 23 Item 3: Tooltips on Hold, Stop, DK columns.
+// Sprint 23 Item 4: Delete button for manual PAPER trades.
 
 function _posApi() {
   return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
@@ -20,7 +23,6 @@ function _fmtMoney(v) {
 // Sprint 22 Item 2: human-readable hold time (raw minutes -> "2d 3h" or "47m").
 function _fmtHold(rawHold) {
   if (!rawHold || rawHold === '--') return rawHold || '--';
-  // rawHold may be a pre-formatted string from the API (e.g. "2d 3h") or plain minutes.
   if (typeof rawHold === 'string' && !/^\d+$/.test(rawHold)) return rawHold;
   const mins = parseInt(rawHold, 10);
   if (isNaN(mins)) return '--';
@@ -33,13 +35,18 @@ function _fmtHold(rawHold) {
   return d + 'd' + (rh ? ' ' + rh + 'h' : '');
 }
 
-// Sprint 22 Item 2: DK badge for positions.
+// Sprint 22 Item 2 / Sprint 23 Item 3: DK badge with tooltip.
 function _dkBadge(dkStatus, dkConviction) {
   const dk = (dkStatus || 'NEUTRAL').toUpperCase();
   const cls = dk === 'CONFIRMING' ? 'confirming' : dk === 'NULLIFYING' ? 'nullifying' : 'neutral';
   const label = dk === 'CONFIRMING' ? 'CONFIRM' : dk === 'NULLIFYING' ? 'NULLIFY' : 'NEUTRAL';
-  const title = (dkConviction != null) ? ` title="Conviction: ${Number(dkConviction).toFixed(2)}"` : '';
-  return `<span class="badge ${cls}"${title}>${label}</span>`;
+  const convStr = (dkConviction != null) ? `  Conviction: ${Number(dkConviction).toFixed(2)}` : '';
+  const tooltip = dk === 'CONFIRMING'
+    ? `CONFIRMING: Institutional dark-pool buying aligns with position direction.${convStr}`
+    : dk === 'NULLIFYING'
+    ? `NULLIFYING: Institutional selling opposes position direction — tighten stop.${convStr}`
+    : 'NEUTRAL: No significant dark-pool activity. Manage by standard rules.';
+  return `<span class="badge ${cls}" title="${tooltip}">${label}</span>`;
 }
 
 async function loadPositions() {
@@ -66,30 +73,51 @@ async function loadPositions() {
       const price = p.current_price || entry;
       const pnl = Number(p.unrealized_pnl || 0);
       const pnlPct = Number(p.unrealized_pnl_pct || 0);
-      // Sprint 22 Item 2: explicit P&L color coding (green positive / red negative).
       const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text2)';
-      const stopCls = _STOP_CLASS[p.stop_badge] || 'neutral';
+      const stopBadge = p.stop_badge || 'GREEN';
+      const stopCls = _STOP_CLASS[stopBadge] || 'neutral';
+      // Sprint 23 Item 3: Stop tooltip.
+      const stopTooltip = stopBadge === 'GREEN'
+        ? 'GREEN: more than 1% from stop level — position safe'
+        : stopBadge === 'AMBER'
+        ? 'AMBER: within 1% of stop — monitor closely'
+        : 'RED: stop level breached — exit recommended';
       const holdRaw = p.hold_minutes != null ? p.hold_minutes : p.hold_time;
       const holdFmt = _fmtHold(holdRaw);
       const holdColor = p.time_stop_exceeded ? 'var(--amber)' : 'var(--text2)';
+      // Sprint 23 Item 3: Hold tooltip.
+      const holdMins = typeof holdRaw === 'number' ? holdRaw : parseInt(holdRaw, 10);
+      const holdTooltip = isNaN(holdMins)
+        ? 'Time held since entry'
+        : `Hold time: ${holdFmt} since entry${p.time_stop_exceeded ? ' — time stop exceeded' : ''}`;
       const logId = p.log_id || '';
       const dir = (p.direction || 'LONG').toUpperCase();
       const dirCls = dir === 'SHORT' ? 'nullifying' : 'confirming';
       const dkBadge = _dkBadge(p.dk_status, p.dk_conviction);
+      const isSchwabImport = (p.trade_source || '').toUpperCase() === 'SCHWAB_IMPORT';
+      // Sprint 23 Item 4: delete button — only on PAPER manual trades (not Schwab imports).
+      const deleteBtn = !isSchwabImport
+        ? `<button class="btn-sell" style="font-size:11px;padding:3px 8px;margin-left:4px"
+             title="Delete this paper trade"
+             onclick="openDeleteConfirm('${logId}','${p.symbol || ''}',${Number(p.shares || 0)})">✕</button>`
+        : '';
       tbody.innerHTML += `<tr>
         <td style="font-weight:600">${p.symbol || '--'}</td>
         <td><span class="badge ${dirCls}">${dir}</span></td>
         <td>${p.strategy || '--'}</td>
         <td style="font-family:var(--mono)">${p.shares || 0}</td>
-        <td style="font-family:var(--mono)">$${Number(entry).toFixed(2)}</td>
+        <td style="font-family:var(--mono)" title="Price at time of scan / order entry">$${Number(entry).toFixed(2)}</td>
         <td style="font-family:var(--mono)">$${Number(price).toFixed(2)}</td>
         <td style="font-family:var(--mono);color:${pnlColor}">${_fmtMoney(pnl)} (${pnlPct.toFixed(1)}%)</td>
-        <td><span class="badge ${stopCls}">${p.stop_badge || 'GREEN'}</span></td>
-        <td style="font-family:var(--mono);color:${holdColor}">${holdFmt}</td>
+        <td><span class="badge ${stopCls}" title="${stopTooltip}">${stopBadge}</span></td>
+        <td style="font-family:var(--mono);color:${holdColor}" title="${holdTooltip}">${holdFmt}</td>
         <td>${dkBadge}</td>
         <td>${p.status || '--'}</td>
-        <td><button class="btn-close-pos"
-              onclick="openCloseConfirm('${logId}','${p.symbol || ''}',${Number(p.shares || 0)},${Number(price)})">Close</button></td>
+        <td>
+          <button class="btn-close-pos"
+            onclick="openCloseConfirm('${logId}','${p.symbol || ''}',${Number(p.shares || 0)},${Number(price)})">Close</button>
+          ${deleteBtn}
+        </td>
       </tr>`;
     });
   } catch(e) {
@@ -98,6 +126,42 @@ async function loadPositions() {
       '<tr><td colspan="12" class="empty-state">Failed to load positions</td></tr>';
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 23 Item 1: Sync Schwab
+// ---------------------------------------------------------------------------
+
+async function syncSchwab() {
+  const btn = document.getElementById('sync-schwab-btn');
+  const msgEl = document.getElementById('sync-msg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  if (msgEl) msgEl.textContent = 'Syncing Schwab positions…';
+  try {
+    const resp = await fetch(_posApi() + '/sync/schwab');
+    const result = await resp.json();
+    const errors = result.errors || [];
+    if (msgEl) {
+      if (errors.length) {
+        msgEl.style.color = 'var(--amber)';
+        msgEl.textContent = `Imported: ${result.imported}  Skipped: ${result.skipped}  Warning: ${errors[0]}`;
+      } else {
+        msgEl.style.color = 'var(--green)';
+        msgEl.textContent = `Sync complete — imported: ${result.imported}  already present: ${result.skipped}`;
+      }
+    }
+    loadPositions();
+  } catch (e) {
+    console.error('syncSchwab:', e);
+    if (msgEl) { msgEl.style.color = 'var(--red)'; msgEl.textContent = 'Sync failed — API offline?'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sync Schwab'; }
+    setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 8000);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Close position
+// ---------------------------------------------------------------------------
 
 let _pendingClose = null;
 
@@ -139,7 +203,44 @@ async function submitClose() {
     loadPositions();
   } catch (e) {
     console.error('submitClose:', e);
+  } finally {
     btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 23 Item 4: Delete paper trade
+// ---------------------------------------------------------------------------
+
+let _pendingDelete = null;
+
+function openDeleteConfirm(logId, symbol, shares) {
+  if (!logId) return;
+  _pendingDelete = { log_id: logId };
+  document.getElementById('delete-modal-details').innerHTML =
+    `<div>Delete paper trade: <b>${shares} ${symbol}</b></div>`;
+  document.getElementById('delete-modal').classList.add('open');
+}
+
+function closeDeleteConfirm() {
+  document.getElementById('delete-modal').classList.remove('open');
+  _pendingDelete = null;
+}
+
+async function submitDelete() {
+  if (!_pendingDelete) return;
+  const btn = document.getElementById('delete-confirm-btn');
+  btn.disabled = true;
+  try {
+    const resp = await fetch(_posApi() + '/trades/' + _pendingDelete.log_id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + _posToken() },
+    });
+    await resp.json().catch(() => ({}));
+    closeDeleteConfirm();
+    loadPositions();
+  } catch (e) {
+    console.error('submitDelete:', e);
   } finally {
     btn.disabled = false;
   }
