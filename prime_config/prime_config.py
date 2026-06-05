@@ -141,6 +141,13 @@ class OpsConfig:
     long_stop_loss_pct: float = 0.05
     time_stop_minutes: int = 1950
     mata_profile: str = "Joint Brokerage"
+    # Sprint 24 Item 1: max fraction of account value per single live order (10%).
+    max_order_pct: float = 0.10
+    # Sprint 24 Item 4: stop execution mode — ALERT (topbar banner) or AUTO (auto-sell).
+    stop_execution_mode: str = "ALERT"
+    # Sprint 24 Item 5: portfolio-level risk limits.
+    max_sector_pct: float = 0.30
+    max_position_pct: float = 0.15
     # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
     # Defaults are the working values from sprint history; users can tune in Settings UI.
     strategy_thresholds: Any = field(default_factory=lambda: {
