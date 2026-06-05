@@ -126,11 +126,17 @@ tr:hover td { background: var(--bg3); }
     <button class="help-btn" id="help-open-btn" onclick="openHelp()" title="PRIME Help &amp; Cheat Sheet">?</button>
   </div>
 </div>
+<!-- Sprint 24 Item 4: Stop alert banner (hidden until a breach fires) -->
+<div id="stop-alert-banner" style="display:none;background:#7f1d1d;color:#fca5a5;padding:8px 20px;font-size:13px;font-family:var(--mono);font-weight:700;display:flex;align-items:center;gap:12px;flex-shrink:0">
+  <span id="stop-alert-text">STOP BREACHED</span>
+  <button onclick="acknowledgeStopAlert()" style="background:none;border:1px solid #fca5a5;color:#fca5a5;padding:2px 10px;border-radius:4px;cursor:pointer;font-size:12px">Acknowledge</button>
+</div>
 <div class="tabs">
   <div class="tab active" onclick="showView('dashboard')">Dashboard</div>
   <div class="tab" onclick="showView('positions')">Positions</div>
   <div class="tab" onclick="showView('signals')">Signals</div>
   <div class="tab" onclick="showView('settings')">Settings</div>
+  <div class="tab" onclick="showView('portfolio')">Portfolio</div>
 </div>
 
 <div class="view active" id="view-dashboard">
@@ -201,6 +207,7 @@ tr:hover td { background: var(--bg3); }
         <option value="MTS">MTS</option><option value="MANUAL">MANUAL</option>
       </select>
       <input id="ord-account" placeholder="Account" value="PAPER" />
+      <input id="ord-trailing-stop" type="number" min="0" step="0.5" placeholder="Trail%" title="Optional trailing stop %" style="width:65px" />
       <button class="btn-buy" onclick="openOrderConfirm('BUY')">BUY</button>
       <button class="btn-sell" onclick="openOrderConfirm('SELL')">SELL</button>
     </div>
@@ -288,6 +295,62 @@ tr:hover td { background: var(--bg3); }
 <!-- Sprint 23 Item 2: Settings view -->
 <div class="view" id="view-settings">
   <div id="settings-body"><div class="empty-state">Loading settings…</div></div>
+</div>
+
+<!-- Sprint 24 Item 2: Portfolio view -->
+<div class="view" id="view-portfolio">
+  <div id="portfolio-warnings" style="display:none;background:#78350f;color:#fcd34d;padding:8px 16px;border-radius:6px;font-size:13px;margin-bottom:14px"></div>
+  <div id="portfolio-summary" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Holdings</span>
+    <div style="display:flex;gap:8px">
+      <button class="btn-refresh" onclick="loadPortfolio()" title="Sync Schwab + refresh">Refresh</button>
+      <button class="btn-refresh" onclick="requestRebalance()" title="ML-17 AI rebalance suggestions">Rebalance</button>
+    </div>
+  </div>
+  <table id="portfolio-table">
+    <thead><tr>
+      <th onclick="sortPortfolio('symbol')" style="cursor:pointer">Symbol</th>
+      <th onclick="sortPortfolio('total_shares')" style="cursor:pointer">Shares</th>
+      <th onclick="sortPortfolio('avg_entry_price')" style="cursor:pointer">Avg Entry</th>
+      <th onclick="sortPortfolio('current_price')" style="cursor:pointer">Current</th>
+      <th onclick="sortPortfolio('market_value')" style="cursor:pointer">Mkt Value</th>
+      <th onclick="sortPortfolio('unrealized_pnl')" style="cursor:pointer">P&amp;L $</th>
+      <th onclick="sortPortfolio('unrealized_pnl_pct')" style="cursor:pointer">P&amp;L %</th>
+      <th>Accounts</th>
+      <th>DK</th>
+      <th>Action</th>
+    </tr></thead>
+    <tbody id="portfolio-rows"></tbody>
+  </table>
+  <div id="rebalance-panel" style="display:none;margin-top:16px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px"></div>
+</div>
+
+<!-- Sprint 24 Item 3: MATA Sell modal -->
+<div id="sell-modal" class="modal-overlay">
+  <div class="modal-box" style="min-width:400px">
+    <h3>Sell Position</h3>
+    <div id="sell-modal-details" class="modal-details"></div>
+    <div style="display:grid;gap:8px;margin-bottom:14px">
+      <label style="font-size:13px;color:var(--text3)">Quantity (shares or 50%)</label>
+      <input id="sell-qty-input" type="text" style="background:var(--bg4);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px;font-size:14px" placeholder="e.g. 10 or 50%">
+      <label style="font-size:13px;color:var(--text3)">Order Type</label>
+      <select id="sell-order-type" style="background:var(--bg4);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px;font-size:14px">
+        <option value="MARKET">MARKET</option>
+        <option value="LIMIT">LIMIT</option>
+      </select>
+      <div id="sell-limit-row" style="display:none">
+        <label style="font-size:13px;color:var(--text3)">Limit Price</label>
+        <input id="sell-limit-price" type="number" step="0.01" style="background:var(--bg4);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px;font-size:14px;width:100%">
+      </div>
+    </div>
+    <div id="sell-allocation-preview" style="font-size:12px;color:var(--text3);margin-bottom:14px"></div>
+    <div id="sell-msg" class="order-msg"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeSellModal()">Cancel</button>
+      <button class="btn-sell" id="sell-confirm-btn" onclick="submitSell()">Confirm Sell</button>
+    </div>
+  </div>
 </div>
 
 <!-- Sprint 23 Item 4: Delete paper trade confirmation modal -->
@@ -498,6 +561,7 @@ tr:hover td { background: var(--bg3); }
 <script src="positions.js"></script>
 <script src="signals.js"></script>
 <script src="settings.js"></script>
+<script src="portfolio.js"></script>
 <script src="orders.js"></script>
 <script src="help.js"></script>
 <script>
@@ -512,6 +576,7 @@ function showView(id) {
   if (id === 'positions') loadPositions();
   if (id === 'signals') loadSignals();
   if (id === 'settings') loadSettings();
+  if (id === 'portfolio') loadPortfolio();
 }
 
 async function checkHealth() {
@@ -526,23 +591,60 @@ async function checkHealth() {
   }
 }
 
-// Item 3d: auto-refresh the active view every 60s without a page reload.
+// Sprint 24 Item 4: poll stop-alerts every 30s; show/hide topbar banner.
+async function pollStopAlerts() {
+  try {
+    const r = await fetch(API + '/stop-alerts');
+    const d = await r.json();
+    const banner = document.getElementById('stop-alert-banner');
+    const text   = document.getElementById('stop-alert-text');
+    if (!banner) return;
+    if (d.alerts && d.alerts.length > 0) {
+      const a = d.alerts[0];
+      text.textContent = 'STOP BREACHED: ' + a.symbol + ' ' + a.direction +
+        ' current=' + (a.current_price || '').toFixed(2) +
+        ' stop=' + (a.stop_price || '').toFixed(2);
+      banner.style.display = 'flex';
+      window._stopAlertLogId = a.log_id;
+    } else {
+      banner.style.display = 'none';
+      window._stopAlertLogId = null;
+    }
+  } catch(e) {}
+}
+
+async function acknowledgeStopAlert() {
+  const logId = window._stopAlertLogId;
+  if (!logId) { document.getElementById('stop-alert-banner').style.display = 'none'; return; }
+  try {
+    const token = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiToken) || '';
+    await fetch(API + '/stop-alerts/' + logId, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+  } catch(e) {}
+  document.getElementById('stop-alert-banner').style.display = 'none';
+  window._stopAlertLogId = null;
+}
+
 function refreshActiveView() {
   const active = document.querySelector('.view.active');
   if (!active) return;
   if (active.id === 'view-dashboard') loadDashboard();
   else if (active.id === 'view-positions') loadPositions();
   else if (active.id === 'view-signals') loadSignals();
+  else if (active.id === 'view-portfolio') loadPortfolio();
 }
 
 checkHealth();
 loadDashboard();
 populateStrategyFilter();
 updateMarketStatus();
+pollStopAlerts();
 setInterval(refreshActiveView, 60000);
 setInterval(checkHealth, 60000);
 setInterval(updateMarketStatus, 60000);
-// Sprint 16 Item 5: Positions tab polls live P&L every 30s while it is active.
+setInterval(pollStopAlerts, 30000);
 setInterval(() => {
   const active = document.querySelector('.view.active');
   if (active && active.id === 'view-positions') loadPositions();
