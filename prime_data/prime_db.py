@@ -342,6 +342,21 @@ def get_all_trades(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def delete_trade(log_id: str, db_path: Optional[Path] = None) -> bool:
+    """Hard-delete a single OPEN trade record. Returns True if a row was deleted.
+
+    Only removes records with status=OPEN -- closed records are permanent.
+    Caller must enforce PAPER-mode and source restrictions before invoking.
+    """
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM prime_trade_log WHERE log_id=? AND status='OPEN'",
+            (log_id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 def bulk_delete_trades(log_ids: List[str], db_path: Optional[Path] = None) -> int:
     """Delete multiple trade records in a single transaction. Returns count deleted."""
     if not log_ids:
