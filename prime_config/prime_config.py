@@ -135,6 +135,48 @@ class OpsConfig:
     # Sprint 18 Item 1: signal-led PSA approval. When true (default), PSA requires
     # a UOA-call or PEAD-beat trigger before APPROVED; false = legacy technical-only.
     use_signal_led_psa: bool = True
+    # Sprint 23 Item 2: UI-editable global settings persisted to ops_config.json.
+    max_trades: int = 5
+    analysis_mode: str = "Universe"
+    long_stop_loss_pct: float = 0.05
+    time_stop_minutes: int = 1950
+    mata_profile: str = "Joint Brokerage"
+    # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
+    # Defaults are the working values from sprint history; users can tune in Settings UI.
+    strategy_thresholds: Any = field(default_factory=lambda: {
+        "PSA": {
+            "momentum_pct": 5.0,
+            "volume_pct": 50.0,
+            "volatility_pct": 2.0,
+            "max_drawdown_pct": 3.0,
+        },
+        "UOA": {
+            "sizzle_index_min": 5.0,
+            "put_call_ratio_max": 0.5,
+            "min_premium": 50000,
+            "max_dte": 45,
+        },
+        "PEAD": {
+            "earnings_window_days": 5,
+            "beat_pct_min": 2.0,
+            "miss_pct_max": -2.0,
+            "drift_days": 20,
+        },
+        "DK": {
+            "volume_ratio_min": 1.5,
+            "price_proximity_pct": 2.0,
+            "conviction_min": 0.5,
+        },
+        "SHORT": {
+            "borrow_rate_max_pct": 10.0,
+            "put_volume_surge": 2.0,
+        },
+        "IDX": {
+            "rs_vs_spy_min": 1.0,
+            "sma_short": 10,
+            "sma_long": 50,
+        },
+    })
 
 
 @dataclass
