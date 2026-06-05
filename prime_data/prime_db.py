@@ -91,6 +91,10 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     from prime_analytics.prime_signals_db import init_signals_table
     init_signals_table(db_path)
 
+    # Sprint 24 Item 4: trailing stop columns (idempotent migrations)
+    _migrate_add_column_trade_log(db_path, "trailing_stop_pct", "REAL")
+    _migrate_add_column_trade_log(db_path, "trailing_stop_high_water", "REAL")
+
     return path
 
 
@@ -120,6 +124,24 @@ def get_table_columns(table_name: str, db_path: Optional[Path] = None) -> list[s
     with get_connection(db_path) as conn:
         cursor = conn.execute(f"PRAGMA table_info({table_name})")
         return [row[1] for row in cursor.fetchall()]
+
+
+def _migrate_add_column_trade_log(
+    db_path: Optional[Path], column: str, col_type: str
+) -> None:
+    """Idempotent ALTER TABLE for prime_trade_log."""
+    try:
+        path = _db_path(db_path)
+        conn = sqlite3.connect(str(path))
+        try:
+            existing = [row[1] for row in conn.execute("PRAGMA table_info(prime_trade_log)").fetchall()]
+            if column not in existing:
+                conn.execute(f"ALTER TABLE prime_trade_log ADD COLUMN {column} {col_type}")
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +374,22 @@ def delete_trade(log_id: str, db_path: Optional[Path] = None) -> bool:
         cursor = conn.execute(
             "DELETE FROM prime_trade_log WHERE log_id=? AND status='OPEN'",
             (log_id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def update_trailing_stop(
+    log_id: str,
+    trailing_stop_pct: Optional[float],
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Set or clear the trailing_stop_pct on an OPEN trade. Returns True on success."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE prime_trade_log SET trailing_stop_pct=?, trailing_stop_high_water=NULL"
+            " WHERE log_id=? AND status='OPEN'",
+            (trailing_stop_pct, log_id),
         )
         conn.commit()
         return cursor.rowcount > 0

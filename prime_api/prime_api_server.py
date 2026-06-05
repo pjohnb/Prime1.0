@@ -74,4 +74,10 @@ if __name__ == "__main__":
         )
     except Exception as e:
         logger.info("Schwab startup sync skipped: %s", e)
+    # Sprint 24 Item 4: start stop monitor background thread.
+    try:
+        from prime_trading.prime_stop_monitor import start_monitor
+        start_monitor()
+    except Exception as e:
+        logger.warning("Stop monitor startup failed: %s", e)
     app.run(host="127.0.0.1", port=API_PORT, debug=False)
