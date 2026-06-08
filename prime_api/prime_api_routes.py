@@ -257,6 +257,8 @@ def create_trade():
     direction = str(payload.get("direction", "")).strip().upper()
     account   = str(payload.get("account", "")).strip() or None
     order_type = str(payload.get("order_type", "MARKET")).strip().upper()
+    if order_type not in ("MARKET", "LIMIT"):
+        order_type = "MARKET"
     confirmed  = bool(payload.get("confirmed", False))
 
     try:
@@ -264,6 +266,15 @@ def create_trade():
         price = float(payload.get("price"))
     except (TypeError, ValueError):
         return jsonify({"error": "qty must be an integer and price a number"}), 400
+
+    # Sprint 27 Item 3: resolve limit_price (LIMIT orders fill at this price in PAPER)
+    limit_price_val = None
+    if order_type == "LIMIT":
+        lp_raw = payload.get("limit_price")
+        try:
+            limit_price_val = float(lp_raw) if lp_raw is not None else price
+        except (TypeError, ValueError):
+            limit_price_val = price
 
     if not symbol or not strategy:
         return jsonify({"error": "symbol and strategy are required"}), 400
@@ -303,12 +314,14 @@ def create_trade():
             except Exception:
                 pass
 
+            # Sprint 27 Item 3: LIVE LIMIT orders use limit_price as the order price
+            live_price = limit_price_val if order_type == "LIMIT" and limit_price_val else price
             result = submit_order(
                 symbol=symbol,
                 qty=qty,
                 side=side_schwab,
                 order_type=order_type,
-                price=price,
+                price=live_price,
                 account_hash=account_hash,
                 confirmed=confirmed,
                 schwab_client=_sc if "_sc" in dir() else None,
@@ -332,6 +345,7 @@ def create_trade():
             return jsonify({"error": str(e)}), 500
 
         try:
+            live_fill = limit_price_val if order_type == "LIMIT" and limit_price_val else price
             log_id = insert_trade(
                 strategy=strategy,
                 symbol=symbol,
@@ -341,11 +355,12 @@ def create_trade():
                 shares=qty,
                 entry_time=now.isoformat(),
                 price_at_scan=price,
-                entry_price=price,
+                entry_price=live_fill,
                 account=account,
                 order_id=result.get("order_id"),
                 signal_source="UI",
                 trade_source="LIVE",
+                limit_price=limit_price_val,
             )
         except TradeRecordError as e:
             return jsonify({"error": str(e)}), 400
@@ -408,16 +423,19 @@ def create_trade():
                     and _is_recent(t.get("entry_time", ""), now)):
                 return jsonify({"error": "duplicate trade within 60s"}), 409
 
+        # Sprint 27 Item 3: PAPER LIMIT fills immediately at limit_price
+        paper_fill = limit_price_val if order_type == "LIMIT" and limit_price_val else price
+
         log_id = insert_trade(
             strategy=strategy,
             symbol=symbol,
             direction=direction,
             mode="PAPER",
-            order_type="MARKET",
+            order_type=order_type,
             shares=qty,
             entry_time=now.isoformat(),
             price_at_scan=price,
-            entry_price=price,
+            entry_price=paper_fill,
             account=account,
             signal_source="UI",
             trade_source="PAPER",
@@ -425,6 +443,7 @@ def create_trade():
             target_price=target_price_val,
             time_stop_minutes=time_stop_min_val,
             stop_type=stop_type_val,
+            limit_price=limit_price_val,
         )
 
         # For TRAILING stop: wire trailing_stop_pct to the new trade
@@ -441,7 +460,7 @@ def create_trade():
     return jsonify({
         "log_id": log_id, "status": "OPEN", "trade_source": "PAPER",
         "stop_price": stop_price_val, "target_price": target_price_val,
-        "stop_type": stop_type_val,
+        "stop_type": stop_type_val, "order_type": order_type,
     }), 201
 
 

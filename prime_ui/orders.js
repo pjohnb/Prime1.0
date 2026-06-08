@@ -9,6 +9,20 @@ function _orderToken() {
   return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiToken) || '';
 }
 
+// Sprint 27 Item 3: toggle MARKET/LIMIT order type fields.
+function toggleOrderTypeFields() {
+  const orderType   = (document.getElementById('ord-order-type')?.value || 'MARKET');
+  const limitPriceEl = document.getElementById('ord-limit-price');
+  if (limitPriceEl) {
+    limitPriceEl.style.display = orderType === 'LIMIT' ? '' : 'none';
+    // Pre-fill limit price with current price when switching to LIMIT
+    if (orderType === 'LIMIT' && !limitPriceEl.value) {
+      const priceEl = document.getElementById('ord-price');
+      if (priceEl && priceEl.value) limitPriceEl.value = priceEl.value;
+    }
+  }
+}
+
 // Sprint 27 Item 2: toggle FIXED/TRAILING stop fields.
 function toggleStopTypeFields() {
   const stopType = (document.getElementById('ord-stop-type')?.value || 'FIXED');
@@ -27,6 +41,12 @@ function _readOrderForm(side) {
   const strategy  = document.getElementById('ord-strategy').value;
   const account   = (document.getElementById('ord-account').value || '').trim();
 
+  // Sprint 27 Item 3: order type (MARKET/LIMIT) + limit price.
+  const orderType   = (document.getElementById('ord-order-type')?.value || 'MARKET');
+  const limitPriceRaw = document.getElementById('ord-limit-price')?.value;
+  const limitPrice = orderType === 'LIMIT' && limitPriceRaw && parseFloat(limitPriceRaw) > 0
+    ? parseFloat(limitPriceRaw) : null;
+
   // Sprint 27 Item 2: stop type selector.
   const stopType  = (document.getElementById('ord-stop-type')?.value || 'FIXED');
   const trailRaw  = document.getElementById('ord-trailing-stop')?.value;
@@ -44,7 +64,7 @@ function _readOrderForm(side) {
   const timeDays   = timeDaysRaw  && parseFloat(timeDaysRaw)  > 0 ? parseFloat(timeDaysRaw)  : null;
 
   return { symbol, qty, price, strategy, account, direction: side,
-           stopType, trailingStopPct, stopPct, targetPct, timeDays };
+           orderType, limitPrice, stopType, trailingStopPct, stopPct, targetPct, timeDays };
 }
 
 // Sprint 26 Item 2: update derived price hints when inputs change.
@@ -88,6 +108,9 @@ function openOrderConfirm(side) {
   const estimatedTotal = (o.qty * o.price).toLocaleString('en-US', {
     style: 'currency', currency: 'USD'
   });
+  const limitLine  = o.orderType === 'LIMIT' && o.limitPrice
+    ? `<div>Order Type: <b>LIMIT</b> @ $${o.limitPrice.toFixed(2)}</div>`
+    : `<div>Order Type: <b>MARKET</b></div>`;
   const trailLine = o.stopType === 'TRAILING' && o.trailingStopPct
     ? `<div>Trailing Stop: <b>${(o.trailingStopPct * 100).toFixed(1)}%</b> (trailing)</div>`
     : '';
@@ -110,7 +133,7 @@ function openOrderConfirm(side) {
     `<div>Strategy: <b>${o.strategy}</b></div>` +
     `<div>Account: <b>${o.account || '--'}</b></div>` +
     `<div>Estimated Total: <b>${estimatedTotal}</b></div>` +
-    trailLine + stopLine + targetLine + timeLine +
+    limitLine + trailLine + stopLine + targetLine + timeLine +
     (isLive
       ? '<div style="color:#fca5a5;margin-top:8px;font-size:13px">LIVE MODE — This submits a real order to Schwab.</div>'
       : `<div>Mode: <b>PAPER</b></div>`);
@@ -136,6 +159,9 @@ async function submitOrder() {
     account:   o.account,
     direction: o.direction,
     confirmed: true,    // Gate 6: explicit user click = confirmed
+    // Sprint 27 Item 3: order type + limit price
+    order_type:  o.orderType || 'MARKET',
+    limit_price: o.orderType === 'LIMIT' ? (o.limitPrice || o.price) : undefined,
     // Sprint 26 Item 2: stop/target/time fields
     stop_pct:        o.stopPct   || undefined,
     target_pct:      o.targetPct || undefined,
@@ -165,6 +191,9 @@ async function submitOrder() {
       document.getElementById('ord-symbol').value = '';
       document.getElementById('ord-qty').value = '';
       document.getElementById('ord-price').value = '';
+      // Reset order type selector back to MARKET
+      const otEl = document.getElementById('ord-order-type');
+      if (otEl) { otEl.value = 'MARKET'; toggleOrderTypeFields(); }
       // Reset stop type selector back to FIXED
       const stEl = document.getElementById('ord-stop-type');
       if (stEl) { stEl.value = 'FIXED'; toggleStopTypeFields(); }

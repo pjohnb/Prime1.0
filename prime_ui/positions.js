@@ -122,6 +122,11 @@ async function loadPositions() {
         ? `<span class="badge neutral" style="font-size:10px;padding:1px 4px;margin-left:3px"
              title="TRAILING ${trailPct}% — trails below high-water mark">T</span>`
         : '';
+      // Sprint 27 Item 3: LMT badge for LIMIT order type.
+      const lmtBadge = (p.order_type || '').toUpperCase() === 'LIMIT'
+        ? `<span class="badge neutral" style="font-size:10px;padding:1px 4px;margin-left:3px;color:var(--amber)"
+             title="LIMIT order — filled at $${p.limit_price ? Number(p.limit_price).toFixed(2) : 'limit price'}">LMT</span>`
+        : '';
       // Sprint 23 Item 3: Stop tooltip.
       const stopTooltip = stopBadge === 'GREEN'
         ? 'GREEN: more than 1% from stop level — position safe'
@@ -155,7 +160,7 @@ async function loadPositions() {
         <td style="font-family:var(--mono)">$${Number(price).toFixed(2)}</td>
         <td style="font-family:var(--mono);color:${pnlColor}">${_fmtMoney(pnl)} (${pnlPct.toFixed(1)}%)</td>
         <td>
-          <span class="badge ${stopCls}" title="${stopTooltip}">${stopBadge}</span>${trailBadge}
+          <span class="badge ${stopCls}" title="${stopTooltip}">${stopBadge}</span>${trailBadge}${lmtBadge}
           ${stopPrice ? `<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px">${stopPrice}${targetPrice}</div>` : ''}
         </td>
         <td style="font-family:var(--mono);color:${holdColor}" title="${holdTooltip}">${holdFmt}</td>

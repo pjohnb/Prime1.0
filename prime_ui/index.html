@@ -277,6 +277,11 @@ tr:hover td { background: var(--bg3); }
         <option value="MTS">MTS</option><option value="MANUAL">MANUAL</option>
       </select>
       <input id="ord-account" placeholder="Account" value="PAPER" />
+      <select id="ord-order-type" title="Order type: MARKET fills immediately; LIMIT fills at your specified price" style="height:32px" onchange="toggleOrderTypeFields()">
+        <option value="MARKET">MARKET</option>
+        <option value="LIMIT">LIMIT</option>
+      </select>
+      <input id="ord-limit-price" type="number" min="0" step="0.01" placeholder="Limit $" title="Limit price — trade fills at this price" style="width:85px;display:none" />
       <select id="ord-stop-type" title="Stop type: FIXED dollar stop or TRAILING % stop" style="height:32px" onchange="toggleStopTypeFields()">
         <option value="FIXED">FIXED stop</option>
         <option value="TRAILING">TRAILING stop</option>
