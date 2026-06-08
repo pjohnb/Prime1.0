@@ -140,6 +140,24 @@ def hold_minutes(entry_time: Optional[str], now: Optional[datetime] = None) -> O
     return max(int((now - start).total_seconds() // 60), 0)
 
 
+def _stop_badge_from_value(current_price: float, stop_price: float, direction: str) -> str:
+    """Compute stop badge directly from a known stop price."""
+    if current_price <= 0 or stop_price <= 0:
+        return "GREEN"
+    direction = (direction or "LONG").upper()
+    if direction == "SHORT":
+        if current_price >= stop_price:
+            return "RED"
+        if current_price >= stop_price * (1 - STOP_AMBER_BAND):
+            return "AMBER"
+    else:
+        if current_price <= stop_price:
+            return "RED"
+        if current_price <= stop_price * (1 + STOP_AMBER_BAND):
+            return "AMBER"
+    return "GREEN"
+
+
 def enrich_position(position: Dict[str, Any], current_price: Optional[float] = None,
                     now: Optional[datetime] = None,
                     stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
@@ -162,7 +180,17 @@ def enrich_position(position: Dict[str, Any], current_price: Optional[float] = N
     pnl = compute_pnl(entry, price, shares, direction)
     held = hold_minutes(position.get("entry_time"), now)
 
-    if direction == "SHORT":
+    stored_stop = position.get("stop_price")
+    if stored_stop and float(stored_stop) > 0:
+        # Sprint 26 Item 2: use stored stop_price; compute badge from it.
+        out["stop_price"] = float(stored_stop)
+        out["stop_badge"] = _stop_badge_from_value(price, float(stored_stop), direction)
+        if direction == "SHORT":
+            sp = _read_short_params(config_path)
+            effective_time_stop = sp["short_time_stop_minutes"]
+        else:
+            effective_time_stop = time_stop_min
+    elif direction == "SHORT":
         sp = _read_short_params(config_path)
         short_pct = sp["short_stop_loss_pct"]
         out["stop_price"] = short_stop_price(entry, short_pct)

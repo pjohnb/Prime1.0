@@ -94,6 +94,10 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     # Sprint 24 Item 4: trailing stop columns (idempotent migrations)
     _migrate_add_column_trade_log(db_path, "trailing_stop_pct", "REAL")
     _migrate_add_column_trade_log(db_path, "trailing_stop_high_water", "REAL")
+    # Sprint 26 Item 2: explicit stop/target/time stop columns
+    _migrate_add_column_trade_log(db_path, "stop_price", "REAL")
+    _migrate_add_column_trade_log(db_path, "target_price", "REAL")
+    _migrate_add_column_trade_log(db_path, "time_stop_minutes", "INTEGER")
 
     return path
 
@@ -176,6 +180,9 @@ def insert_trade(
     advisory_history: str = "[]",
     dark_pool_eval: str = "{}",
     trade_source: str = "PAPER",
+    stop_price: Optional[float] = None,
+    target_price: Optional[float] = None,
+    time_stop_minutes: Optional[int] = None,
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -205,14 +212,16 @@ def insert_trade(
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
                 order_id, account, routed_to, notes, mata_batch_id, status,
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
-                advisory_history, dark_pool_eval, trade_source
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                advisory_history, dark_pool_eval, trade_source,
+                stop_price, target_price, time_stop_minutes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
                 order_id, account, routed_to, notes, mata_batch_id, "OPEN",
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
+                stop_price, target_price, time_stop_minutes,
             ),
         )
         conn.commit()
@@ -393,6 +402,50 @@ def update_trailing_stop(
         )
         conn.commit()
         return cursor.rowcount > 0
+
+
+def set_trade_stop_target(
+    log_id: str,
+    stop_price: Optional[float] = None,
+    target_price: Optional[float] = None,
+    time_stop_minutes: Optional[int] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Set stop_price, target_price, time_stop_minutes on an OPEN trade. Returns True on success."""
+    updates = []
+    vals = []
+    if stop_price is not None:
+        updates.append("stop_price=?")
+        vals.append(stop_price)
+    if target_price is not None:
+        updates.append("target_price=?")
+        vals.append(target_price)
+    if time_stop_minutes is not None:
+        updates.append("time_stop_minutes=?")
+        vals.append(time_stop_minutes)
+    if not updates:
+        return False
+    vals.append(log_id)
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            f"UPDATE prime_trade_log SET {', '.join(updates)} WHERE log_id=? AND status='OPEN'",
+            vals,
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_closed_trades(
+    limit: int = 500,
+    db_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Return CLOSED trade records ordered by exit_time desc."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM prime_trade_log WHERE status='CLOSED' ORDER BY exit_time DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 def bulk_delete_trades(log_ids: List[str], db_path: Optional[Path] = None) -> int:

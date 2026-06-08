@@ -29,7 +29,19 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_CHECK_INTERVAL_S = 60
+_CHECK_INTERVAL_S = 60  # default; overridden at runtime by ops_config.json
+
+
+def _get_check_interval() -> int:
+    """Read stop_monitor_interval_seconds from ops_config.json; fall back to 60."""
+    try:
+        import json
+        path = _PROJECT_ROOT / "ops_config.json"
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return int(raw.get("stop_monitor_interval_seconds", _CHECK_INTERVAL_S))
+    except Exception:
+        return _CHECK_INTERVAL_S
 
 # Active stop alerts: {log_id: {symbol, direction, breach_price, stop_price, ts}}
 _stop_alerts: Dict[str, Dict[str, Any]] = {}
@@ -149,7 +161,10 @@ def _check_position(
     current_price: float,
     ops: Dict[str, Any],
 ) -> Optional[str]:
-    """Return 'BREACH' if this position's stop is hit, else None."""
+    """Return 'BREACH' if this position's stop is hit, else None.
+
+    Sprint 26 Item 2: use stored stop_price when set; fall back to computed.
+    """
     direction   = (position.get("direction") or "LONG").upper()
     entry_price = float(position.get("entry_price") or position.get("price_at_scan") or 0.0)
     if entry_price <= 0 or current_price <= 0:
@@ -161,6 +176,9 @@ def _check_position(
     if trailing_pct is not None:
         hw = float(high_water) if high_water else entry_price
         stop = _trailing_stop_price(entry_price, float(trailing_pct), hw, direction)
+    elif position.get("stop_price") and float(position["stop_price"]) > 0:
+        # Sprint 26 Item 2: prefer stored stop_price over recalculating each cycle.
+        stop = float(position["stop_price"])
     else:
         if direction == "SHORT":
             pct = float(ops.get("short_stop_loss_pct", 0.05))
@@ -252,14 +270,17 @@ def _fire_auto_sell(position: Dict[str, Any], current_price: float, db_path: Opt
 # ---------------------------------------------------------------------------
 
 def _monitor_loop(db_path: Optional[Path] = None) -> None:
-    logger.info("Stop monitor started (interval=%ds)", _CHECK_INTERVAL_S)
+    interval = _get_check_interval()
+    logger.info("Stop monitor started (interval=%ds)", interval)
     while not _stop_event.is_set():
         try:
             if _is_rth():
                 _run_check_cycle(db_path)
         except Exception as e:
             logger.error("Stop monitor cycle error: %s", e)
-        _stop_event.wait(timeout=_CHECK_INTERVAL_S)
+        # Re-read interval each cycle so Settings changes take effect without restart.
+        interval = _get_check_interval()
+        _stop_event.wait(timeout=interval)
     logger.info("Stop monitor stopped")
 
 
@@ -301,13 +322,15 @@ def _run_check_cycle(db_path: Optional[Path] = None) -> None:
 
         breach = _check_position(pos, price, ops)
         if breach:
-            # Compute stop for logging
+            # Compute stop for alert logging — mirror _check_position logic.
             t_pct  = pos.get("trailing_stop_pct")
             hw_val = pos.get("trailing_stop_high_water")
             dir_   = (pos.get("direction") or "LONG").upper()
             ep     = float(pos.get("entry_price") or pos.get("price_at_scan") or 0)
             if t_pct is not None:
                 stop = _trailing_stop_price(ep, float(t_pct), float(hw_val) if hw_val else ep, dir_)
+            elif pos.get("stop_price") and float(pos["stop_price"]) > 0:
+                stop = float(pos["stop_price"])
             else:
                 if dir_ == "SHORT":
                     stop = ep * (1 + float(ops.get("short_stop_loss_pct", 0.05)))

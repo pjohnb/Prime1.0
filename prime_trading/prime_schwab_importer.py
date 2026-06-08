@@ -48,6 +48,7 @@ def reconcile_positions(
         get_open_positions,
         insert_trade,
         log_ops_event,
+        set_trade_stop_target,
     )
 
     result = {
@@ -86,6 +87,28 @@ def reconcile_positions(
                     trade_source="SCHWAB_IMPORT",
                     db_path=db_path,
                 )
+                # Sprint 26 Item 2: auto-calculate stop_price from Settings default.
+                try:
+                    import json as _json
+                    import os as _os
+                    _ops_path = _os.path.join(
+                        _os.path.dirname(__file__), "..", "ops_config.json"
+                    )
+                    with open(_ops_path, "r", encoding="utf-8") as _f:
+                        _ops = _json.load(_f)
+                    _direction = "LONG" if schwab_pos["qty"] > 0 else "SHORT"
+                    _entry = schwab_pos["avg_cost"] or 0.0
+                    if _direction == "SHORT":
+                        _stop_pct = float(_ops.get("short_stop_loss_pct", 0.05))
+                        _sp = round(_entry * (1 + _stop_pct), 4)
+                    else:
+                        _stop_pct = float(_ops.get("long_stop_loss_pct", 0.05))
+                        _sp = round(_entry * (1 - _stop_pct), 4)
+                    if _sp > 0:
+                        set_trade_stop_target(log_id, stop_price=_sp, db_path=db_path)
+                except Exception:
+                    pass
+
                 result["auto_imported"].append({"symbol": symbol, "log_id": log_id,
                                                 "qty": schwab_pos["qty"]})
                 log_ops_event("SCHWAB_IMPORT", "prime_schwab_importer",
