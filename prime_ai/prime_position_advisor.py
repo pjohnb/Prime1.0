@@ -5,6 +5,13 @@ For every OPEN trade in prime_trade_log, Claude returns a HOLD / TRIM / EXIT
 recommendation with plain-English reasoning. Advisory is advisory only -- it
 never blocks or mutates trades, and degrades gracefully (recommendation
 "UNAVAILABLE") when the API is unreachable.
+
+Sprint 26 Item 1: SCHWAB_IMPORT fix.
+- All OPEN positions are advised regardless of trade_source.
+- Positions are enriched (current_price, unrealized_pnl_pct, hold_minutes)
+  before being sent to Claude. SCHWAB_IMPORT positions use entry_price as the
+  current_price fallback when no live quote is available.
+- System prompt updated to handle positions without signal context.
 """
 
 import logging
@@ -22,6 +29,12 @@ SYSTEM_PROMPT = """You are the PRIME AI Position Advisor. Given a single open
 trading position, decide whether to HOLD, TRIM, or EXIT it. Weigh unrealized
 P&L, hold time, the originating strategy, sector exposure, dark-pool status,
 batch and entry-timing quality. Be concise and concrete.
+
+SCHWAB_IMPORT positions are holdings imported directly from Schwab brokerage.
+They lack signal strategy context (no trigger_source, score, or batch_score).
+For these positions, advise based on available data: hold time, unrealized P&L,
+portfolio concentration, and DK dark-pool status. Still provide a useful
+HOLD/TRIM/EXIT recommendation — these are real holdings that need management.
 
 DK three-state context (use to adjust urgency):
   dk_status CONFIRMING + dk_conviction >= 0.7 = institutional dark-pool money
@@ -55,36 +68,37 @@ def _hold_minutes(entry_time: Optional[str]) -> Optional[int]:
 def build_context(position: Dict[str, Any]) -> Dict[str, Any]:
     """Build the per-position payload sent to Claude.
 
-    Sprint 20 Item 4: dk_conviction added alongside dk_status so Claude can
-    calibrate how strongly the dark-pool signal opposes or supports the position.
-    Graceful degradation: missing DK data defaults to NEUTRAL.
+    Sprint 26 Item 1: includes trade_source and enriched fields so Claude
+    can distinguish SCHWAB_IMPORT positions from signal-led ones.
     """
     entry = position.get("entry_price") or position.get("price_at_scan")
     return {
-        "symbol": position.get("symbol"),
-        "strategy": position.get("strategy"),
-        "direction": position.get("direction"),
-        "entry_price": entry,
-        "current_price": position.get("current_price"),
-        "shares": position.get("shares"),
-        "hold_minutes": position.get("hold_minutes") or _hold_minutes(position.get("entry_time")),
-        "unrealized_pnl_pct": position.get("pnl_pct"),
-        "sector": position.get("sector"),
-        "dk_status": position.get("dk_status") or "NEUTRAL",
-        "dk_conviction": position.get("dk_conviction"),
-        "batch_score": position.get("batch_score"),
-        "entry_timing": position.get("entry_timing"),
+        "symbol":            position.get("symbol"),
+        "strategy":          position.get("strategy"),
+        "trade_source":      position.get("trade_source", "PAPER"),
+        "direction":         position.get("direction"),
+        "entry_price":       entry,
+        "current_price":     position.get("current_price"),
+        "shares":            position.get("shares"),
+        "hold_minutes":      position.get("hold_minutes") or _hold_minutes(position.get("entry_time")),
+        "unrealized_pnl_pct": position.get("unrealized_pnl_pct") or position.get("pnl_pct"),
+        "sector":            position.get("sector"),
+        "dk_status":         position.get("dk_status") or "NEUTRAL",
+        "dk_conviction":     position.get("dk_conviction"),
+        "batch_score":       position.get("batch_score"),
+        "entry_timing":      position.get("entry_timing"),
+        "stop_price":        position.get("stop_price"),
     }
 
 
 def _fallback(symbol: str, reason: str) -> Dict[str, Any]:
     return {
-        "symbol": symbol,
-        "recommendation": "UNAVAILABLE",
-        "confidence": "LOW",
-        "reasoning": f"AI advisory unavailable: {reason}",
+        "symbol":           symbol,
+        "recommendation":   "UNAVAILABLE",
+        "confidence":       "LOW",
+        "reasoning":        f"AI advisory unavailable: {reason}",
         "suggested_action": "Review manually",
-        "_fallback": True,
+        "_fallback":        True,
     }
 
 
@@ -102,12 +116,12 @@ def advise_one(position: Dict[str, Any], api_key: Optional[str] = None) -> Dict[
         if rec not in VALID_RECS:
             return _fallback(symbol, f"unexpected recommendation '{rec}'")
         return {
-            "symbol": data.get("symbol", symbol),
-            "recommendation": rec,
-            "confidence": str(data.get("confidence", "MEDIUM")).upper(),
-            "reasoning": data.get("reasoning", ""),
+            "symbol":           data.get("symbol", symbol),
+            "recommendation":   rec,
+            "confidence":       str(data.get("confidence", "MEDIUM")).upper(),
+            "reasoning":        data.get("reasoning", ""),
             "suggested_action": data.get("suggested_action", ""),
-            "_fallback": False,
+            "_fallback":        False,
         }
     except Exception as e:
         logger.warning("position advisory failed for %s: %s", symbol, e)
@@ -118,12 +132,19 @@ def advise_positions(
     db_path: Optional[Path] = None,
     api_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Advise on all OPEN positions. Returns one dict per position (possibly empty)."""
+    """Advise on all OPEN positions (all trade_sources). Returns one dict per position."""
     from prime_data.prime_db import get_open_positions
+    from prime_api.prime_positions import enrich_position
+
     positions = get_open_positions(db_path=db_path)
     if api_key is None:
         api_key = _claude.get_api_key()
-    return [advise_one(p, api_key=api_key) for p in positions]
+
+    results = []
+    for p in positions:
+        enriched = enrich_position(p, current_price=None)
+        results.append(advise_one(enriched, api_key=api_key))
+    return results
 
 
 if __name__ == "__main__":

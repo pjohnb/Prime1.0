@@ -148,6 +148,10 @@ class OpsConfig:
     # Sprint 24 Item 5: portfolio-level risk limits.
     max_sector_pct: float = 0.30
     max_position_pct: float = 0.15
+    # Sprint 26 Item 8: configurable stop monitor poll interval (seconds).
+    stop_monitor_interval_seconds: int = 60
+    # Sprint 26 Item 6: monthly AI budget alert threshold (USD).
+    monthly_ai_budget: float = 10.0
     # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
     # Defaults are the working values from sprint history; users can tune in Settings UI.
     strategy_thresholds: Any = field(default_factory=lambda: {

@@ -38,11 +38,17 @@ Respond ONLY with a JSON object, no prose outside it:
 
 
 def _aggregate(db_path: Optional[Path]) -> Dict[str, Any]:
-    """Deterministic portfolio snapshot used both for the prompt and fallback."""
+    """Deterministic portfolio snapshot used both for the prompt and fallback.
+
+    Sprint 26 Item 1: positions are enriched so SCHWAB_IMPORT entries have
+    realistic unrealized_pnl_pct and hold_minutes in the briefing context.
+    """
     from prime_data.prime_db import get_open_positions
     from prime_analytics.prime_signals_db import get_signals
+    from prime_api.prime_positions import enrich_position
 
-    positions = get_open_positions(db_path=db_path)
+    raw_positions = get_open_positions(db_path=db_path)
+    positions = [enrich_position(p, current_price=None) for p in raw_positions]
     signals = get_signals(limit=500, db_path=db_path)
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -71,7 +77,11 @@ def _aggregate(db_path: Optional[Path]) -> Dict[str, Any]:
         "open_position_count": total,
         "positions": [
             {"symbol": p.get("symbol"), "strategy": p.get("strategy"),
+             "trade_source": p.get("trade_source", "PAPER"),
              "shares": p.get("shares"), "entry_price": p.get("entry_price"),
+             "current_price": p.get("current_price"),
+             "unrealized_pnl_pct": p.get("unrealized_pnl_pct"),
+             "hold_minutes": p.get("hold_minutes"),
              "dk_status": p.get("dk_status") or "NEUTRAL",
              "dk_conviction": p.get("dk_conviction")}
             for p in positions

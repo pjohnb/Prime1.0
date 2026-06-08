@@ -5,6 +5,9 @@ Single place that knows the model, token budget, API-key source, and JSON
 parsing. Every advisory module calls call_claude() and parse_json(); none
 import anthropic directly. call_claude raises ClaudeUnavailable on any failure
 so callers can apply a deterministic fallback (advisory is never blocking).
+
+Sprint 26 Item 6: usage logging added — every call logs input/output token counts
+and cost to prime_ai/prime_ai_usage.py without any caller changes.
 """
 
 import json
@@ -30,6 +33,20 @@ def get_api_key() -> Optional[str]:
     return key or None
 
 
+def _detect_feature(system: str) -> str:
+    """Infer the feature name from the system prompt text for usage tracking."""
+    text = system.lower()
+    if "position advisor" in text:
+        return "Position Advisor"
+    if "signal ranker" in text:
+        return "Signal Ranker"
+    if "briefing" in text:
+        return "Briefing"
+    if ("dk" in text or "dark" in text) and "pool" in text:
+        return "DK Classifier"
+    return "Other"
+
+
 def call_claude(
     system: str,
     prompt: str,
@@ -39,6 +56,7 @@ def call_claude(
     """Call claude-sonnet-4 and return the response text.
 
     Raises ClaudeUnavailable on missing key, missing library, or any API error.
+    Token usage is logged automatically to prime_ai_usage.db.
     """
     if api_key is None:
         api_key = get_api_key()
@@ -61,6 +79,21 @@ def call_claude(
         text = resp.content[0].text if resp.content else ""
         if not text.strip():
             raise ClaudeUnavailable("empty response from Claude")
+
+        # Sprint 26 Item 6: log usage; never raises (fire-and-forget).
+        try:
+            from prime_ai.prime_ai_usage import log_usage
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                log_usage(
+                    feature=_detect_feature(system),
+                    model=CLAUDE_MODEL,
+                    input_tokens=int(getattr(usage, "input_tokens", 0)),
+                    output_tokens=int(getattr(usage, "output_tokens", 0)),
+                )
+        except Exception:
+            pass
+
         return text
     except ClaudeUnavailable:
         raise
