@@ -104,6 +104,10 @@ tr:hover td { background: var(--bg3); }
 .strat-info-btn { background: var(--bg4); border: 1px solid var(--border); color: var(--text3); border-radius: 4px; padding: 3px 8px; font-size: 12px; font-family: var(--mono); cursor: pointer; transition: all 0.15s; }
 .strat-info-btn:hover, .strat-info-btn.active { background: var(--border); color: var(--text); }
 .strat-popover { position: absolute; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; width: 370px; z-index: 300; box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-height: 80vh; overflow-y: auto; }
+/* Sprint 25: scan trigger + refresh buttons */
+.btn-refresh { background: var(--bg4); border: 1px solid var(--border); color: var(--text2); border-radius: 4px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.12s; }
+.btn-refresh:hover { background: var(--border); color: var(--text); }
+.btn-refresh:disabled { opacity: 0.5; cursor: default; }
 /* Start of Day panel */
 .sod-panel { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
 .sod-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; cursor: pointer; user-select: none; }
@@ -133,6 +137,7 @@ tr:hover td { background: var(--bg3); }
 </div>
 <div class="tabs">
   <div class="tab active" onclick="showView('dashboard')">Dashboard</div>
+  <div class="tab" onclick="showView('scans')">Scans</div>
   <div class="tab" onclick="showView('positions')">Positions</div>
   <div class="tab" onclick="showView('signals')">Signals</div>
   <div class="tab" onclick="showView('settings')">Settings</div>
@@ -186,6 +191,56 @@ tr:hover td { background: var(--bg3); }
   <div style="display:flex;justify-content:flex-end;margin-top:8px">
     <button class="btn-cancel" onclick="openExitConfirm()" style="font-size:12px;padding:5px 14px">Exit PRIME</button>
   </div>
+</div>
+
+<!-- Sprint 25 Item 1: Scans tab -->
+<div class="view" id="view-scans">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Scan Control</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button id="run-all-btn" class="btn-confirm" onclick="runAllScans()" style="font-size:12px;padding:5px 14px">Run All</button>
+      <span id="run-all-progress" style="font-family:var(--mono);font-size:12px;color:var(--text3)"></span>
+    </div>
+  </div>
+  <!-- Scanner trigger buttons -->
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px">
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-psa" class="btn-refresh" onclick="triggerScan('psa','scan-btn-psa')" style="min-width:90px">Run PSA</button>
+      <span id="scan-msg-psa" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-pead" class="btn-refresh" onclick="triggerScan('pead','scan-btn-pead')" style="min-width:90px">Run PEAD</button>
+      <span id="scan-msg-pead" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-uoa" class="btn-refresh" onclick="triggerScan('uoa','scan-btn-uoa')" style="min-width:90px">Run UOA</button>
+      <span id="scan-msg-uoa" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-srs" class="btn-refresh" onclick="triggerScan('srs','scan-btn-srs')" style="min-width:90px">Run SRS</button>
+      <span id="scan-msg-srs" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-idx" class="btn-refresh" onclick="triggerScan('idx','scan-btn-idx')" style="min-width:90px">Run IDX</button>
+      <span id="scan-msg-idx" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-short" class="btn-refresh" onclick="triggerScan('short','scan-btn-short')" style="min-width:90px">Run SHORT</button>
+      <span id="scan-msg-short" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+  </div>
+  <!-- Last Scan Results -->
+  <h3 style="font-size:12px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Last Scan Results</h3>
+  <table style="margin-bottom:20px">
+    <thead><tr><th>Scanner</th><th>Last Run</th><th>Status</th><th>Signals</th></tr></thead>
+    <tbody id="scan-status-body"></tbody>
+  </table>
+  <!-- Live Scan Log -->
+  <h3 style="font-size:12px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Live Scan Log</h3>
+  <pre id="scan-log-area" style="background:#0a0c10;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--mono);font-size:12px;color:#9ba8c4;height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all">(no log entries yet)</pre>
+  <!-- Scan Schedule (Item 3) -->
+  <h3 style="font-size:12px;color:var(--text3);margin:20px 0 8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Scan Schedule</h3>
+  <div id="scan-schedule-body"><div class="empty-state">Loading schedule…</div></div>
 </div>
 
 <div class="view" id="view-positions">
@@ -366,11 +421,23 @@ tr:hover td { background: var(--bg3); }
   </div>
 </div>
 
+<!-- Sprint 25 Item 2: LIVE mode confirmation modal -->
+<div id="live-mode-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3 style="color:var(--red)">Switch to LIVE Trading Mode</h3>
+    <div class="modal-details">You are switching to <b>LIVE</b> trading mode.<br><span style="color:var(--red)">Real money will be at risk.</span><br><br>All order entries will route to your live Schwab account. Confirm only if you intend to trade with real funds.</div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="cancelLiveMode()">Cancel — Stay PAPER</button>
+      <button class="btn-sell" onclick="confirmLiveMode()">Confirm LIVE</button>
+    </div>
+  </div>
+</div>
+
 <!-- Sprint 23 Item 4: Exit PRIME confirmation modal -->
 <div id="exit-modal" class="modal-overlay">
   <div class="modal-box">
     <h3>Shut Down PRIME</h3>
-    <div class="modal-details">Shut down all PRIME servers?<br><span style="color:var(--text3);font-size:13px">(API server, UI server)<br>The Tkinter GUI is not affected.</span></div>
+    <div class="modal-details">Shut down all PRIME servers?<br><span style="color:var(--text3);font-size:13px">(API server + UI server — all PRIME services)</span></div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeExitConfirm()">Cancel</button>
       <button class="btn-sell" id="exit-confirm-btn" onclick="submitExit()">Shut Down</button>
@@ -558,6 +625,7 @@ tr:hover td { background: var(--bg3); }
 
 <script src="ui-config.js"></script>
 <script src="dashboard.js"></script>
+<script src="scans.js"></script>
 <script src="positions.js"></script>
 <script src="signals.js"></script>
 <script src="settings.js"></script>
@@ -573,6 +641,7 @@ function showView(id) {
   document.getElementById('view-' + id).classList.add('active');
   event.target.classList.add('active');
   if (id === 'dashboard') loadDashboard();
+  if (id === 'scans') loadScans();
   if (id === 'positions') loadPositions();
   if (id === 'signals') loadSignals();
   if (id === 'settings') loadSettings();

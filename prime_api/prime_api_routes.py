@@ -977,7 +977,7 @@ def portfolio_rebalance():
 
 @api_bp.route("/trades/<string:log_id>/trailing-stop", methods=["POST"])
 @require_local_token
-def set_trailing_stop(log_id):
+def set_trailing_stop(log_id):  # noqa: E302 (Sprint 24 Item 4)
     """POST /api/v1/trades/{log_id}/trailing-stop -- set or clear trailing stop.
 
     Sprint 24 Item 4. Body: {trailing_stop_pct: float | null}.
@@ -990,3 +990,490 @@ def set_trailing_stop(log_id):
     if not updated:
         return jsonify({"error": "unknown or closed log_id"}), 404
     return jsonify({"log_id": log_id, "trailing_stop_pct": pct}), 200
+
+
+# ============================================================================
+# Sprint 25 — Scan Control (Item 1)
+# ============================================================================
+
+import subprocess as _subprocess
+
+_PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent
+_LOGS_DIR = _PROJECT_ROOT_PATH / "logs"
+_SCAN_LOG = _LOGS_DIR / "scan_log.txt"
+
+_SCANNER_MAP: Dict[str, str] = {
+    "psa":   "prime_scanners.prime_psa_scanner",
+    "pead":  "prime_scanners.prime_pead_scanner",
+    "uoa":   "prime_scanners.prime_uoa_scanner",
+    "srs":   "prime_scanners.prime_srs_scanner",
+    "mts":   "prime_scanners.prime_mts_scanner",
+    "idx":   "prime_intelligence.prime_index_scanner",
+    "short": "prime_intelligence.prime_short_scanner",
+}
+
+# Per-scanner run state: {scanner: {status, last_run, signals, pid}}
+_scan_state: Dict[str, Any] = {}
+_scan_lock = threading.Lock()
+
+
+def _run_scanner_bg(scanner: str, module: str) -> None:
+    """Background thread: run scanner subprocess, append output to scan log."""
+    import sys as _sys
+    _LOGS_DIR.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _scan_lock:
+        _scan_state[scanner] = {"status": "running", "last_run": ts, "signals": None, "pid": None}
+
+    log_line = f"\n--- {ts} START {scanner.upper()} ---\n"
+    try:
+        with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+            lf.write(log_line)
+        proc = _subprocess.Popen(
+            [_sys.executable, "-m", module],
+            cwd=str(_PROJECT_ROOT_PATH),
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        with _scan_lock:
+            _scan_state[scanner]["pid"] = proc.pid
+
+        output_lines = []
+        with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+            for line in proc.stdout:
+                lf.write(line)
+                output_lines.append(line)
+        proc.wait()
+
+        # After scanner completes, run bridge to ingest new signals
+        if scanner in ("psa", "pead", "uoa", "srs", "mts"):
+            bridge_proc = _subprocess.run(
+                [_sys.executable, "-m", "prime_bridge.prime_signal_bridge", "--ingest-latest"],
+                cwd=str(_PROJECT_ROOT_PATH),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+                lf.write(bridge_proc.stdout or "")
+                if bridge_proc.stderr:
+                    lf.write(bridge_proc.stderr)
+
+        # Count new signals from bridge output
+        signals = 0
+        for line in output_lines:
+            if "new signals" in line.lower() or "signals found" in line.lower():
+                import re as _re
+                m = _re.search(r"(\d+)\s+(?:new\s+)?signals", line, _re.IGNORECASE)
+                if m:
+                    signals = int(m.group(1))
+
+        finish_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status = "complete" if proc.returncode == 0 else "error"
+        with _scan_lock:
+            _scan_state[scanner].update({"status": status, "last_run": finish_ts, "signals": signals})
+        with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+            lf.write(f"--- {finish_ts} END {scanner.upper()} rc={proc.returncode} ---\n")
+
+    except Exception as exc:
+        logger.error("scan runner %s error: %s", scanner, exc)
+        with _scan_lock:
+            _scan_state[scanner].update({"status": "error", "error": str(exc)})
+
+
+@api_bp.route("/scans/<string:scanner>", methods=["POST"])
+def trigger_scan(scanner: str):
+    """POST /api/v1/scans/{scanner} -- trigger a scanner run in the background.
+
+    Sprint 25 Item 1. Returns 202 immediately; actual run happens async. If the
+    scanner is already running, returns 409. Valid scanners: psa, pead, uoa,
+    srs, mts, idx, short.
+    """
+    scanner = scanner.lower()
+    if scanner not in _SCANNER_MAP:
+        return jsonify({"error": f"unknown scanner: {scanner}",
+                        "valid": list(_SCANNER_MAP.keys())}), 400
+
+    with _scan_lock:
+        state = _scan_state.get(scanner, {})
+        if state.get("status") == "running":
+            return jsonify({"error": "scanner already running", "scanner": scanner}), 409
+
+    module = _SCANNER_MAP[scanner]
+    t = threading.Thread(target=_run_scanner_bg, args=(scanner, module), daemon=True)
+    t.start()
+    started = datetime.now().isoformat()
+    return jsonify({"scanner": scanner, "started": started, "status": "started"}), 202
+
+
+@api_bp.route("/scans/status", methods=["GET"])
+def get_scan_status():
+    """GET /api/v1/scans/status -- last run info per scanner.
+
+    Sprint 25 Item 1. Returns list of {scanner, last_run, status, signals}.
+    Merges in-process state with ops_events for scanners not yet triggered via API.
+    """
+    from prime_data.prime_db import get_ops_events
+
+    # Fetch last SCAN_COMPLETE event per scanner from ops_events as a baseline.
+    ops_baseline: Dict[str, str] = {}
+    try:
+        events = get_ops_events(limit=200)
+        for ev in events:
+            comp = ev.get("component", "")
+            etype = ev.get("event_type", "")
+            ts = ev.get("timestamp", "")
+            if etype == "SCAN_COMPLETE" and comp and ts:
+                name = comp.replace("_scanner", "").replace("prime_", "")
+                if name not in ops_baseline:
+                    ops_baseline[name] = ts
+    except Exception:
+        pass
+
+    rows = []
+    for scanner in _SCANNER_MAP:
+        with _scan_lock:
+            state = dict(_scan_state.get(scanner, {}))
+        last_run = state.get("last_run") or ops_baseline.get(scanner, "--")
+        rows.append({
+            "scanner":  scanner.upper(),
+            "last_run": last_run,
+            "status":   state.get("status", "idle"),
+            "signals":  state.get("signals"),
+        })
+
+    return jsonify({"scanners": rows, "count": len(rows)}), 200
+
+
+@api_bp.route("/scans/log", methods=["GET"])
+def get_scan_log():
+    """GET /api/v1/scans/log -- last 50 lines of the scan log file.
+
+    Sprint 25 Item 1. Returns plain text. UI polls every 5s during active scan.
+    """
+    n = int(request.args.get("lines", 50))
+    try:
+        if not _SCAN_LOG.exists():
+            return jsonify({"lines": [], "path": str(_SCAN_LOG)}), 200
+        with open(_SCAN_LOG, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        tail = all_lines[-n:] if len(all_lines) > n else all_lines
+        return jsonify({"lines": [l.rstrip("\n") for l in tail], "total": len(all_lines)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e), "lines": []}), 500
+
+
+# ============================================================================
+# Sprint 25 — Schwab Connection (Item 2)
+# ============================================================================
+
+@api_bp.route("/schwab/status", methods=["GET"])
+def get_schwab_status():
+    """GET /api/v1/schwab/status -- Schwab connection status + token age + mode.
+
+    Sprint 25 Item 2.
+    """
+    from prime_config.prime_config import get_config
+    cfg = get_config()
+    token_path = Path(cfg.schwab_snapshot.schwab_token_path) if cfg.schwab_snapshot.schwab_token_path else None
+    token_age_hours = None
+    token_warning = False
+
+    if token_path and token_path.exists():
+        try:
+            import time as _time
+            age_s = _time.time() - token_path.stat().st_mtime
+            token_age_hours = round(age_s / 3600, 1)
+            token_warning = token_age_hours > 23
+        except Exception:
+            pass
+
+    connected = False
+    accounts: list = []
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        sc = SchwabClient()
+        sc.connect()
+        connected = True
+        resp = sc.client.get_account_numbers()
+        if resp and resp.status_code == 200:
+            for a in resp.json():
+                accounts.append({
+                    "suffix": a.get("accountNumber", "")[-4:],
+                    "hash":   a.get("hashValue", ""),
+                })
+    except Exception as e:
+        logger.debug("schwab/status connect check: %s", e)
+
+    mode = (cfg.trading_mode or "PAPER").upper()
+    return jsonify({
+        "connected":        connected,
+        "mode":             mode,
+        "accounts":         accounts,
+        "token_age_hours":  token_age_hours,
+        "token_warning":    token_warning,
+        "token_path":       str(token_path) if token_path else None,
+    }), 200
+
+
+@api_bp.route("/schwab/connect", methods=["POST"])
+def schwab_connect():
+    """POST /api/v1/schwab/connect -- attempt a Schwab connection.
+
+    Sprint 25 Item 2. Returns {connected, error, auth_required}.
+    auth_required=true means the token is expired and schwab_auth_v2.py must be run.
+    """
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        sc = SchwabClient()
+        sc.connect()
+        resp = sc.client.get_account_numbers()
+        accounts = []
+        if resp and resp.status_code == 200:
+            for a in resp.json():
+                accounts.append(a.get("accountNumber", "")[-4:])
+        return jsonify({"connected": True, "accounts": accounts}), 200
+    except Exception as e:
+        err = str(e)
+        auth_req = "token" in err.lower() or "auth" in err.lower() or "expired" in err.lower()
+        return jsonify({
+            "connected":     False,
+            "error":         err,
+            "auth_required": auth_req,
+            "auth_command":  "python schwab_auth_v2.py" if auth_req else None,
+        }), 200
+
+
+@api_bp.route("/schwab/balances", methods=["GET"])
+def get_schwab_balances():
+    """GET /api/v1/schwab/balances -- buying power per account.
+
+    Sprint 25 Item 2.
+    """
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        sc = SchwabClient()
+        sc.connect()
+        resp = sc.client.get_account_numbers()
+        if not resp or resp.status_code != 200:
+            return jsonify({"balances": [], "error": "could not list accounts"}), 200
+
+        balances = []
+        for a in resp.json():
+            suffix = a.get("accountNumber", "")[-4:]
+            account_hash = a.get("hashValue", "")
+            buying_power = None
+            try:
+                acct_resp = sc.client.get_account(account_hash, fields=["positions"])
+                if acct_resp and acct_resp.status_code == 200:
+                    acct_data = acct_resp.json()
+                    acct_info = acct_data.get("securitiesAccount", acct_data)
+                    cb = acct_info.get("currentBalances", {})
+                    buying_power = cb.get("buyingPower") or cb.get("availableFunds") or cb.get("liquidationValue")
+            except Exception:
+                pass
+            balances.append({
+                "suffix":       suffix,
+                "account_hash": account_hash,
+                "buying_power": buying_power,
+            })
+        return jsonify({"balances": balances}), 200
+    except Exception as e:
+        logger.error("schwab/balances error: %s", e)
+        return jsonify({"balances": [], "error": str(e)}), 200
+
+
+@api_bp.route("/schwab/mode", methods=["POST"])
+def set_schwab_mode():
+    """POST /api/v1/schwab/mode -- switch PAPER/LIVE mode.
+
+    Sprint 25 Item 2. Body: {mode: "PAPER"|"LIVE", confirmed: true}.
+    Writes to config.json. Requires confirmed=true for LIVE.
+    """
+    payload = request.get_json(silent=True) or {}
+    mode = str(payload.get("mode", "")).strip().upper()
+    confirmed = bool(payload.get("confirmed", False))
+
+    if mode not in ("PAPER", "LIVE"):
+        return jsonify({"error": "mode must be PAPER or LIVE"}), 400
+    if mode == "LIVE" and not confirmed:
+        return jsonify({"error": "confirmed is required to switch to LIVE mode"}), 400
+
+    config_path = _PROJECT_ROOT_PATH / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        raw["trading_mode"] = mode
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2)
+        from prime_config.prime_config import reload_config
+        reload_config()
+        return jsonify({"mode": mode, "status": "ok"}), 200
+    except Exception as e:
+        logger.error("set_schwab_mode error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# Sprint 25 — Scan Schedule / APScheduler (Item 3)
+# ============================================================================
+
+# _SCHEDULER is initialised by prime_api_server.py at startup.
+_SCHEDULER: Any = None
+_SCAN_SCHEDULE_DEFAULTS = {
+    "psa_time":           "09:45",
+    "uoa_pead_srs_time":  "12:40",
+    "idx_time":           "12:45",
+    "short_time":         "12:50",
+    "schedule_enabled":   True,
+}
+_SCHEDULE_FIELDS = list(_SCAN_SCHEDULE_DEFAULTS.keys())
+
+
+def _schedule_key(scanner: str) -> str:
+    return f"scan_job_{scanner}"
+
+
+def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
+    """Apply schedule dict to the running APScheduler instance."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    def _make_job(s: str):
+        def _job():
+            state = _scan_state.get(s, {})
+            if state.get("status") == "running":
+                logger.info("APScheduler: %s already running — skipping", s)
+                return
+            module = _SCANNER_MAP.get(s)
+            if module:
+                _run_scanner_bg(s, module)
+        _job.__name__ = f"_scheduled_{s}"
+        return _job
+
+    if not schedule.get("schedule_enabled", True):
+        for key in list(scheduler.get_jobs()):
+            if key.id.startswith("scan_job_"):
+                scheduler.remove_job(key.id)
+        return
+
+    def _parse_time(t: str):
+        parts = t.split(":")
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+
+    psa_h, psa_m = _parse_time(schedule.get("psa_time", "09:45"))
+    uoa_h, uoa_m = _parse_time(schedule.get("uoa_pead_srs_time", "12:40"))
+    idx_h, idx_m = _parse_time(schedule.get("idx_time", "12:45"))
+    sht_h, sht_m = _parse_time(schedule.get("short_time", "12:50"))
+
+    job_defs = [
+        ("scan_job_psa",   _make_job("psa"),   psa_h, psa_m),
+        ("scan_job_uoa",   _make_job("uoa"),   uoa_h, uoa_m),
+        ("scan_job_pead",  _make_job("pead"),  uoa_h, uoa_m),
+        ("scan_job_srs",   _make_job("srs"),   uoa_h, uoa_m),
+        ("scan_job_idx",   _make_job("idx"),   idx_h, idx_m),
+        ("scan_job_short", _make_job("short"), sht_h, sht_m),
+    ]
+
+    for job_id, fn, hour, minute in job_defs:
+        trigger = CronTrigger(
+            day_of_week="mon-fri",
+            hour=hour,
+            minute=minute,
+            timezone="America/New_York",
+        )
+        if scheduler.get_job(job_id):
+            scheduler.reschedule_job(job_id, trigger=trigger)
+        else:
+            scheduler.add_job(fn, trigger=trigger, id=job_id, replace_existing=True)
+
+
+def _read_schedule() -> Dict[str, Any]:
+    """Read scan schedule settings from ops_config.json."""
+    try:
+        with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        result = dict(_SCAN_SCHEDULE_DEFAULTS)
+        for k in _SCHEDULE_FIELDS:
+            if k in raw:
+                result[k] = raw[k]
+        return result
+    except Exception:
+        return dict(_SCAN_SCHEDULE_DEFAULTS)
+
+
+@api_bp.route("/scans/schedule", methods=["GET"])
+def get_scan_schedule():
+    """GET /api/v1/scans/schedule -- current APScheduler scan schedule.
+
+    Sprint 25 Item 3.
+    """
+    schedule = _read_schedule()
+
+    # Attach next-run times from APScheduler
+    next_runs: Dict[str, str] = {}
+    if _SCHEDULER:
+        try:
+            for job in _SCHEDULER.get_jobs():
+                jid = job.id
+                if jid.startswith("scan_job_") and job.next_run_time:
+                    scanner = jid.replace("scan_job_", "")
+                    nr = job.next_run_time.strftime("%H:%M ET")
+                    next_runs[scanner] = nr
+        except Exception:
+            pass
+
+    return jsonify({"schedule": schedule, "next_runs": next_runs}), 200
+
+
+@api_bp.route("/scans/schedule", methods=["POST"])
+def post_scan_schedule():
+    """POST /api/v1/scans/schedule -- update scan schedule and reschedule APScheduler jobs.
+
+    Sprint 25 Item 3. Writes to ops_config.json; takes effect immediately without restart.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        for key in _SCHEDULE_FIELDS:
+            if key in payload:
+                raw[key] = payload[key]
+
+        with open(_OPS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2)
+
+        new_schedule = _read_schedule()
+        if _SCHEDULER and _SCHEDULER.running:
+            _reschedule_all(_SCHEDULER, new_schedule)
+
+        return jsonify({"schedule": new_schedule, "rescheduled": _SCHEDULER is not None}), 200
+    except Exception as e:
+        logger.error("post_scan_schedule error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+def init_scheduler() -> Any:
+    """Create and start the APScheduler BackgroundScheduler.
+
+    Called from prime_api_server.py at startup. Returns the scheduler instance,
+    which is also stored as the module-level _SCHEDULER so route handlers can
+    reschedule jobs live without a restart.
+    """
+    global _SCHEDULER
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        scheduler = BackgroundScheduler(timezone="America/New_York")
+        schedule = _read_schedule()
+        _reschedule_all(scheduler, schedule)
+        scheduler.start()
+        _SCHEDULER = scheduler
+        logger.info("APScheduler started — %d scan jobs scheduled", len(scheduler.get_jobs()))
+        return scheduler
+    except Exception as e:
+        logger.warning("APScheduler init failed: %s", e)
+        return None
