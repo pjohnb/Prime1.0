@@ -277,8 +277,12 @@ tr:hover td { background: var(--bg3); }
         <option value="MTS">MTS</option><option value="MANUAL">MANUAL</option>
       </select>
       <input id="ord-account" placeholder="Account" value="PAPER" />
-      <input id="ord-trailing-stop" type="number" min="0" step="0.5" placeholder="Trail%" title="Optional trailing stop %" style="width:65px" />
-      <input id="ord-stop-pct" type="number" min="0" step="0.5" placeholder="Stop%" title="Stop loss % (e.g. 5 = 5%)" style="width:70px" />
+      <select id="ord-stop-type" title="Stop type: FIXED dollar stop or TRAILING % stop" style="height:32px" onchange="toggleStopTypeFields()">
+        <option value="FIXED">FIXED stop</option>
+        <option value="TRAILING">TRAILING stop</option>
+      </select>
+      <input id="ord-stop-pct" type="number" min="0" step="0.5" placeholder="Stop%" title="Fixed stop loss % (e.g. 5 = 5%)" style="width:70px" />
+      <input id="ord-trailing-stop" type="number" min="0" step="0.5" placeholder="Trail%" title="Trailing stop % (e.g. 5 = trail 5% below high-water)" style="width:70px;display:none" value="5" />
       <span id="ord-stop-hint" style="font-family:var(--mono);font-size:12px;color:var(--text3)"></span>
       <input id="ord-target-pct" type="number" min="0" step="0.5" placeholder="Target%" title="Profit target % (e.g. 10 = 10%)" style="width:75px" />
       <span id="ord-target-hint" style="font-family:var(--mono);font-size:12px;color:var(--text3)"></span>

@@ -98,6 +98,8 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_trade_log(db_path, "stop_price", "REAL")
     _migrate_add_column_trade_log(db_path, "target_price", "REAL")
     _migrate_add_column_trade_log(db_path, "time_stop_minutes", "INTEGER")
+    # Sprint 27 Item 2: stop_type (FIXED or TRAILING)
+    _migrate_add_column_trade_log(db_path, "stop_type", "TEXT")
 
     return path
 
@@ -183,6 +185,7 @@ def insert_trade(
     stop_price: Optional[float] = None,
     target_price: Optional[float] = None,
     time_stop_minutes: Optional[int] = None,
+    stop_type: str = "FIXED",
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -213,15 +216,15 @@ def insert_trade(
                 order_id, account, routed_to, notes, mata_batch_id, status,
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
-                stop_price, target_price, time_stop_minutes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                stop_price, target_price, time_stop_minutes, stop_type
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
                 order_id, account, routed_to, notes, mata_batch_id, "OPEN",
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
-                stop_price, target_price, time_stop_minutes,
+                stop_price, target_price, time_stop_minutes, stop_type or "FIXED",
             ),
         )
         conn.commit()

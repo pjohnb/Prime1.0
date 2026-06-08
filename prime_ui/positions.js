@@ -115,10 +115,12 @@ async function loadPositions() {
       // Sprint 26 Item 2: show stop price value below badge.
       const stopPrice = p.stop_price ? `$${Number(p.stop_price).toFixed(2)}` : '';
       const targetPrice = p.target_price ? ` T:$${Number(p.target_price).toFixed(2)}` : '';
-      // Sprint 26 Item 8: trailing stop T badge.
-      const trailBadge = p.trailing_stop_pct
+      // Sprint 27 Item 2: T badge for TRAILING stop type.
+      const isTrailing = p.stop_type === 'TRAILING' || (p.trailing_stop_pct != null && p.trailing_stop_pct > 0);
+      const trailPct   = p.trailing_stop_pct != null ? (Number(p.trailing_stop_pct) * 100).toFixed(1) : '5.0';
+      const trailBadge = isTrailing
         ? `<span class="badge neutral" style="font-size:10px;padding:1px 4px;margin-left:3px"
-             title="Trailing stop active — trail: ${(Number(p.trailing_stop_pct) * 100).toFixed(1)}%">T</span>`
+             title="TRAILING ${trailPct}% — trails below high-water mark">T</span>`
         : '';
       // Sprint 23 Item 3: Stop tooltip.
       const stopTooltip = stopBadge === 'GREEN'

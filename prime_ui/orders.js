@@ -9,14 +9,28 @@ function _orderToken() {
   return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiToken) || '';
 }
 
+// Sprint 27 Item 2: toggle FIXED/TRAILING stop fields.
+function toggleStopTypeFields() {
+  const stopType = (document.getElementById('ord-stop-type')?.value || 'FIXED');
+  const fixedEl  = document.getElementById('ord-stop-pct');
+  const trailEl  = document.getElementById('ord-trailing-stop');
+  const hintEl   = document.getElementById('ord-stop-hint');
+  if (fixedEl) fixedEl.style.display  = stopType === 'TRAILING' ? 'none' : '';
+  if (trailEl) trailEl.style.display  = stopType === 'TRAILING' ? '' : 'none';
+  if (hintEl)  hintEl.style.display   = stopType === 'TRAILING' ? 'none' : '';
+}
+
 function _readOrderForm(side) {
   const symbol    = (document.getElementById('ord-symbol').value || '').trim().toUpperCase();
   const qty       = parseInt(document.getElementById('ord-qty').value, 10);
   const price     = parseFloat(document.getElementById('ord-price').value);
   const strategy  = document.getElementById('ord-strategy').value;
   const account   = (document.getElementById('ord-account').value || '').trim();
+
+  // Sprint 27 Item 2: stop type selector.
+  const stopType  = (document.getElementById('ord-stop-type')?.value || 'FIXED');
   const trailRaw  = document.getElementById('ord-trailing-stop')?.value;
-  const trailingStopPct = trailRaw && parseFloat(trailRaw) > 0
+  const trailingStopPct = stopType === 'TRAILING' && trailRaw && parseFloat(trailRaw) > 0
     ? parseFloat(trailRaw) / 100.0
     : null;
 
@@ -24,12 +38,13 @@ function _readOrderForm(side) {
   const stopPctRaw   = document.getElementById('ord-stop-pct')?.value;
   const targetPctRaw = document.getElementById('ord-target-pct')?.value;
   const timeDaysRaw  = document.getElementById('ord-time-stop-days')?.value;
-  const stopPct    = stopPctRaw   && parseFloat(stopPctRaw)   > 0 ? parseFloat(stopPctRaw)   : null;
+  const stopPct    = stopType !== 'TRAILING' && stopPctRaw && parseFloat(stopPctRaw) > 0
+    ? parseFloat(stopPctRaw) : null;
   const targetPct  = targetPctRaw && parseFloat(targetPctRaw) > 0 ? parseFloat(targetPctRaw) : null;
   const timeDays   = timeDaysRaw  && parseFloat(timeDaysRaw)  > 0 ? parseFloat(timeDaysRaw)  : null;
 
   return { symbol, qty, price, strategy, account, direction: side,
-           trailingStopPct, stopPct, targetPct, timeDays };
+           stopType, trailingStopPct, stopPct, targetPct, timeDays };
 }
 
 // Sprint 26 Item 2: update derived price hints when inputs change.
@@ -73,10 +88,12 @@ function openOrderConfirm(side) {
   const estimatedTotal = (o.qty * o.price).toLocaleString('en-US', {
     style: 'currency', currency: 'USD'
   });
-  const trailLine = o.trailingStopPct
-    ? `<div>Trailing Stop: <b>${(o.trailingStopPct * 100).toFixed(1)}%</b></div>`
+  const trailLine = o.stopType === 'TRAILING' && o.trailingStopPct
+    ? `<div>Trailing Stop: <b>${(o.trailingStopPct * 100).toFixed(1)}%</b> (trailing)</div>`
     : '';
-  const stopLine   = o.stopPct   ? `<div>Stop Loss: <b>${o.stopPct}%</b> → $${(o.price * (1 - o.stopPct / 100)).toFixed(2)}</div>` : '';
+  const stopLine  = o.stopType !== 'TRAILING' && o.stopPct
+    ? `<div>Stop Loss: <b>${o.stopPct}%</b> → $${(o.price * (1 - o.stopPct / 100)).toFixed(2)}</div>`
+    : '';
   const targetLine = o.targetPct ? `<div>Take Profit: <b>${o.targetPct}%</b> → $${(o.price * (1 + o.targetPct / 100)).toFixed(2)}</div>` : '';
   const timeLine   = o.timeDays  ? `<div>Time Stop: <b>${o.timeDays}d</b></div>` : '';
 
@@ -123,6 +140,9 @@ async function submitOrder() {
     stop_pct:        o.stopPct   || undefined,
     target_pct:      o.targetPct || undefined,
     time_stop_days:  o.timeDays  || undefined,
+    // Sprint 27 Item 2: stop type + trailing pct
+    stop_type:         o.stopType || 'FIXED',
+    trailing_stop_pct: o.stopType === 'TRAILING' ? (o.trailingStopPct || 0.05) : undefined,
   };
 
   try {
@@ -142,20 +162,12 @@ async function submitOrder() {
       const ordId  = data.order_id ? ' order=' + data.order_id : '';
       _setMsg(`${src} trade submitted (${logId}${ordId})`, true);
 
-      // If a trailing stop was set, wire it to the new log_id
-      if (o.trailingStopPct && data.log_id) {
-        fetch(_orderApi() + '/trades/' + data.log_id + '/trailing-stop', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _orderToken() },
-          body: JSON.stringify({ trailing_stop_pct: o.trailingStopPct }),
-        }).catch(() => {});
-      }
-
       document.getElementById('ord-symbol').value = '';
       document.getElementById('ord-qty').value = '';
       document.getElementById('ord-price').value = '';
-      if (document.getElementById('ord-trailing-stop'))
-        document.getElementById('ord-trailing-stop').value = '';
+      // Reset stop type selector back to FIXED
+      const stEl = document.getElementById('ord-stop-type');
+      if (stEl) { stEl.value = 'FIXED'; toggleStopTypeFields(); }
       loadPositions();
 
       // Detect LIVE mode from successful LIVE response

@@ -369,15 +369,23 @@ def create_trade():
         return jsonify({"error": f"unknown trading_mode: {mode_cfg}"}), 500
 
     # Sprint 26 Item 2: read optional stop/target/time fields from payload.
+    # Sprint 27 Item 2: stop_type (FIXED/TRAILING) + trailing_stop_pct.
     stop_pct_raw    = payload.get("stop_pct")
     target_pct_raw  = payload.get("target_pct")
     time_stop_days  = payload.get("time_stop_days")
+    stop_type_val   = (payload.get("stop_type") or "FIXED").upper()
+    if stop_type_val not in ("FIXED", "TRAILING"):
+        stop_type_val = "FIXED"
 
-    stop_price_val   = None
-    target_price_val = None
+    stop_price_val    = None
+    target_price_val  = None
     time_stop_min_val = None
+    trailing_pct_val  = None
     try:
-        if stop_pct_raw is not None:
+        if stop_type_val == "TRAILING":
+            raw_tpct = payload.get("trailing_stop_pct")
+            trailing_pct_val = float(raw_tpct) if raw_tpct is not None else 0.05
+        elif stop_pct_raw is not None:
             sp = float(stop_pct_raw)  # e.g. 5.0 means 5%
             stop_price_val = round(
                 price * (1 + sp / 100.0) if direction == "SHORT" else price * (1 - sp / 100.0), 4
@@ -416,7 +424,14 @@ def create_trade():
             stop_price=stop_price_val,
             target_price=target_price_val,
             time_stop_minutes=time_stop_min_val,
+            stop_type=stop_type_val,
         )
+
+        # For TRAILING stop: wire trailing_stop_pct to the new trade
+        if stop_type_val == "TRAILING" and trailing_pct_val is not None and log_id:
+            from prime_data.prime_db import update_trailing_stop
+            update_trailing_stop(log_id, trailing_pct_val)
+
     except TradeRecordError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -426,6 +441,7 @@ def create_trade():
     return jsonify({
         "log_id": log_id, "status": "OPEN", "trade_source": "PAPER",
         "stop_price": stop_price_val, "target_price": target_price_val,
+        "stop_type": stop_type_val,
     }), 201
 
 
