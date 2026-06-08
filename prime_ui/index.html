@@ -16,6 +16,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
 .topbar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; height: 44px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
 .topbar h1 { font-size: 16px; font-weight: 700; letter-spacing: 0.05em; }
 .topbar .status { font-size: 13px; color: var(--text3); font-family: var(--mono); }
+.mode-pill { font-size: 11px; font-weight: 700; font-family: var(--mono); padding: 2px 10px; border-radius: 999px; letter-spacing: 0.05em; }
+.mode-pill.paper { background: #14532d; color: #86efac; border: 1px solid #16a34a; }
+.mode-pill.live   { background: #7f1d1d; color: #fca5a5; border: 1px solid #b91c1c; }
+.order-mode-banner { font-size: 12px; font-weight: 700; font-family: var(--mono); text-align: center; padding: 4px 12px; border-radius: 4px; margin-bottom: 8px; letter-spacing: 0.04em; }
+.order-mode-banner.paper { background: #052e16; color: #86efac; border: 1px solid #16a34a; }
+.order-mode-banner.live   { background: #450a0a; color: #fca5a5; border: 1px solid #b91c1c; }
 .tabs { display: flex; gap: 2px; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; flex-shrink: 0; }
 .tab { padding: 8px 16px; font-size: 14px; font-weight: 500; cursor: pointer; color: var(--text3); border-bottom: 2px solid transparent; transition: all 0.15s; }
 .tab:hover { color: var(--text2); }
@@ -126,6 +132,7 @@ tr:hover td { background: var(--bg3); }
   <h1>PRIME v1.0</h1>
   <div style="display:flex;align-items:center;gap:12px">
     <span class="status" id="market-status" style="font-family:var(--mono);font-size:12px;font-weight:700" title="OPEN: 09:30–16:00 ET | PRE-MKT: 04:00–09:30 ET | CLOSED: 16:00–04:00 ET">--</span>
+    <span id="mode-pill" class="mode-pill paper" title="Current trading mode — change in Settings tab">PAPER</span>
     <span class="status" id="api-status">API: checking...</span>
     <button class="help-btn" id="help-open-btn" onclick="openHelp()" title="PRIME Help &amp; Cheat Sheet">?</button>
   </div>
@@ -266,7 +273,8 @@ tr:hover td { background: var(--bg3); }
   </div>
   <div id="sync-msg" style="font-family:var(--mono);font-size:12px;min-height:16px;margin-bottom:8px;color:var(--text3)"></div>
   <div class="order-panel">
-    <div class="panel-title">ORDER ENTRY (PAPER)</div>
+    <div id="order-mode-banner" class="order-mode-banner paper">PAPER MODE — trades are simulated, no real money at risk</div>
+    <div class="panel-title" id="order-entry-title">ORDER ENTRY</div>
     <div class="order-form">
       <input id="ord-symbol" placeholder="Symbol" maxlength="6" autocomplete="off" />
       <input id="ord-qty" type="number" min="1" placeholder="Qty" />
@@ -768,10 +776,12 @@ loadDashboard();
 populateStrategyFilter();
 updateMarketStatus();
 pollStopAlerts();
+updateModePill();
 setInterval(refreshActiveView, 60000);
 setInterval(checkHealth, 60000);
 setInterval(updateMarketStatus, 60000);
 setInterval(pollStopAlerts, 30000);
+setInterval(updateModePill, 120000);
 setInterval(() => {
   const active = document.querySelector('.view.active');
   if (active && active.id === 'view-positions') loadPositions();

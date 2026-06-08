@@ -1,10 +1,37 @@
 // Sprint 23 Item 2: General Settings Tab
 // Sprint 25 Item 2: Broker Connection panel
+// Sprint 27 Item 4: mode pill + order-mode banner
 // Loads from GET /api/v1/settings, saves via POST /api/v1/settings.
 // All settings persist to ops_config.json; changes take effect on next scan.
 
 function _settApi() {
   return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
+}
+
+// Sprint 27 Item 4: update topbar mode pill and order-entry banner.
+async function updateModePill() {
+  try {
+    const resp = await fetch(_settApi() + '/schwab/status');
+    if (!resp.ok) return;
+    const s = await resp.json();
+    const mode = (s.mode || 'PAPER').toUpperCase();
+    const isLive = mode === 'LIVE';
+    window._serverIsLive = isLive;
+
+    const pill = document.getElementById('mode-pill');
+    if (pill) {
+      pill.textContent = mode;
+      pill.className = 'mode-pill ' + (isLive ? 'live' : 'paper');
+    }
+
+    const banner = document.getElementById('order-mode-banner');
+    if (banner) {
+      banner.className = 'order-mode-banner ' + (isLive ? 'live' : 'paper');
+      banner.textContent = isLive
+        ? 'LIVE MODE — orders route to your real Schwab account. Real money at risk.'
+        : 'PAPER MODE — trades are simulated, no real money at risk';
+    }
+  } catch (e) { /* API offline — keep defaults */ }
 }
 
 // ── Broker Connection panel (Item 2) ─────────────────────────────────────────
@@ -51,12 +78,20 @@ function _renderSchwabPanel(s) {
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
       <button class="btn-confirm" onclick="connectSchwab()" style="font-size:12px;padding:5px 14px">Connect</button>
       <button class="btn-refresh" onclick="refreshSchwabBalances()" style="font-size:12px;padding:5px 14px">Refresh Balances</button>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text3)">
-        Mode:
-        <select id="schwab-mode-sel" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:13px" onchange="onModeChange(this.value)">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text3);font-weight:600">
+        Trading Mode:
+        <select id="schwab-mode-sel"
+          style="background:${s.mode==='LIVE'?'#450a0a':'#052e16'};
+                 border:2px solid ${s.mode==='LIVE'?'#b91c1c':'#16a34a'};
+                 color:${s.mode==='LIVE'?'#fca5a5':'#86efac'};
+                 padding:5px 12px;border-radius:6px;font-size:14px;font-weight:700;font-family:var(--mono)"
+          onchange="onModeChange(this.value)">
           <option value="PAPER"${(s.mode||'PAPER')==='PAPER'?' selected':''}>PAPER</option>
           <option value="LIVE"${s.mode==='LIVE'?' selected':''}>LIVE</option>
         </select>
+        <span style="font-size:11px;font-family:var(--mono);color:${s.mode==='LIVE'?'var(--red)':'var(--text3)'}">
+          ${s.mode==='LIVE'?'LIVE — real money at risk':'safe — simulated trades'}
+        </span>
       </label>
       <span id="schwab-conn-msg" style="font-family:var(--mono);font-size:12px;min-height:14px"></span>
     </div>
@@ -134,6 +169,7 @@ async function _applyMode(mode) {
       if (msg) { msg.style.color = 'var(--green)'; msg.textContent = 'Mode set to ' + mode; }
       setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
       loadSchwabStatus();
+      updateModePill();
     } else {
       if (msg) { msg.style.color = 'var(--red)'; msg.textContent = data.error || 'Mode change failed'; }
     }
