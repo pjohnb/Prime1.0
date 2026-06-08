@@ -75,9 +75,38 @@ def _insert(signal: Dict[str, Any], db_path: Optional[Path]) -> bool:
         factors=json.dumps(signal.get("factors", {})),
         instrument_type=signal.get("instrument_type", INSTRUMENT_TYPE),
         trigger_source=signal.get("trigger_source"),
+        guidance_flag=signal.get("guidance_flag"),
         db_path=db_path,
     )
     return result is not None
+
+
+# Sprint 25 Item 4: guidance_flag tier adjustment table.
+# Maps (guidance_flag, direction) → adjusted tier.
+# None means: leave tier unchanged (BEAT_HOLD/UNKNOWN for LONG, UNKNOWN for SHORT).
+_GUIDANCE_TIER: Dict[str, Dict[str, Optional[str]]] = {
+    "BEAT_RAISE": {"LONG": "STRONG",      "SHORT": "SUPPRESSED"},
+    "BEAT_HOLD":  {"LONG": "STRONG",      "SHORT": "WATCH"},
+    "BEAT_CUT":   {"LONG": "WATCH",       "SHORT": "WATCH"},
+    "MISS_RAISE": {"LONG": "WATCH",       "SHORT": "WATCH"},
+    "MISS_CUT":   {"LONG": "SUPPRESSED",  "SHORT": "STRONG"},
+    "UNKNOWN":    {"LONG": None,          "SHORT": None},
+}
+
+
+def _apply_guidance_tier(signal: Dict[str, Any]) -> Dict[str, Any]:
+    """Adjust signal tier based on guidance_flag (Sprint 25 Item 4)."""
+    flag = signal.get("guidance_flag") or "UNKNOWN"
+    direction = (signal.get("direction") or "LONG").upper()
+    direction_key = "SHORT" if direction == "SHORT" else "LONG"
+    tier_map = _GUIDANCE_TIER.get(flag, {})
+    new_tier = tier_map.get(direction_key)
+    if new_tier is not None:
+        signal = dict(signal)
+        signal["tier"] = new_tier
+        if new_tier == "SUPPRESSED":
+            signal["status"] = "SUPPRESSED"
+    return signal
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +182,11 @@ def bridge_psa_rows(
 
 
 def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) -> int:
-    """PEAD pead_signals rows. Approved = above_threshold == 1."""
+    """PEAD pead_signals rows. Approved = above_threshold == 1.
+
+    Sprint 25 Item 4: extracts guidance_flag from row (v1.0 scanner output) or
+    derives it from eps_surprise + price_reaction, then applies tier adjustment.
+    """
     count = 0
     for row in rows:
         if int(row.get("above_threshold") or 0) != 1:
@@ -161,6 +194,15 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
         direction = (row.get("direction") or "LONG").strip().upper()
         # Sprint 23 Item 3: LONG = earnings beat, SHORT = earnings miss/cut.
         trigger_source = "PEAD_BEAT" if direction == "LONG" else "PEAD_MISS"
+
+        # Sprint 25 Item 4: guidance_flag — use stored value or derive from price action.
+        guidance_flag = (row.get("guidance_flag") or "").strip() or None
+        if not guidance_flag:
+            from prime_scanners.prime_pead_scanner import classify_guidance_flag
+            eps_surp = _to_float(row.get("eps_surprise_pct"), 0.0) or 0.0
+            price_rxn = _to_float(row.get("price_reaction_pct"), 0.0) or 0.0
+            guidance_flag = classify_guidance_flag(eps_surp, price_rxn)
+
         signal = {
             "symbol": (row.get("symbol") or "").strip(),
             "strategy": "PEAD",
@@ -171,13 +213,16 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
             "direction": direction,
             "status": "APPROVED",
             "trigger_source": trigger_source,
+            "guidance_flag": guidance_flag,
             "factors": {
                 "eps_surprise_pct": _to_float(row.get("eps_surprise_pct"), None),
                 "price_reaction_pct": _to_float(row.get("price_reaction_pct"), None),
                 "days_since_earnings": row.get("days_since_earnings"),
                 "earnings_date": row.get("earnings_date"),
+                "guidance_flag": guidance_flag,
             },
         }
+        signal = _apply_guidance_tier(signal)
         if signal["symbol"] and _insert(signal, db_path):
             count += 1
     return count

@@ -28,6 +28,8 @@ const HELP_GLOSSARY = [
   { term: "STRONG",          def: "Signal tier: both primary triggers fired AND technical confirmation passes AND DK CONFIRMING (or NEUTRAL with high conviction)." },
   { term: "SUPPRESSED",      def: "Signal status set by DK NULLIFYING on a PSA candidate. The technical setup is valid but institutional flow opposes the trade." },
   { term: "trigger_source",  def: "The predictive event that initiated the signal. Values: UOA_CALL (call surge), UOA_PUT (put surge), PEAD_BEAT (earnings beat), PEAD_MISS (earnings miss)." },
+  { term: "guidance_flag",   def: "Sprint 25 PEAD classification: combines EPS result + forward guidance. BEAT_RAISE (highest conviction long), BEAT_HOLD, BEAT_CUT (HPE pattern — demoted to WATCH), MISS_RAISE, MISS_CUT (highest conviction short), UNKNOWN (treat as BEAT_HOLD)." },
+  { term: "BEAT_CUT",        def: "HPE pattern: stock beat EPS estimate but guided lower. Price falls despite the reported beat — market prices guidance cut, not the headline beat. Signal demoted to WATCH; do not auto-approve as STRONG." },
   { term: "UOA",             def: "Unusual Options Activity. Unusual call or put volume that predicts a directional move before the price move occurs." },
   { term: "UOA_CALL",        def: "UOA trigger: call-dominant unusual activity (call/put ratio ≥ 2.0). Initiates a PSA long candidate." },
   { term: "UOA_PUT",         def: "UOA trigger: put-dominant unusual activity (put/call ratio ≥ 2.0 + premium > $250k + DTE ≤ 30 + volume surge). Initiates a short candidate." },
@@ -48,14 +50,15 @@ const STRATEGY_INFO = {
   },
   PEAD: {
     fullName: "Post-Earnings Announcement Drift",
-    summary: "Captures the multi-day price drift that follows an earnings beat (long) or earnings miss + guidance cut (short) within the 5-session post-announcement window.",
+    summary: "Captures the multi-day price drift that follows an earnings beat (long) or earnings miss + guidance cut (short) within the 5-session post-announcement window. Signals now include a guidance_flag that classifies the combination of EPS result and forward guidance.",
     trigger: "Earnings beat (EPS surprise > 0, long) or earnings miss + guidance cut (short) within the last 5 trading sessions.",
     confirmation: "Stock still within post-earnings drift window; price not fully gapped out; daily volume elevated.",
     dk: "CONFIRMING on the earnings drift confirms institutional positioning in the expected direction. NULLIFYING suggests smart money is fading the earnings reaction.",
     hold: "2–5 sessions (drift window closes day 5).",
     stop: "–5% long / +5% short from entry.",
-    good: "Large EPS surprise (≥ 5%), price not exhausted, DK CONFIRMING, within first 2 sessions.",
-    bad: "Day 4–5 of drift window, stock already moved 80% of typical PEAD range. Risk/reward is poor.",
+    good: "Large EPS surprise (≥ 5%), price not exhausted, DK CONFIRMING, within first 2 sessions. BEAT_RAISE flag = highest conviction long.",
+    bad: "BEAT_CUT (HPE pattern): reported beat but guidance cut — price falls despite the beat. Signal is auto-demoted to WATCH. Day 4–5 of drift window, stock already moved 80% of typical PEAD range.",
+    guidanceFlags: "BEAT_RAISE: beat + raised guidance → STRONG long | BEAT_HOLD: beat + unchanged → STRONG long | BEAT_CUT (HPE pattern): beat + guidance cut → WATCH long (do not auto-approve) | MISS_RAISE: miss + raised guidance → WATCH long | MISS_CUT: miss + guidance cut → SUPPRESSED long, STRONG short | UNKNOWN: guidance unavailable → treat as BEAT_HOLD",
   },
   UOA: {
     fullName: "Unusual Options Activity",
@@ -215,7 +218,8 @@ function toggleStrategyInfo(stratKey, btnEl) {
     ${_popRow("Typical Hold", info.hold)}
     ${_popRow("Stop Rule", info.stop)}
     ${_popRow("Good signal", info.good)}
-    ${_popRow("Bad signal", info.bad)}`;
+    ${_popRow("Bad signal", info.bad)}
+    ${info.guidanceFlags ? _popRow("Guidance Flags", info.guidanceFlags.split('|').map(s => s.trim()).join('<br>')) : ''}`;
 
   // Position below the button.
   document.body.appendChild(pop);

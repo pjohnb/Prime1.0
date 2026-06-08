@@ -332,6 +332,56 @@ def score_revenue_surprise(
         return 30.0
 
 
+def classify_guidance_flag(
+    surprise_pct: float,
+    price_change_pct: float,
+    guidance_direction: Optional[str] = None,
+) -> str:
+    """Classify earnings signal into one of six guidance_flag values.
+
+    Uses explicit guidance_direction if available; otherwise derives from price
+    action. A beat with a significant price drop (HPE pattern) signals a guidance
+    cut that overshadows the reported earnings beat.
+
+    Returns: BEAT_RAISE | BEAT_HOLD | BEAT_CUT | MISS_RAISE | MISS_CUT | UNKNOWN
+    """
+    if not guidance_direction and surprise_pct == 0:
+        return "UNKNOWN"
+
+    # Determine guidance direction
+    if guidance_direction:
+        direction = guidance_direction.upper()
+        if direction not in ("RAISE", "HOLD", "CUT"):
+            direction = "HOLD"
+    else:
+        # Price-action heuristic: significant adverse price reaction overrides headline EPS
+        if surprise_pct > 0 and price_change_pct < -2.5:
+            direction = "CUT"   # Beat but price fell hard: guidance cut pricing
+        elif surprise_pct > 0 and price_change_pct > 2.0:
+            direction = "RAISE"
+        elif surprise_pct > 0:
+            direction = "HOLD"
+        elif surprise_pct < 0 and price_change_pct < -2.0:
+            direction = "CUT"
+        elif surprise_pct < 0 and price_change_pct > 1.5:
+            direction = "RAISE"
+        else:
+            direction = "HOLD"
+
+    eps_beat = surprise_pct > 0
+    if eps_beat and direction == "RAISE":
+        return "BEAT_RAISE"
+    if eps_beat and direction == "HOLD":
+        return "BEAT_HOLD"
+    if eps_beat and direction == "CUT":
+        return "BEAT_CUT"
+    if not eps_beat and direction == "RAISE":
+        return "MISS_RAISE"
+    if not eps_beat and direction == "CUT":
+        return "MISS_CUT"
+    return "UNKNOWN"
+
+
 def calculate_pead_signal(
     earnings_data: Dict,
     price_data: Optional[Dict],
@@ -363,10 +413,13 @@ def calculate_pead_signal(
     else:
         direction = "NEUTRAL"
 
+    guidance_flag = classify_guidance_flag(surprise_pct, price_change)
+
     return {
         "symbol": earnings_data.get("symbol", ""),
         "score": round(total, 1),
         "direction": direction,
+        "guidance_flag": guidance_flag,
         "factors": {
             "eps_surprise": {
                 "score": round(f1, 1),

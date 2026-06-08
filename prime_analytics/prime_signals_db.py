@@ -73,6 +73,8 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
         _migrate_add_column(conn, "prime_signals", "borrow_rate_pct", "REAL")
         # Sprint 23 Item 3: trigger_source column (UOA_CALL/UOA_PUT/PEAD_BEAT/PEAD_MISS/PSA_ONLY)
         _migrate_add_column(conn, "prime_signals", "trigger_source", "TEXT")
+        # Sprint 25 Item 4: PEAD guidance flag (BEAT_RAISE/BEAT_HOLD/BEAT_CUT/MISS_RAISE/MISS_CUT/UNKNOWN)
+        _migrate_add_column(conn, "prime_signals", "guidance_flag", "TEXT")
         # Sprint 20 Item 1: retire PENDING and the old CONFIRMED/NULLIFIED names;
         # rename existing dk_status rows to the three-state vocabulary. Idempotent.
         conn.execute("UPDATE prime_signals SET dk_status='NEUTRAL' WHERE dk_status='PENDING'")
@@ -143,6 +145,7 @@ def insert_signal_dedup(
     signal_id: Optional[str] = None,
     borrow_rate_pct: Optional[float] = None,
     trigger_source: Optional[str] = None,
+    guidance_flag: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Insert a signal with a deterministic id, skipping exact duplicates.
@@ -153,6 +156,8 @@ def insert_signal_dedup(
     populated for confirmed-borrowable SHORT signals (Sprint 17 Item 3).
     trigger_source is set by the bridge adapters (Sprint 23 Item 3):
     UOA_CALL / UOA_PUT / PEAD_BEAT / PEAD_MISS / PSA_ONLY / None.
+    guidance_flag is set for PEAD signals (Sprint 25 Item 4):
+    BEAT_RAISE / BEAT_HOLD / BEAT_CUT / MISS_RAISE / MISS_CUT / UNKNOWN.
     """
     if signal_id is None:
         signal_id = make_signal_id(strategy, symbol, scan_ts)
@@ -161,11 +166,11 @@ def insert_signal_dedup(
             """INSERT OR IGNORE INTO prime_signals
                 (signal_id, symbol, strategy, scan_ts, entry_price, score,
                  sector, tier, status, direction, factors, instrument_type,
-                 borrow_rate_pct, trigger_source)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 borrow_rate_pct, trigger_source, guidance_flag)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (signal_id, symbol.upper(), strategy, scan_ts, entry_price, score,
              sector, tier, status, direction, factors, instrument_type,
-             borrow_rate_pct, trigger_source),
+             borrow_rate_pct, trigger_source, guidance_flag),
         )
         conn.commit()
         inserted = cursor.rowcount > 0

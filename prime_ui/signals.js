@@ -127,8 +127,26 @@ async function loadSignals() {
         ? `NULLIFYING: Institutional selling opposes signal direction — long signal is SUPPRESSED.${convStr}`
         : 'NEUTRAL: No significant dark-pool activity. Signal passes through unchanged.';
       // Sprint 23 Item 3: trigger_source reads from dedicated column (bridge sets it) or factors fallback.
+      // Sprint 25 Item 4: for PEAD signals, show guidance_flag alongside trigger (e.g. "PEAD · BEAT_CUT").
       const trigger = s.trigger_source || _triggerSource(s);
-      const triggerTooltip = trigger === 'UOA_CALL'
+      const guidanceFlag = s.guidance_flag || null;
+      const isPead = s.strategy === 'PEAD' || trigger === 'PEAD_BEAT' || trigger === 'PEAD_MISS';
+      const triggerDisplay = (isPead && guidanceFlag && guidanceFlag !== 'UNKNOWN')
+        ? `${trigger} · ${guidanceFlag}` : trigger;
+      const guidanceFlagColor = (guidanceFlag === 'BEAT_CUT' || guidanceFlag === 'MISS_CUT')
+        ? 'var(--amber)' : (guidanceFlag === 'BEAT_RAISE' || guidanceFlag === 'MISS_RAISE')
+        ? 'var(--green)' : 'var(--amber)';
+      const _guidanceTooltips = {
+        BEAT_RAISE: 'BEAT_RAISE: Beat + raised guidance — STRONG long, no short',
+        BEAT_HOLD:  'BEAT_HOLD: Beat + guidance unchanged — STRONG long, WATCH short',
+        BEAT_CUT:   'BEAT_CUT (HPE pattern): Beat + guidance cut — WATCH long (do not auto-approve), WATCH short candidate',
+        MISS_RAISE: 'MISS_RAISE: Miss + raised guidance — WATCH long (reversal potential), WATCH short',
+        MISS_CUT:   'MISS_CUT: Miss + guidance cut — SUPPRESSED long, STRONG short',
+        UNKNOWN:    'UNKNOWN: Guidance data unavailable — tier unchanged, treated as BEAT_HOLD',
+      };
+      const triggerTooltip = (isPead && guidanceFlag)
+        ? (_guidanceTooltips[guidanceFlag] || guidanceFlag)
+        : trigger === 'UOA_CALL'
         ? 'UOA_CALL: Unusual call volume surge (bullish) — initiates PSA long candidates'
         : trigger === 'UOA_PUT'
         ? 'UOA_PUT: Unusual put volume surge (bearish) — initiates SHORT candidates'
@@ -163,7 +181,7 @@ async function loadSignals() {
         <td style="font-family:var(--mono);font-size:13px" title="${s.scan_ts || ''}">${relTime}</td>
         <td style="font-weight:600">${s.symbol || '--'}</td>
         <td>${s.strategy || '--'}</td>
-        <td style="font-family:var(--mono);font-size:12px;color:var(--amber)" title="${triggerTooltip}">${trigger || '--'}</td>
+        <td style="font-family:var(--mono);font-size:12px;color:${guidanceFlagColor}" title="${triggerTooltip}">${triggerDisplay || '--'}</td>
         <td title="${tierTooltip}">${tier}</td>
         <td><span class="badge ${dkClass}" title="${dkTooltip}">${dkLabel}</span></td>
         <td style="font-family:var(--mono)" title="Price at time of scan — not a limit order price">$${(s.entry_price || 0).toFixed(2)}</td>
