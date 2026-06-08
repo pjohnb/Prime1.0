@@ -153,12 +153,73 @@ const _STRATEGY_LABELS = {
   IDX:   { label: 'IDX — Index Trader',             fields: [['rs_vs_spy_min','RS vs SPY Min','number'],['sma_short','SMA Short Period','number'],['sma_long','SMA Long Period','number']] },
 };
 
+async function loadAiUsageTable() {
+  const el = document.getElementById('ai-usage-table');
+  if (!el) return;
+  try {
+    const resp = await fetch(_settApi() + '/ai/usage');
+    const data = await resp.json();
+    const rows = data.by_feature || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state" style="padding:10px">No AI calls recorded this month.</div>';
+      return;
+    }
+    const totalCost = rows.reduce((s, r) => s + (r.cost_usd || 0), 0);
+    const rowsHtml = rows.map(r => `<tr>
+      <td>${r.feature}</td>
+      <td style="font-family:var(--mono);text-align:right">${r.calls}</td>
+      <td style="font-family:var(--mono);text-align:right">${(r.input_tokens||0).toLocaleString()}</td>
+      <td style="font-family:var(--mono);text-align:right">${(r.output_tokens||0).toLocaleString()}</td>
+      <td style="font-family:var(--mono);text-align:right">$${(r.cost_usd||0).toFixed(4)}</td>
+    </tr>`).join('');
+    el.innerHTML = `
+      <table style="width:100%;font-size:13px">
+        <thead><tr>
+          <th style="text-align:left">Feature</th>
+          <th style="text-align:right">Calls</th>
+          <th style="text-align:right">Input Tokens</th>
+          <th style="text-align:right">Output Tokens</th>
+          <th style="text-align:right">Cost USD</th>
+        </tr></thead>
+        <tbody>${rowsHtml}
+          <tr style="border-top:2px solid var(--border);font-weight:700">
+            <td>TOTAL</td><td></td><td></td><td></td>
+            <td style="font-family:var(--mono);text-align:right">$${totalCost.toFixed(4)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin-top:8px;text-align:right">
+        <button class="btn-refresh" onclick="exportAiUsageCsv()" style="font-size:12px;padding:4px 10px">Export CSV</button>
+      </div>`;
+  } catch (e) {
+    if (el) el.innerHTML = '<div class="empty-state">AI usage unavailable</div>';
+  }
+}
+
+async function exportAiUsageCsv() {
+  try {
+    const resp = await fetch(_settApi() + '/ai/usage');
+    const data = await resp.json();
+    const rows = data.by_feature || [];
+    const header = 'Feature,Calls,Input Tokens,Output Tokens,Cost USD\n';
+    const body = rows.map(r =>
+      `${r.feature},${r.calls},${r.input_tokens||0},${r.output_tokens||0},${(r.cost_usd||0).toFixed(6)}`
+    ).join('\n');
+    const blob = new Blob([header + body], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'prime_ai_usage.csv'; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { console.error('exportAiUsageCsv:', e); }
+}
+
 async function loadSettings() {
   try {
     const resp = await fetch(_settApi() + '/settings');
     _settingsData = await resp.json();
     _renderSettings();
     loadSchwabStatus();
+    loadAiUsageTable();
   } catch (e) {
     console.error('loadSettings:', e);
     document.getElementById('settings-body').innerHTML =
@@ -190,7 +251,14 @@ function _renderSettings() {
         ${_field('short_stop_loss_pct', 'Short Stop Loss %', _pct(d.short_stop_loss_pct), 'number')}
         ${_field('time_stop_minutes', 'Time Stop (min)', d.time_stop_minutes, 'number')}
         ${_field('short_size_multiplier', 'Short Size Multiplier', d.short_size_multiplier, 'number')}
+        ${_field('stop_monitor_interval_seconds', 'Stop Monitor Interval (sec)', d.stop_monitor_interval_seconds || 60, 'number')}
+        ${_field('monthly_ai_budget', 'Monthly AI Budget ($)', d.monthly_ai_budget != null ? d.monthly_ai_budget : 10.0, 'number')}
       </div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">AI USAGE (THIS MONTH)</div>
+      <div id="ai-usage-table"><div class="empty-state" style="padding:10px">Loading…</div></div>
     </div>
 
     <div class="panel-title" style="margin-bottom:10px">STRATEGY THRESHOLDS</div>
@@ -277,6 +345,8 @@ async function saveSettings() {
   if (shortStop !== null) payload.short_stop_loss_pct = shortStop / 100;
   payload.time_stop_minutes = _n('time_stop_minutes');
   payload.short_size_multiplier = _n('short_size_multiplier');
+  payload.stop_monitor_interval_seconds = _n('stop_monitor_interval_seconds');
+  payload.monthly_ai_budget = _n('monthly_ai_budget');
 
   // Strategy thresholds
   const thresholds = {};

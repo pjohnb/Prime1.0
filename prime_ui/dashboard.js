@@ -172,6 +172,7 @@ async function loadDashboard() {
     loadBriefing();
     loadSparkline();
     updateMarketStatus();
+    loadAiCostCard();
   } catch(e) {
     console.error('loadDashboard:', e);
   }
@@ -232,6 +233,37 @@ async function submitExit() {
   }
   const overlay = document.getElementById('shutdown-overlay');
   if (overlay) { overlay.style.display = 'flex'; }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 26 Item 6: AI Cost KPI card.
+// ---------------------------------------------------------------------------
+async function loadAiCostCard() {
+  const el = document.getElementById('d-ai-cost');
+  const alertEl = document.getElementById('d-ai-cost-alert');
+  if (!el) return;
+  try {
+    const resp = await fetch(API + '/ai/usage');
+    if (!resp.ok) { el.textContent = '$--'; return; }
+    const data = await resp.json();
+    const today = data.today_cost || 0;
+    const week  = data.week_cost  || 0;
+    const month = data.month_cost || 0;
+    el.textContent = '$' + today.toFixed(4);
+    el.title = `Week: $${week.toFixed(4)}  Month: $${month.toFixed(4)}`;
+
+    // Budget alert chip
+    if (alertEl && data.budget_alert) {
+      const a = data.budget_alert;
+      alertEl.textContent = a.message;
+      alertEl.style.color = a.level === 'RED' ? 'var(--red)' : 'var(--amber)';
+      alertEl.style.display = 'block';
+    } else if (alertEl) {
+      alertEl.style.display = 'none';
+    }
+  } catch (e) {
+    if (el) el.textContent = '$--';
+  }
 }
 
 function advisoryBadgeClass(rec) {
