@@ -126,14 +126,30 @@ async function loadScanStatus() {
 
 // ── Live Scan Log ─────────────────────────────────────────────────────────────
 
-async function loadScanLog() {
+async function loadScanLog(date) {
   try {
-    const resp = await fetch(_scansApi() + '/scans/log?lines=50');
+    const url = _scansApi() + '/scans/log?lines=50' + (date ? '&date=' + date : '');
+    const resp = await fetch(url);
     const data = await resp.json();
     const el = document.getElementById('scan-log-area');
     if (!el) return;
     el.textContent = (data.lines || []).join('\n') || '(no log entries yet)';
     el.scrollTop = el.scrollHeight;
+  } catch (e) {}
+}
+
+async function loadPastLogFiles() {
+  try {
+    const resp = await fetch(_scansApi() + '/scans/log/files');
+    const data = await resp.json();
+    const sel = document.getElementById('scan-log-date-sel');
+    if (!sel) return;
+    const dates = data.dates || [];
+    const today = new Date().toISOString().substring(0, 10);
+    sel.innerHTML = '<option value="">Today</option>' +
+      dates.filter(d => d !== today).map(d =>
+        `<option value="${d}">${d}</option>`
+      ).join('');
   } catch (e) {}
 }
 
@@ -167,9 +183,10 @@ function _renderSchedule(sched, nextRuns) {
   const el = document.getElementById('scan-schedule-body');
   if (!el) return;
   const enabled = sched.schedule_enabled !== false;
+  const deepEnabled = sched.deep_scan_enabled !== false;
   el.innerHTML = `
     <div style="background:#1a1f2b;border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;font-size:13px;color:var(--amber)">
-      PRIME now manages its own schedule via APScheduler. If you previously used Windows Task Scheduler, disable those jobs to avoid double-firing.
+      PRIME manages its own schedule via APScheduler. If you previously used Windows Task Scheduler, disable those jobs to avoid double-firing.
     </div>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <label style="font-size:13px;color:var(--text3)">Schedule enabled:</label>
@@ -179,14 +196,40 @@ function _renderSchedule(sched, nextRuns) {
       </select>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:16px">
-      ${_schedRow('psa_time',          'PSA time (ET)',            sched.psa_time,          nextRuns.psa)}
+      ${_schedRow('deep_scan_time',    'Pre-Market Deep Scan (ET)', sched.deep_scan_time,    nextRuns.deep)}
+      ${_schedRow('psa_time',          'PSA time (ET)',             sched.psa_time,          nextRuns.psa)}
       ${_schedRow('uoa_pead_srs_time', 'UOA + PEAD + SRS time (ET)', sched.uoa_pead_srs_time, nextRuns.uoa)}
-      ${_schedRow('idx_time',          'IDX time (ET)',            sched.idx_time,          nextRuns.idx)}
-      ${_schedRow('short_time',        'SHORT time (ET)',          sched.short_time,        nextRuns.short)}
+      ${_schedRow('idx_time',          'IDX time (ET)',             sched.idx_time,          nextRuns.idx)}
+      ${_schedRow('short_time',        'SHORT time (ET)',           sched.short_time,        nextRuns.short)}
     </div>
-    <div style="display:flex;gap:10px;align-items:center">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <label style="font-size:13px;color:var(--text3)">Deep scan enabled:</label>
+      <select id="sched-deep-enabled" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:14px">
+        <option value="true"${deepEnabled ? ' selected' : ''}>Enabled</option>
+        <option value="false"${!deepEnabled ? ' selected' : ''}>Disabled</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:24px">
       <button class="btn-confirm" onclick="saveScanSchedule()">Save Schedule</button>
       <span id="sched-msg" style="font-family:var(--mono);font-size:13px;min-height:16px"></span>
+    </div>
+
+    <div class="order-panel" style="margin-top:8px">
+      <div class="panel-title" style="cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+        DISABLE WINDOWS TASK SCHEDULER JOBS ▼
+      </div>
+      <div style="display:none;padding:8px 0;font-size:13px;color:var(--text2);line-height:1.7">
+        <p>If PRIME scans were previously scheduled in Windows Task Scheduler, disable them to prevent duplicate runs.</p>
+        <ol style="padding-left:18px">
+          <li>Press <b>Win+R</b>, type <code>taskschd.msc</code>, press Enter.</li>
+          <li>In the left panel, click <b>Task Scheduler Library</b>.</li>
+          <li>Look for tasks named <b>PRIME PSA Scan</b>, <b>PRIME UOA Scan</b>, etc.</li>
+          <li>Right-click each PRIME task → click <b>Disable</b>.</li>
+          <li>The task Status column will show "Disabled" — it will no longer run automatically.</li>
+          <li>Return to PRIME and confirm APScheduler is running via the Schedule section above.</li>
+        </ol>
+        <p style="color:var(--text3);font-size:12px">Note: Disabling does not delete the tasks. You can re-enable them if needed, but they are not required when APScheduler is active.</p>
+      </div>
     </div>`;
 }
 
@@ -201,12 +244,14 @@ function _schedRow(id, label, val, nextRun) {
 
 async function saveScanSchedule() {
   const payload = {};
-  ['psa_time','uoa_pead_srs_time','idx_time','short_time'].forEach(k => {
+  ['psa_time','uoa_pead_srs_time','idx_time','short_time','deep_scan_time'].forEach(k => {
     const el = document.getElementById('sched-' + k);
     if (el && el.value) payload[k] = el.value;
   });
   const enEl = document.getElementById('sched-enabled');
   if (enEl) payload.schedule_enabled = enEl.value === 'true';
+  const deepEnEl = document.getElementById('sched-deep-enabled');
+  if (deepEnEl) payload.deep_scan_enabled = deepEnEl.value === 'true';
 
   const msgEl = document.getElementById('sched-msg');
   try {
@@ -233,6 +278,7 @@ function loadScans() {
   loadScanStatus();
   loadScanLog();
   loadScanSchedule();
+  loadPastLogFiles();
   // Auto-refresh scan status every 30s
   if (!_scanStatusInterval) {
     _scanStatusInterval = setInterval(loadScanStatus, 30000);

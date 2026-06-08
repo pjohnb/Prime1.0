@@ -61,6 +61,19 @@ if __name__ == "__main__":
     # Claude recommendations rather than graceful-degradation placeholders.
     from prime_startup import run_startup_checks
     run_startup_checks()
+
+    # Sprint 26 Item 4: warn if Polygon API key is missing (IDX/SHORT scanners need it).
+    try:
+        from prime_config.prime_config import get_config
+        _cfg = get_config()
+        if not (_cfg.polygon_api_key or "").strip():
+            logger.warning(
+                "PRIME STARTUP: polygon_api_key is missing from config.json. "
+                "IDX and SHORT scans will fail. Add polygon_api_key to config.json."
+            )
+    except Exception as _e:
+        logger.warning("Polygon key check failed: %s", _e)
+
     app = create_app()
     logger.info("PRIME API server starting on port %d", API_PORT)
     # Sprint 23 Item 1: auto-sync Schwab positions on startup if connected.

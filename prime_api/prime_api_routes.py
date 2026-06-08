@@ -196,12 +196,13 @@ def get_instrument(symbol):
 
 @api_bp.route("/health", methods=["GET"])
 def health_check():
-    """GET /api/v1/health -- server status, DB connection, last scan."""
+    """GET /api/v1/health -- server status, DB connection, last scan, ML row count."""
     from prime_data.prime_db import get_ops_events, table_exists
     status: Dict[str, Any] = {
         "status": "ok",
         "db_connected": False,
         "last_scan_event": None,
+        "ml_dataset_row_count": 0,
     }
     try:
         status["db_connected"] = table_exists("prime_trade_log")
@@ -211,6 +212,11 @@ def health_check():
     except Exception as e:
         status["status"] = "degraded"
         status["error"] = str(e)
+    try:
+        from prime_data.prime_ml_dataset import get_row_count
+        status["ml_dataset_row_count"] = get_row_count()
+    except Exception:
+        pass
 
     code = 200 if status["status"] == "ok" else 503
     return jsonify(status), code
@@ -358,9 +364,33 @@ def create_trade():
             "trade_source": "LIVE",
         }), 201
 
-    # ── PAPER mode path (unchanged) ───────────────────────────────────────────
+    # ── PAPER mode path ───────────────────────────────────────────────────────
     if mode_cfg != "PAPER":
         return jsonify({"error": f"unknown trading_mode: {mode_cfg}"}), 500
+
+    # Sprint 26 Item 2: read optional stop/target/time fields from payload.
+    stop_pct_raw    = payload.get("stop_pct")
+    target_pct_raw  = payload.get("target_pct")
+    time_stop_days  = payload.get("time_stop_days")
+
+    stop_price_val   = None
+    target_price_val = None
+    time_stop_min_val = None
+    try:
+        if stop_pct_raw is not None:
+            sp = float(stop_pct_raw)  # e.g. 5.0 means 5%
+            stop_price_val = round(
+                price * (1 + sp / 100.0) if direction == "SHORT" else price * (1 - sp / 100.0), 4
+            )
+        if target_pct_raw is not None:
+            tp = float(target_pct_raw)
+            target_price_val = round(
+                price * (1 - tp / 100.0) if direction == "SHORT" else price * (1 + tp / 100.0), 4
+            )
+        if time_stop_days is not None:
+            time_stop_min_val = int(float(time_stop_days) * 480)  # 8 trading hours/day
+    except (TypeError, ValueError):
+        pass
 
     try:
         for t in get_open_by_symbol(symbol):
@@ -383,6 +413,9 @@ def create_trade():
             account=account,
             signal_source="UI",
             trade_source="PAPER",
+            stop_price=stop_price_val,
+            target_price=target_price_val,
+            time_stop_minutes=time_stop_min_val,
         )
     except TradeRecordError as e:
         return jsonify({"error": str(e)}), 400
@@ -390,7 +423,10 @@ def create_trade():
         logger.error("create_trade error: %s", e)
         return jsonify({"error": str(e)}), 500
 
-    return jsonify({"log_id": log_id, "status": "OPEN", "trade_source": "PAPER"}), 201
+    return jsonify({
+        "log_id": log_id, "status": "OPEN", "trade_source": "PAPER",
+        "stop_price": stop_price_val, "target_price": target_price_val,
+    }), 201
 
 
 @api_bp.route("/sync/schwab", methods=["GET"])
@@ -419,6 +455,10 @@ _SETTINGS_FIELDS = [
     "strategy_thresholds",
     # Sprint 24
     "max_order_pct", "stop_execution_mode", "max_sector_pct", "max_position_pct",
+    # Sprint 26 Item 8
+    "stop_monitor_interval_seconds",
+    # Sprint 26 Item 6
+    "monthly_ai_budget",
 ]
 
 
@@ -1002,6 +1042,23 @@ _PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent
 _LOGS_DIR = _PROJECT_ROOT_PATH / "logs"
 _SCAN_LOG = _LOGS_DIR / "scan_log.txt"
 
+
+def _get_scan_log_path() -> Path:
+    """Return today's dated scan log path (rolling daily rotation)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return _LOGS_DIR / f"scan_log_{today}.txt"
+
+
+def _prune_old_scan_logs(keep_days: int = 7) -> None:
+    """Delete scan_log_*.txt files older than keep_days."""
+    try:
+        cutoff = datetime.now().timestamp() - keep_days * 86400
+        for f in _LOGS_DIR.glob("scan_log_*.txt"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 _SCANNER_MAP: Dict[str, str] = {
     "psa":   "prime_scanners.prime_psa_scanner",
     "pead":  "prime_scanners.prime_pead_scanner",
@@ -1018,16 +1075,24 @@ _scan_lock = threading.Lock()
 
 
 def _run_scanner_bg(scanner: str, module: str) -> None:
-    """Background thread: run scanner subprocess, append output to scan log."""
+    """Background thread: run scanner subprocess, append output to dated scan log."""
     import sys as _sys
+    import os as _os
     _LOGS_DIR.mkdir(exist_ok=True)
+    _prune_old_scan_logs()
+    scan_log = _get_scan_log_path()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _scan_lock:
         _scan_state[scanner] = {"status": "running", "last_run": ts, "signals": None, "pid": None}
 
     log_line = f"\n--- {ts} START {scanner.upper()} ---\n"
+    # Sprint 26 Item 4: pass PYTHONPATH explicitly so APScheduler subprocesses
+    # find the project packages the same way a direct `python -m` call does.
+    _env = dict(_os.environ)
+    _env["PYTHONPATH"] = str(_PROJECT_ROOT_PATH)
+
     try:
-        with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+        with open(scan_log, "a", encoding="utf-8") as lf:
             lf.write(log_line)
         proc = _subprocess.Popen(
             [_sys.executable, "-m", module],
@@ -1037,12 +1102,13 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_env,
         )
         with _scan_lock:
             _scan_state[scanner]["pid"] = proc.pid
 
         output_lines = []
-        with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+        with open(scan_log, "a", encoding="utf-8") as lf:
             for line in proc.stdout:
                 lf.write(line)
                 output_lines.append(line)
@@ -1057,8 +1123,9 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=_env,
             )
-            with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+            with open(scan_log, "a", encoding="utf-8") as lf:
                 lf.write(bridge_proc.stdout or "")
                 if bridge_proc.stderr:
                     lf.write(bridge_proc.stderr)
@@ -1076,7 +1143,7 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
         status = "complete" if proc.returncode == 0 else "error"
         with _scan_lock:
             _scan_state[scanner].update({"status": status, "last_run": finish_ts, "signals": signals})
-        with open(_SCAN_LOG, "a", encoding="utf-8") as lf:
+        with open(scan_log, "a", encoding="utf-8") as lf:
             lf.write(f"--- {finish_ts} END {scanner.upper()} rc={proc.returncode} ---\n")
 
     except Exception as exc:
@@ -1156,13 +1223,26 @@ def get_scan_log():
     Sprint 25 Item 1. Returns plain text. UI polls every 5s during active scan.
     """
     n = int(request.args.get("lines", 50))
+    # Sprint 26 Item 8: read from dated log (rolling rotation).
+    date_param = request.args.get("date")  # YYYY-MM-DD, or today if omitted
     try:
-        if not _SCAN_LOG.exists():
-            return jsonify({"lines": [], "path": str(_SCAN_LOG)}), 200
-        with open(_SCAN_LOG, "r", encoding="utf-8", errors="replace") as f:
+        if date_param:
+            log_path = _LOGS_DIR / f"scan_log_{date_param}.txt"
+        else:
+            log_path = _get_scan_log_path()
+            # Fall back to legacy scan_log.txt if dated file doesn't exist yet.
+            if not log_path.exists() and _SCAN_LOG.exists():
+                log_path = _SCAN_LOG
+        if not log_path.exists():
+            return jsonify({"lines": [], "path": str(log_path), "date": date_param or "today"}), 200
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
         tail = all_lines[-n:] if len(all_lines) > n else all_lines
-        return jsonify({"lines": [l.rstrip("\n") for l in tail], "total": len(all_lines)}), 200
+        return jsonify({
+            "lines": [l.rstrip("\n") for l in tail],
+            "total": len(all_lines),
+            "date": date_param or datetime.now().strftime("%Y-%m-%d"),
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e), "lines": []}), 500
 
@@ -1330,6 +1410,9 @@ _SCAN_SCHEDULE_DEFAULTS = {
     "idx_time":           "12:45",
     "short_time":         "12:50",
     "schedule_enabled":   True,
+    # Sprint 26 Item 5: pre-market deep scan (all scanners sequentially)
+    "deep_scan_time":     "08:00",
+    "deep_scan_enabled":  True,
 }
 _SCHEDULE_FIELDS = list(_SCAN_SCHEDULE_DEFAULTS.keys())
 
@@ -1369,6 +1452,21 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
     idx_h, idx_m = _parse_time(schedule.get("idx_time", "12:45"))
     sht_h, sht_m = _parse_time(schedule.get("short_time", "12:50"))
 
+    # Sprint 26 Item 5: pre-market deep scan runs ALL scanners sequentially.
+    deep_h, deep_m = _parse_time(schedule.get("deep_scan_time", "08:00"))
+
+    def _deep_scan_job():
+        _DEEP_ORDER = ["psa", "pead", "uoa", "srs", "idx", "short"]
+        for s in _DEEP_ORDER:
+            mod = _SCANNER_MAP.get(s)
+            if not mod:
+                continue
+            state = _scan_state.get(s, {})
+            if state.get("status") == "running":
+                logger.info("Deep scan: %s already running — skipping", s)
+                continue
+            _run_scanner_bg(s, mod)
+
     job_defs = [
         ("scan_job_psa",   _make_job("psa"),   psa_h, psa_m),
         ("scan_job_uoa",   _make_job("uoa"),   uoa_h, uoa_m),
@@ -1389,6 +1487,23 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
             scheduler.reschedule_job(job_id, trigger=trigger)
         else:
             scheduler.add_job(fn, trigger=trigger, id=job_id, replace_existing=True)
+
+    # Deep scan job
+    deep_trigger = CronTrigger(
+        day_of_week="mon-fri",
+        hour=deep_h,
+        minute=deep_m,
+        timezone="America/New_York",
+    )
+    if schedule.get("deep_scan_enabled", True):
+        if scheduler.get_job("scan_job_deep"):
+            scheduler.reschedule_job("scan_job_deep", trigger=deep_trigger)
+        else:
+            scheduler.add_job(_deep_scan_job, trigger=deep_trigger,
+                              id="scan_job_deep", replace_existing=True)
+    else:
+        if scheduler.get_job("scan_job_deep"):
+            scheduler.remove_job("scan_job_deep")
 
 
 def _read_schedule() -> Dict[str, Any]:
@@ -1477,3 +1592,165 @@ def init_scheduler() -> Any:
     except Exception as e:
         logger.warning("APScheduler init failed: %s", e)
         return None
+
+
+@api_bp.route("/scans/log/files", methods=["GET"])
+def get_scan_log_files():
+    """GET /api/v1/scans/log/files -- list available dated scan log files (last 7 days)."""
+    try:
+        files = sorted(
+            [f.stem.replace("scan_log_", "") for f in _LOGS_DIR.glob("scan_log_*.txt")],
+            reverse=True,
+        )[:7]
+        return jsonify({"dates": files}), 200
+    except Exception as e:
+        return jsonify({"dates": [], "error": str(e)}), 200
+
+
+# ============================================================================
+# Sprint 26 — New Endpoints
+# ============================================================================
+
+@api_bp.route("/positions/prices", methods=["GET"])
+def get_position_prices():
+    """GET /api/v1/positions/prices -- current quotes for all open position symbols.
+
+    Sprint 26 Item 3. Returns {symbol: current_price}. Graceful fallback to
+    last known price (entry_price) when Schwab is unavailable.
+    """
+    from prime_data.prime_db import get_open_positions
+    try:
+        positions = get_open_positions()
+        symbols = list({(p.get("symbol") or "").upper() for p in positions if p.get("symbol")})
+        prices: Dict[str, float] = {}
+
+        # Try Schwab live quotes.
+        try:
+            from prime_trading.prime_schwab import SchwabClient
+            client = SchwabClient()
+            client.connect()
+            quotes = client.get_quotes(symbols)
+            for sym, data in quotes.items():
+                price = (
+                    data.get("quote", {}).get("lastPrice")
+                    or data.get("quote", {}).get("mark")
+                    or data.get("regularMarketLastPrice")
+                    or 0.0
+                )
+                if price:
+                    prices[sym.upper()] = float(price)
+        except Exception as e:
+            logger.debug("Live quote fetch failed: %s — using fallback prices", e)
+
+        # Fill gaps with last known price from DB.
+        for p in positions:
+            sym = (p.get("symbol") or "").upper()
+            if sym and sym not in prices:
+                prices[sym] = float(p.get("entry_price") or p.get("price_at_scan") or 0.0)
+
+        return jsonify({
+            "prices": prices,
+            "count": len(prices),
+            "ts": datetime.now().isoformat(),
+        }), 200
+    except Exception as e:
+        logger.error("positions/prices error: %s", e)
+        return jsonify({"prices": {}, "count": 0, "error": str(e)}), 500
+
+
+@api_bp.route("/trades/history", methods=["GET"])
+def get_trade_history():
+    """GET /api/v1/trades/history -- all CLOSED trades with entry/exit/P&L.
+
+    Sprint 26 Item 7. Query params: strategy, direction, limit (default 500).
+    """
+    from prime_data.prime_db import get_closed_trades
+    strategy  = request.args.get("strategy")
+    direction = request.args.get("direction", "").upper()
+    limit     = int(request.args.get("limit", 500))
+    try:
+        trades = get_closed_trades(limit=limit)
+        if strategy:
+            trades = [t for t in trades if t.get("strategy") == strategy]
+        if direction:
+            trades = [t for t in trades if (t.get("direction") or "").upper() == direction]
+
+        total    = len(trades)
+        wins     = sum(1 for t in trades if (t.get("pnl_dollars") or 0) > 0)
+        total_pnl = sum((t.get("pnl_dollars") or 0) for t in trades)
+        win_rate = round(wins / total * 100, 1) if total else 0.0
+        avg_hold = round(
+            sum((t.get("hold_minutes") or 0) for t in trades) / total, 0
+        ) if total else 0.0
+
+        return jsonify({
+            "trades":    trades,
+            "summary": {
+                "total":     total,
+                "wins":      wins,
+                "win_rate":  win_rate,
+                "total_pnl": round(total_pnl, 2),
+                "avg_hold_minutes": avg_hold,
+            },
+        }), 200
+    except Exception as e:
+        logger.error("trades/history error: %s", e)
+        return jsonify({"trades": [], "summary": {}, "error": str(e)}), 500
+
+
+@api_bp.route("/ml/dataset", methods=["GET"])
+def get_ml_dataset():
+    """GET /api/v1/ml/dataset -- ML training rows (signal features + trade outcomes).
+
+    Sprint 26 Item 5. Also writes CSV to data/ml_training_dataset.csv on each call.
+    """
+    try:
+        from prime_data.prime_ml_dataset import get_training_rows, export_csv
+        rows = get_training_rows()
+        try:
+            csv_path = export_csv(rows)
+            csv_written = str(csv_path)
+        except Exception:
+            csv_written = None
+        return jsonify({
+            "rows":       rows,
+            "count":      len(rows),
+            "csv_path":   csv_written,
+        }), 200
+    except Exception as e:
+        logger.error("ml/dataset error: %s", e)
+        return jsonify({"rows": [], "count": 0, "error": str(e)}), 500
+
+
+@api_bp.route("/ai/usage", methods=["GET"])
+def get_ai_usage():
+    """GET /api/v1/ai/usage -- aggregated AI cost stats.
+
+    Sprint 26 Item 6. Returns today/week/month/total cost, by_feature breakdown,
+    recent call log, and budget alert status.
+    """
+    try:
+        from prime_ai.prime_ai_usage import get_usage_stats
+        stats = get_usage_stats()
+
+        # Budget alert from ops_config.json
+        budget_alert = None
+        try:
+            with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                _ops = json.load(f)
+            budget = float(_ops.get("monthly_ai_budget", 10.0))
+            month_cost = stats.get("month_cost", 0.0)
+            if budget > 0:
+                pct = month_cost / budget
+                if pct >= 1.0:
+                    budget_alert = {"level": "RED",   "message": f"Monthly AI budget exceeded (${month_cost:.2f}/${budget:.2f})"}
+                elif pct >= 0.8:
+                    budget_alert = {"level": "AMBER", "message": f"Monthly AI budget at {round(pct*100)}% (${month_cost:.2f}/${budget:.2f})"}
+        except Exception:
+            pass
+
+        stats["budget_alert"] = budget_alert
+        return jsonify(stats), 200
+    except Exception as e:
+        logger.error("ai/usage error: %s", e)
+        return jsonify({"error": str(e)}), 500
