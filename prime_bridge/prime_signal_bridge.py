@@ -76,6 +76,7 @@ def _insert(signal: Dict[str, Any], db_path: Optional[Path]) -> bool:
         instrument_type=signal.get("instrument_type", INSTRUMENT_TYPE),
         trigger_source=signal.get("trigger_source"),
         guidance_flag=signal.get("guidance_flag"),
+        finnhub_guidance_available=bool(signal.get("finnhub_guidance_available", False)),
         db_path=db_path,
     )
     return result is not None
@@ -196,12 +197,15 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
         trigger_source = "PEAD_BEAT" if direction == "LONG" else "PEAD_MISS"
 
         # Sprint 25 Item 4: guidance_flag — use stored value or derive from price action.
+        # Sprint 27 Item 6: prefer Finnhub-derived guidance_flag when finnhub_guidance_available=1.
         guidance_flag = (row.get("guidance_flag") or "").strip() or None
+        finnhub_available = bool(int(row.get("finnhub_guidance_available") or 0))
         if not guidance_flag:
             from prime_scanners.prime_pead_scanner import classify_guidance_flag
             eps_surp = _to_float(row.get("eps_surprise_pct"), 0.0) or 0.0
             price_rxn = _to_float(row.get("price_reaction_pct"), 0.0) or 0.0
             guidance_flag = classify_guidance_flag(eps_surp, price_rxn)
+            finnhub_available = False
 
         signal = {
             "symbol": (row.get("symbol") or "").strip(),
@@ -214,6 +218,7 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
             "status": "APPROVED",
             "trigger_source": trigger_source,
             "guidance_flag": guidance_flag,
+            "finnhub_guidance_available": finnhub_available,
             "factors": {
                 "eps_surprise_pct": _to_float(row.get("eps_surprise_pct"), None),
                 "price_reaction_pct": _to_float(row.get("price_reaction_pct"), None),

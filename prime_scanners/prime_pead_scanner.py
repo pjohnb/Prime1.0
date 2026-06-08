@@ -382,6 +382,31 @@ def classify_guidance_flag(
     return "UNKNOWN"
 
 
+def extract_finnhub_guidance(earnings_data: Dict) -> Tuple[Optional[str], bool]:
+    """Derive guidance direction from Finnhub revenue data.
+
+    Uses revenue actual vs estimate as a proxy for forward guidance: a meaningful
+    revenue miss signals management guided down (CUT), a revenue beat signals
+    guided up (RAISE), and within 2% either way is HOLD.
+
+    Returns (guidance_direction, finnhub_available):
+      - finnhub_available=True only when both revenue fields are present and
+        the estimate is non-zero (i.e. Finnhub actually gave us the data).
+      - finnhub_available=False falls back to the price-action heuristic in
+        classify_guidance_flag().
+    """
+    rev_actual = earnings_data.get("revenueActual")
+    rev_est = earnings_data.get("revenueEstimate")
+    if rev_actual is None or rev_est is None or rev_est == 0:
+        return None, False
+    rev_surprise_pct = ((rev_actual - rev_est) / abs(rev_est)) * 100.0
+    if rev_surprise_pct < -2.0:
+        return "CUT", True
+    elif rev_surprise_pct > 2.0:
+        return "RAISE", True
+    return "HOLD", True
+
+
 def calculate_pead_signal(
     earnings_data: Dict,
     price_data: Optional[Dict],
@@ -413,13 +438,17 @@ def calculate_pead_signal(
     else:
         direction = "NEUTRAL"
 
-    guidance_flag = classify_guidance_flag(surprise_pct, price_change)
+    # Sprint 27 Item 6: use Finnhub revenue data for guidance when available;
+    # fall back to price-action heuristic if revenue fields are missing.
+    guidance_direction, finnhub_guidance_available = extract_finnhub_guidance(earnings_data)
+    guidance_flag = classify_guidance_flag(surprise_pct, price_change, guidance_direction)
 
     return {
         "symbol": earnings_data.get("symbol", ""),
         "score": round(total, 1),
         "direction": direction,
         "guidance_flag": guidance_flag,
+        "finnhub_guidance_available": finnhub_guidance_available,
         "factors": {
             "eps_surprise": {
                 "score": round(f1, 1),

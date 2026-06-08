@@ -75,6 +75,8 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
         _migrate_add_column(conn, "prime_signals", "trigger_source", "TEXT")
         # Sprint 25 Item 4: PEAD guidance flag (BEAT_RAISE/BEAT_HOLD/BEAT_CUT/MISS_RAISE/MISS_CUT/UNKNOWN)
         _migrate_add_column(conn, "prime_signals", "guidance_flag", "TEXT")
+        # Sprint 27 Item 6: Finnhub guidance available flag
+        _migrate_add_column(conn, "prime_signals", "finnhub_guidance_available", "INTEGER DEFAULT 0")
         # Sprint 20 Item 1: retire PENDING and the old CONFIRMED/NULLIFIED names;
         # rename existing dk_status rows to the three-state vocabulary. Idempotent.
         conn.execute("UPDATE prime_signals SET dk_status='NEUTRAL' WHERE dk_status='PENDING'")
@@ -146,6 +148,7 @@ def insert_signal_dedup(
     borrow_rate_pct: Optional[float] = None,
     trigger_source: Optional[str] = None,
     guidance_flag: Optional[str] = None,
+    finnhub_guidance_available: bool = False,
     db_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Insert a signal with a deterministic id, skipping exact duplicates.
@@ -158,6 +161,8 @@ def insert_signal_dedup(
     UOA_CALL / UOA_PUT / PEAD_BEAT / PEAD_MISS / PSA_ONLY / None.
     guidance_flag is set for PEAD signals (Sprint 25 Item 4):
     BEAT_RAISE / BEAT_HOLD / BEAT_CUT / MISS_RAISE / MISS_CUT / UNKNOWN.
+    finnhub_guidance_available (Sprint 27 Item 6): True when Finnhub revenue
+    data was used for guidance classification rather than price-action heuristic.
     """
     if signal_id is None:
         signal_id = make_signal_id(strategy, symbol, scan_ts)
@@ -166,11 +171,13 @@ def insert_signal_dedup(
             """INSERT OR IGNORE INTO prime_signals
                 (signal_id, symbol, strategy, scan_ts, entry_price, score,
                  sector, tier, status, direction, factors, instrument_type,
-                 borrow_rate_pct, trigger_source, guidance_flag)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 borrow_rate_pct, trigger_source, guidance_flag,
+                 finnhub_guidance_available)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (signal_id, symbol.upper(), strategy, scan_ts, entry_price, score,
              sector, tier, status, direction, factors, instrument_type,
-             borrow_rate_pct, trigger_source, guidance_flag),
+             borrow_rate_pct, trigger_source, guidance_flag,
+             1 if finnhub_guidance_available else 0),
         )
         conn.commit()
         inserted = cursor.rowcount > 0
