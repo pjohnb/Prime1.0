@@ -80,4 +80,10 @@ if __name__ == "__main__":
         start_monitor()
     except Exception as e:
         logger.warning("Stop monitor startup failed: %s", e)
+    # Sprint 25 Item 3: start APScheduler for internal scan schedule.
+    try:
+        from prime_api.prime_api_routes import init_scheduler
+        init_scheduler()
+    except Exception as e:
+        logger.warning("APScheduler startup failed: %s", e)
     app.run(host="127.0.0.1", port=API_PORT, debug=False)
