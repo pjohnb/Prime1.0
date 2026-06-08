@@ -1,9 +1,145 @@
 // Sprint 23 Item 2: General Settings Tab
+// Sprint 25 Item 2: Broker Connection panel
 // Loads from GET /api/v1/settings, saves via POST /api/v1/settings.
 // All settings persist to ops_config.json; changes take effect on next scan.
 
 function _settApi() {
   return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
+}
+
+// ── Broker Connection panel (Item 2) ─────────────────────────────────────────
+
+let _schwabStatus = {};
+
+async function loadSchwabStatus() {
+  try {
+    const resp = await fetch(_settApi() + '/schwab/status');
+    _schwabStatus = await resp.json();
+    _renderSchwabPanel(_schwabStatus);
+  } catch (e) {
+    const el = document.getElementById('schwab-panel');
+    if (el) el.innerHTML = '<div class="empty-state" style="padding:10px">Schwab status unavailable — API offline?</div>';
+  }
+}
+
+function _renderSchwabPanel(s) {
+  const el = document.getElementById('schwab-panel');
+  if (!el) return;
+  const connColor = s.connected ? 'var(--green)' : 'var(--red)';
+  const connLabel = s.connected ? 'Connected' : 'Disconnected';
+  const modeColor = s.mode === 'LIVE' ? 'var(--red)' : 'var(--amber)';
+  const tokenWarn = s.token_warning
+    ? `<span style="color:var(--red);font-size:12px;margin-left:8px">Token > 23h old — run schwab_auth_v2.py</span>` : '';
+  const accts = (s.accounts || []).map(a => '...' + a.suffix).join(', ') || '--';
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:14px">
+      <div>
+        <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:4px">STATUS</div>
+        <div style="font-weight:700;color:${connColor};font-family:var(--mono)">${connLabel}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:2px">Accounts: ${accts}</div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:4px">MODE</div>
+        <div style="font-weight:700;color:${modeColor};font-family:var(--mono)">${s.mode || 'PAPER'}</div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:4px">TOKEN AGE</div>
+        <div style="font-family:var(--mono);font-size:14px">${s.token_age_hours != null ? s.token_age_hours + 'h' : '--'}${tokenWarn}</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <button class="btn-confirm" onclick="connectSchwab()" style="font-size:12px;padding:5px 14px">Connect</button>
+      <button class="btn-refresh" onclick="refreshSchwabBalances()" style="font-size:12px;padding:5px 14px">Refresh Balances</button>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text3)">
+        Mode:
+        <select id="schwab-mode-sel" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:13px" onchange="onModeChange(this.value)">
+          <option value="PAPER"${(s.mode||'PAPER')==='PAPER'?' selected':''}>PAPER</option>
+          <option value="LIVE"${s.mode==='LIVE'?' selected':''}>LIVE</option>
+        </select>
+      </label>
+      <span id="schwab-conn-msg" style="font-family:var(--mono);font-size:12px;min-height:14px"></span>
+    </div>
+    <div id="schwab-balances" style="font-size:13px;color:var(--text3)"></div>`;
+}
+
+async function connectSchwab() {
+  const msg = document.getElementById('schwab-conn-msg');
+  if (msg) { msg.style.color = 'var(--amber)'; msg.textContent = 'Connecting…'; }
+  try {
+    const resp = await fetch(_settApi() + '/schwab/connect', { method: 'POST' });
+    const data = await resp.json();
+    if (data.connected) {
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = 'Connected'; }
+    } else if (data.auth_required) {
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'Token expired — run: ' + (data.auth_command || 'schwab_auth_v2.py'); }
+    } else {
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = data.error || 'Connection failed'; }
+    }
+    loadSchwabStatus();
+  } catch (e) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'API offline'; }
+  }
+}
+
+async function refreshSchwabBalances() {
+  const el = document.getElementById('schwab-balances');
+  if (el) el.textContent = 'Loading…';
+  try {
+    const resp = await fetch(_settApi() + '/schwab/balances');
+    const data = await resp.json();
+    if (!el) return;
+    if (!data.balances || !data.balances.length) {
+      el.textContent = data.error || 'No balance data';
+      return;
+    }
+    el.innerHTML = '<div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:6px">ACCOUNT BALANCES</div>' +
+      data.balances.map(b =>
+        `<div style="margin-bottom:4px">…${b.suffix}: ${b.buying_power != null ? '$' + Number(b.buying_power).toLocaleString(undefined,{maximumFractionDigits:0}) + ' buying power' : 'n/a'}</div>`
+      ).join('');
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load balances';
+  }
+}
+
+function onModeChange(newMode) {
+  if (newMode === 'LIVE') {
+    document.getElementById('live-mode-modal').classList.add('open');
+  } else {
+    _applyMode('PAPER');
+  }
+}
+
+async function confirmLiveMode() {
+  document.getElementById('live-mode-modal').classList.remove('open');
+  await _applyMode('LIVE');
+}
+
+function cancelLiveMode() {
+  document.getElementById('live-mode-modal').classList.remove('open');
+  const sel = document.getElementById('schwab-mode-sel');
+  if (sel) sel.value = 'PAPER';
+}
+
+async function _applyMode(mode) {
+  const msg = document.getElementById('schwab-conn-msg');
+  try {
+    const resp = await fetch(_settApi() + '/schwab/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, confirmed: true }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = 'Mode set to ' + mode; }
+      setTimeout(() => { if (msg) msg.textContent = ''; }, 2000);
+      loadSchwabStatus();
+    } else {
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = data.error || 'Mode change failed'; }
+    }
+  } catch (e) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'API offline'; }
+  }
 }
 
 let _settingsData = {};
@@ -22,6 +158,7 @@ async function loadSettings() {
     const resp = await fetch(_settApi() + '/settings');
     _settingsData = await resp.json();
     _renderSettings();
+    loadSchwabStatus();
   } catch (e) {
     console.error('loadSettings:', e);
     document.getElementById('settings-body').innerHTML =
@@ -37,6 +174,11 @@ function _renderSettings() {
   const thresholds = d.strategy_thresholds || {};
 
   body.innerHTML = `
+    <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">BROKER CONNECTION</div>
+      <div id="schwab-panel"><div class="empty-state" style="padding:10px">Loading…</div></div>
+    </div>
+
     <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">GLOBAL SETTINGS</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
