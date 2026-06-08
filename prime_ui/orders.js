@@ -19,7 +19,28 @@ function _readOrderForm(side) {
   const trailingStopPct = trailRaw && parseFloat(trailRaw) > 0
     ? parseFloat(trailRaw) / 100.0
     : null;
-  return { symbol, qty, price, strategy, account, direction: side, trailingStopPct };
+
+  // Sprint 26 Item 2: stop/target/time fields.
+  const stopPctRaw   = document.getElementById('ord-stop-pct')?.value;
+  const targetPctRaw = document.getElementById('ord-target-pct')?.value;
+  const timeDaysRaw  = document.getElementById('ord-time-stop-days')?.value;
+  const stopPct    = stopPctRaw   && parseFloat(stopPctRaw)   > 0 ? parseFloat(stopPctRaw)   : null;
+  const targetPct  = targetPctRaw && parseFloat(targetPctRaw) > 0 ? parseFloat(targetPctRaw) : null;
+  const timeDays   = timeDaysRaw  && parseFloat(timeDaysRaw)  > 0 ? parseFloat(timeDaysRaw)  : null;
+
+  return { symbol, qty, price, strategy, account, direction: side,
+           trailingStopPct, stopPct, targetPct, timeDays };
+}
+
+// Sprint 26 Item 2: update derived price hints when inputs change.
+function updateOrderDerivedPrices() {
+  const price  = parseFloat(document.getElementById('ord-price')?.value || 0);
+  const stopPct   = parseFloat(document.getElementById('ord-stop-pct')?.value || 0);
+  const targetPct = parseFloat(document.getElementById('ord-target-pct')?.value || 0);
+  const stopHint   = document.getElementById('ord-stop-hint');
+  const targetHint = document.getElementById('ord-target-hint');
+  if (stopHint)   stopHint.textContent   = (price > 0 && stopPct   > 0) ? `$${(price * (1 - stopPct / 100)).toFixed(2)}`   : '';
+  if (targetHint) targetHint.textContent = (price > 0 && targetPct > 0) ? `$${(price * (1 + targetPct / 100)).toFixed(2)}` : '';
 }
 
 function _setMsg(text, ok) {
@@ -55,6 +76,9 @@ function openOrderConfirm(side) {
   const trailLine = o.trailingStopPct
     ? `<div>Trailing Stop: <b>${(o.trailingStopPct * 100).toFixed(1)}%</b></div>`
     : '';
+  const stopLine   = o.stopPct   ? `<div>Stop Loss: <b>${o.stopPct}%</b> → $${(o.price * (1 - o.stopPct / 100)).toFixed(2)}</div>` : '';
+  const targetLine = o.targetPct ? `<div>Take Profit: <b>${o.targetPct}%</b> → $${(o.price * (1 + o.targetPct / 100)).toFixed(2)}</div>` : '';
+  const timeLine   = o.timeDays  ? `<div>Time Stop: <b>${o.timeDays}d</b></div>` : '';
 
   // Show "Submit Live Order" when server is live — detected from prior responses.
   const btnEl  = document.getElementById('modal-confirm-btn');
@@ -69,7 +93,7 @@ function openOrderConfirm(side) {
     `<div>Strategy: <b>${o.strategy}</b></div>` +
     `<div>Account: <b>${o.account || '--'}</b></div>` +
     `<div>Estimated Total: <b>${estimatedTotal}</b></div>` +
-    trailLine +
+    trailLine + stopLine + targetLine + timeLine +
     (isLive
       ? '<div style="color:#fca5a5;margin-top:8px;font-size:13px">LIVE MODE — This submits a real order to Schwab.</div>'
       : `<div>Mode: <b>PAPER</b></div>`);
@@ -95,6 +119,10 @@ async function submitOrder() {
     account:   o.account,
     direction: o.direction,
     confirmed: true,    // Gate 6: explicit user click = confirmed
+    // Sprint 26 Item 2: stop/target/time fields
+    stop_pct:        o.stopPct   || undefined,
+    target_pct:      o.targetPct || undefined,
+    time_stop_days:  o.timeDays  || undefined,
   };
 
   try {

@@ -14,6 +14,32 @@ function _posToken() {
 
 const _STOP_CLASS = { GREEN: 'confirming', AMBER: 'unavailable', RED: 'nullifying' };
 
+// Sprint 26 Item 3: live price cache keyed by symbol.
+let _livePrices = {};
+let _priceTs = null;
+let _pricePollTimer = null;
+
+async function refreshPrices() {
+  try {
+    const resp = await fetch(_posApi() + '/positions/prices');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    _livePrices = data.prices || {};
+    _priceTs = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const tsEl = document.getElementById('prices-updated-ts');
+    if (tsEl) tsEl.textContent = 'Prices updated: ' + _priceTs;
+    loadPositions();
+  } catch (e) {
+    console.debug('refreshPrices:', e);
+  }
+}
+
+function startPricePoll() {
+  if (_pricePollTimer) return;
+  refreshPrices();
+  _pricePollTimer = setInterval(refreshPrices, 60000);
+}
+
 function _fmtMoney(v) {
   const n = Number(v || 0);
   const sign = n > 0 ? '+' : '';
@@ -70,12 +96,30 @@ async function loadPositions() {
     }
     positions.forEach(p => {
       const entry = p.entry_price || p.price_at_scan || 0;
-      const price = p.current_price || entry;
-      const pnl = Number(p.unrealized_pnl || 0);
-      const pnlPct = Number(p.unrealized_pnl_pct || 0);
+      // Sprint 26 Item 3: use live price from polling cache when available.
+      const livePrice = _livePrices[(p.symbol || '').toUpperCase()];
+      const price = livePrice || p.current_price || entry;
+      // Recalculate P&L from live price.
+      const dir = (p.direction || 'LONG').toUpperCase();
+      const shares = Number(p.shares || 0);
+      const pnlRaw = dir === 'SHORT'
+        ? (Number(entry) - price) * shares
+        : (price - Number(entry)) * shares;
+      const pnl = livePrice ? pnlRaw : Number(p.unrealized_pnl || 0);
+      const pnlPct = (entry > 0 && shares > 0) && livePrice
+        ? pnl / (Number(entry) * shares) * 100
+        : Number(p.unrealized_pnl_pct || 0);
       const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text2)';
       const stopBadge = p.stop_badge || 'GREEN';
       const stopCls = _STOP_CLASS[stopBadge] || 'neutral';
+      // Sprint 26 Item 2: show stop price value below badge.
+      const stopPrice = p.stop_price ? `$${Number(p.stop_price).toFixed(2)}` : '';
+      const targetPrice = p.target_price ? ` T:$${Number(p.target_price).toFixed(2)}` : '';
+      // Sprint 26 Item 8: trailing stop T badge.
+      const trailBadge = p.trailing_stop_pct
+        ? `<span class="badge neutral" style="font-size:10px;padding:1px 4px;margin-left:3px"
+             title="Trailing stop active — trail: ${(Number(p.trailing_stop_pct) * 100).toFixed(1)}%">T</span>`
+        : '';
       // Sprint 23 Item 3: Stop tooltip.
       const stopTooltip = stopBadge === 'GREEN'
         ? 'GREEN: more than 1% from stop level — position safe'
@@ -91,7 +135,6 @@ async function loadPositions() {
         ? 'Time held since entry'
         : `Hold time: ${holdFmt} since entry${p.time_stop_exceeded ? ' — time stop exceeded' : ''}`;
       const logId = p.log_id || '';
-      const dir = (p.direction || 'LONG').toUpperCase();
       const dirCls = dir === 'SHORT' ? 'nullifying' : 'confirming';
       const dkBadge = _dkBadge(p.dk_status, p.dk_conviction);
       const isSchwabImport = (p.trade_source || '').toUpperCase() === 'SCHWAB_IMPORT';
@@ -109,7 +152,10 @@ async function loadPositions() {
         <td style="font-family:var(--mono)" title="Price at time of scan / order entry">$${Number(entry).toFixed(2)}</td>
         <td style="font-family:var(--mono)">$${Number(price).toFixed(2)}</td>
         <td style="font-family:var(--mono);color:${pnlColor}">${_fmtMoney(pnl)} (${pnlPct.toFixed(1)}%)</td>
-        <td><span class="badge ${stopCls}" title="${stopTooltip}">${stopBadge}</span></td>
+        <td>
+          <span class="badge ${stopCls}" title="${stopTooltip}">${stopBadge}</span>${trailBadge}
+          ${stopPrice ? `<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px">${stopPrice}${targetPrice}</div>` : ''}
+        </td>
         <td style="font-family:var(--mono);color:${holdColor}" title="${holdTooltip}">${holdFmt}</td>
         <td>${dkBadge}</td>
         <td>${p.status || '--'}</td>
