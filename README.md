@@ -6,24 +6,27 @@ PRIME is not a technical scanner. Every signal requires a **predictive trigger**
 
 ---
 
-## v1.0 Release (2026-06-04)
+## v1.0 Release (Sprint 25 — 2026-06-08)
 
 **What v1.0 delivers:**
 - 8 live strategies: PSA, PEAD, UOA, SRS, MTS, IDX, DK, SHORT
 - Signal-led architecture: UOA_CALL / UOA_PUT / PEAD_BEAT / PEAD_MISS triggers required
 - DK three-state modifier: CONFIRMING / NEUTRAL / NULLIFYING propagated to all signals
 - AI advisory layer: position advisor (HOLD/TRIM/EXIT), signal ranker, daily briefing
-- Lovable web UI: Dashboard, Positions, Signals tabs with live API binding
+- Browser UI: Dashboard, Scans, Positions, Signals, Settings, Portfolio tabs with live API
+- Scan Control: trigger any scanner from the browser; APScheduler manages daily schedule
+- Schwab connection management: mode toggle (PAPER/LIVE), account balances, token status
+- PEAD guidance flag: six-value classification (BEAT_RAISE/BEAT_HOLD/BEAT_CUT/MISS_RAISE/MISS_CUT/UNKNOWN)
 - In-app help system: ? modal, strategy ⓘ popovers, Start of Day checklist, searchable glossary
-- PAPER mode only — all execution simulated via Schwab paper trading account
+- PAPER mode default — all execution simulated via Schwab paper trading account
 
-**Deferred to v1.1:** Unusual Whales live DK feed, ML signal scoring, UI modernization (Sprint 22).
+**Deferred to v1.1/v1.2:** Unusual Whales live DK feed, ML signal scoring, UII instrument detail.
 
 ---
 
 ## How to Start PRIME
 
-Open three terminals in `C:\Dev\PRIME1.0\`:
+Open two terminals in `C:\Dev\PRIME1.0\`:
 
 **1. API Server (port 5001)**
 ```powershell
@@ -38,11 +41,10 @@ python prime_ui/prime_ui_server.py
 **3. Open the Lovable UI**
 Navigate to `http://localhost:5002` in your browser.
 
-The v0.9 Tkinter desktop GUI (still active for scan execution) is launched separately:
-```powershell
-cd C:\Dev\PRIME
-python prime_gui_app.py
-```
+That is all. The browser UI is the complete daily workflow.
+Scan execution, Schwab connection, and schedule management are all in the **Scans** and **Settings** tabs.
+
+> **Note:** The v0.9 Tkinter GUI at `C:\Dev\PRIME\` is frozen as of Sprint 25. Do not use it for daily operation — it will not receive further updates. See `C:\Dev\PRIME\RETIRED.md` for details.
 
 ---
 
@@ -140,7 +142,7 @@ Controls runtime toggles:
 
 3. **No trading logic in `prime_gui/`.** The GUI renders state; it does not compute signals.
 
-4. **PAPER mode always.** `config.json` enforces PAPER. No real execution in v1.0.
+4. **PAPER mode default.** `config.json` defaults to PAPER. LIVE mode requires an explicit confirmation in the Settings → Broker Connection panel.
 
 5. **`config.json` and `ops_config.json` are never committed.** Both are gitignored.
 

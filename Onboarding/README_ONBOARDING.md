@@ -18,7 +18,7 @@ to the required paths (`C:\Dev\PRIME1.0` and `C:\Dev\PRIME`).
 ### 2. PRIME_BetaOnboardingGuide_v1_0_2026-06-04.docx
 Full step-by-step setup guide. Covers:
 - Prerequisites (Python 3.10+, Windows 10/11)
-- Directory structure and why both repos are needed
+- Directory structure (`C:\Dev\PRIME1.0` — the only active repo)
 - Broker capability tiers — choose your starting point:
   - **Monitor-Only**: Polygon.io key only. Signals + dashboard work. No order entry.
   - **Partial**: Add Schwab PAPER account. Full UI including order entry and position tracking.
@@ -27,9 +27,12 @@ Full step-by-step setup guide. Covers:
 - API key setup: Anthropic (AI advisory) + Polygon.io (market data)
 - Schwab OAuth flow: app registration → credentials → initial auth → account hash
 - `ops_config.json` field reference table
-- Startup sequence: three terminals (API server, UI server, Tkinter GUI)
+- Startup sequence: **two terminals** (API server + UI server) then browser to http://127.0.0.1:5002
+- Scan schedule: managed by APScheduler (internal) — no Windows Task Scheduler needed
 - Config file templates
 - Quick troubleshooting table
+
+> **Sprint 25 note:** The third terminal (Tkinter GUI) is no longer required. All scan execution and schedule management is in the browser UI.
 
 ### 3. PRIME_UserManual_v1_0_2026-06-04.docx
 Operational manual for daily use. Assumes you are set up and running.
@@ -51,7 +54,7 @@ to commit — they contain only PLACEHOLDER values and documentation, no real cr
 
 ---
 
-## Quick Reference: Three Terminals to Start PRIME
+## Quick Reference: Two Terminals to Start PRIME
 
 ```powershell
 # Terminal 1 — API server (port 5001)
@@ -62,13 +65,13 @@ python prime_api/prime_api_server.py
 # Terminal 2 — UI server (port 5002)
 cd C:\Dev\PRIME1.0
 python prime_ui/prime_ui_server.py
-
-# Terminal 3 — Tkinter desktop GUI (scan execution)
-cd C:\Dev\PRIME
-python prime_gui_app.py
 ```
 
 Then open **http://localhost:5002** in your browser.
+
+**That is all.** Scan execution, schedule management, and Schwab connection are in the **Scans** and **Settings** browser tabs. The v0.9 Tkinter GUI at `C:\Dev\PRIME\` is frozen as of Sprint 25 — do not use it for daily operation.
+
+> **Task Scheduler note:** PRIME now manages its own scan schedule via APScheduler (internal to the API server). If you previously set up Windows Task Scheduler jobs for PRIME scans, disable them now to avoid double-firing.
 
 ---
 
