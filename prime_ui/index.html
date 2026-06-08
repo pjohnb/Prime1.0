@@ -22,7 +22,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
 .tab.active { color: var(--text); border-bottom-color: var(--amber); }
 .view { display: none; flex: 1; overflow-y: auto; padding: 20px; }
 .view.active { display: block; }
-.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 24px; }
 .card { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
 .card-label { font-size: 12px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono); margin-bottom: 6px; }
 .card-val { font-size: 26px; font-weight: 700; font-family: var(--mono); }
@@ -142,6 +142,7 @@ tr:hover td { background: var(--bg3); }
   <div class="tab" onclick="showView('signals')">Signals</div>
   <div class="tab" onclick="showView('settings')">Settings</div>
   <div class="tab" onclick="showView('portfolio')">Portfolio</div>
+  <div class="tab" onclick="showView('history')">History</div>
 </div>
 
 <div class="view active" id="view-dashboard">
@@ -156,6 +157,11 @@ tr:hover td { background: var(--bg3); }
     </div>
     <div class="card"><div class="card-label">Win Rate</div><div class="card-val" id="d-winrate">--%</div></div>
     <div class="card"><div class="card-label" title="Signals generated across all strategies in the last 7 calendar days">Total Signals (7d)</div><div class="card-val" id="d-signals">--</div></div>
+    <div class="card">
+      <div class="card-label" title="AI API cost today (claude-sonnet-4-20250514 usage)">AI Cost Today</div>
+      <div class="card-val amber" id="d-ai-cost">$--</div>
+      <div id="d-ai-cost-alert" style="font-size:11px;font-family:var(--mono);margin-top:4px;display:none"></div>
+    </div>
   </div>
   <!-- Sprint 22 Item 3: DK activity chips -->
   <div class="dk-chips" id="dk-activity-chips"></div>
@@ -236,7 +242,12 @@ tr:hover td { background: var(--bg3); }
     <tbody id="scan-status-body"></tbody>
   </table>
   <!-- Live Scan Log -->
-  <h3 style="font-size:12px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Live Scan Log</h3>
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
+    <h3 style="font-size:12px;color:var(--text3);font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Live Scan Log</h3>
+    <select id="scan-log-date-sel" onchange="loadScanLog(this.value)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:3px 8px;border-radius:4px;font-size:13px">
+      <option value="">Today</option>
+    </select>
+  </div>
   <pre id="scan-log-area" style="background:#0a0c10;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--mono);font-size:12px;color:#9ba8c4;height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all">(no log entries yet)</pre>
   <!-- Scan Schedule (Item 3) -->
   <h3 style="font-size:12px;color:var(--text3);margin:20px 0 8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Scan Schedule</h3>
@@ -244,10 +255,14 @@ tr:hover td { background: var(--bg3); }
 </div>
 
 <div class="view" id="view-positions">
-  <!-- Sprint 23 Item 1: Sync Schwab header -->
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+  <!-- Sprint 26 Item 3: price timestamp + manual refresh; Sprint 23 Item 1: Sync Schwab -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
     <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Open Positions</span>
-    <button id="sync-schwab-btn" class="btn-confirm" onclick="syncSchwab()" style="font-size:12px;padding:5px 14px">Sync Schwab</button>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span id="prices-updated-ts" style="font-family:var(--mono);font-size:11px;color:var(--text3)"></span>
+      <button class="btn-refresh" onclick="refreshPrices()" style="font-size:12px;padding:5px 14px">Refresh Prices</button>
+      <button id="sync-schwab-btn" class="btn-confirm" onclick="syncSchwab()" style="font-size:12px;padding:5px 14px">Sync Schwab</button>
+    </div>
   </div>
   <div id="sync-msg" style="font-family:var(--mono);font-size:12px;min-height:16px;margin-bottom:8px;color:var(--text3)"></div>
   <div class="order-panel">
@@ -263,6 +278,11 @@ tr:hover td { background: var(--bg3); }
       </select>
       <input id="ord-account" placeholder="Account" value="PAPER" />
       <input id="ord-trailing-stop" type="number" min="0" step="0.5" placeholder="Trail%" title="Optional trailing stop %" style="width:65px" />
+      <input id="ord-stop-pct" type="number" min="0" step="0.5" placeholder="Stop%" title="Stop loss % (e.g. 5 = 5%)" style="width:70px" />
+      <span id="ord-stop-hint" style="font-family:var(--mono);font-size:12px;color:var(--text3)"></span>
+      <input id="ord-target-pct" type="number" min="0" step="0.5" placeholder="Target%" title="Profit target % (e.g. 10 = 10%)" style="width:75px" />
+      <span id="ord-target-hint" style="font-family:var(--mono);font-size:12px;color:var(--text3)"></span>
+      <input id="ord-time-stop-days" type="number" min="1" max="30" step="1" placeholder="Days" title="Time stop in trading days" style="width:60px" />
       <button class="btn-buy" onclick="openOrderConfirm('BUY')">BUY</button>
       <button class="btn-sell" onclick="openOrderConfirm('SELL')">SELL</button>
     </div>
@@ -350,6 +370,32 @@ tr:hover td { background: var(--bg3); }
 <!-- Sprint 23 Item 2: Settings view -->
 <div class="view" id="view-settings">
   <div id="settings-body"><div class="empty-state">Loading settings…</div></div>
+</div>
+
+<!-- Sprint 26 Item 7: Order History view -->
+<div class="view" id="view-history">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Trade History</span>
+    <button class="btn-refresh" onclick="exportHistoryCsv()" style="font-size:12px;padding:5px 14px">Export CSV</button>
+  </div>
+  <div id="hist-summary" style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;font-size:13px;color:var(--text2)"></div>
+  <div class="filter-row">
+    <select id="hist-strategy" onchange="loadHistory()">
+      <option value="">All Strategies</option>
+      <option value="UOA">UOA</option><option value="PEAD">PEAD</option>
+      <option value="SRS">SRS</option><option value="PSA">PSA</option>
+      <option value="MTS">MTS</option><option value="MANUAL">MANUAL</option>
+    </select>
+    <select id="hist-direction" onchange="loadHistory()">
+      <option value="">All Directions</option>
+      <option value="LONG">LONG</option>
+      <option value="SHORT">SHORT</option>
+    </select>
+  </div>
+  <table>
+    <thead><tr><th>Exit Time</th><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Hold</th><th>Reason</th></tr></thead>
+    <tbody id="hist-body"></tbody>
+  </table>
 </div>
 
 <!-- Sprint 24 Item 2: Portfolio view -->
@@ -631,6 +677,7 @@ tr:hover td { background: var(--bg3); }
 <script src="settings.js"></script>
 <script src="portfolio.js"></script>
 <script src="orders.js"></script>
+<script src="history.js"></script>
 <script src="help.js"></script>
 <script>
 const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
@@ -646,6 +693,8 @@ function showView(id) {
   if (id === 'signals') loadSignals();
   if (id === 'settings') loadSettings();
   if (id === 'portfolio') loadPortfolio();
+  if (id === 'history') loadHistory();
+  if (id === 'positions') startPricePoll();
 }
 
 async function checkHealth() {
