@@ -44,12 +44,20 @@ class TestPortfolioEndpoint(unittest.TestCase):
         )
         self._cfg_patcher.start()
 
+        # Prevent real Schwab connections so current_price always falls back to entry_price
+        self._schwab_patcher = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation — no live Schwab in tests"),
+        )
+        self._schwab_patcher.start()
+
         from prime_api.prime_api_server import create_app
         self.app = create_app()
         self.app.config["TESTING"] = True
         self.client = self.app.test_client()
 
     def tearDown(self):
+        self._schwab_patcher.stop()
         self._db_patcher.stop()
         self._cfg_patcher.stop()
         if self.db.exists():

@@ -154,6 +154,12 @@ class TestSectorConcentrationWarning(unittest.TestCase):
             return_value=_mock_config(max_position_pct=0.90, max_sector_pct=0.30),
         )
         self._cfg_p.start()
+        # Prevent real Schwab connections so market values are based on entry prices
+        self._schwab_p = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation — no live Schwab in tests"),
+        )
+        self._schwab_p.start()
         import prime_api.prime_api_routes as routes
         self._orig = routes._OPS_CONFIG_PATH
         routes._OPS_CONFIG_PATH = self.ops_path
@@ -166,6 +172,7 @@ class TestSectorConcentrationWarning(unittest.TestCase):
     def tearDown(self):
         import prime_api.prime_api_routes as routes
         routes._OPS_CONFIG_PATH = self._orig
+        self._schwab_p.stop()
         self._db_p.stop()
         self._cfg_p.stop()
         if self.db.exists():
