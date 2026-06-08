@@ -494,6 +494,8 @@ _SETTINGS_FIELDS = [
     "stop_monitor_interval_seconds",
     # Sprint 26 Item 6
     "monthly_ai_budget",
+    # Sprint 27 Item 5: MATA account distribution editor
+    "mata_accounts",
 ]
 
 

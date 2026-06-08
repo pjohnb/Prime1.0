@@ -336,6 +336,21 @@ tr:hover td { background: var(--bg3); }
   </div>
 </div>
 
+<!-- Sprint 27 Item 5: MATA Profile Distribution Editor Modal -->
+<div id="mata-editor-modal" class="modal-overlay">
+  <div class="modal-box" style="min-width:400px;max-width:560px">
+    <h3>MATA Account Distribution</h3>
+    <p style="font-size:13px;color:var(--text3);margin-bottom:14px">Set allocation weight % per account. Weights must sum to 100%.</p>
+    <div id="mata-accounts-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px"></div>
+    <div id="mata-weight-sum" style="font-family:var(--mono);font-size:13px;margin-bottom:10px;color:var(--text3)">Sum: 0%</div>
+    <div id="mata-editor-msg" style="font-family:var(--mono);font-size:12px;min-height:14px;margin-bottom:8px"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeMataEditor()">Cancel</button>
+      <button class="btn-confirm" onclick="saveMataDistribution()">Save Distribution</button>
+    </div>
+  </div>
+</div>
+
 <div class="view" id="view-signals">
   <div class="filter-row">
     <!-- Sprint 22 Item 1: date scope toggle -->

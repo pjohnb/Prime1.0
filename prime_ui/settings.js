@@ -279,16 +279,20 @@ function _renderSettings() {
     <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">GLOBAL SETTINGS</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
-        ${_field('max_trades', 'Max Trades', d.max_trades, 'number')}
-        ${_field('mata_profile', 'MATA Profile', d.mata_profile, 'select', ['Joint Brokerage','Custodial','Rollover IRA'])}
-        ${_field('analysis_mode', 'Analysis Mode', d.analysis_mode, 'select', ['Universe','Manual'])}
-        ${_toggleField('use_ai_ranker', 'AI Ranker', d.use_ai_ranker)}
-        ${_field('long_stop_loss_pct', 'Long Stop Loss %', _pct(d.long_stop_loss_pct), 'number')}
-        ${_field('short_stop_loss_pct', 'Short Stop Loss %', _pct(d.short_stop_loss_pct), 'number')}
-        ${_field('time_stop_minutes', 'Time Stop (min)', d.time_stop_minutes, 'number')}
-        ${_field('short_size_multiplier', 'Short Size Multiplier', d.short_size_multiplier, 'number')}
-        ${_field('stop_monitor_interval_seconds', 'Stop Monitor Interval (sec)', d.stop_monitor_interval_seconds || 60, 'number')}
-        ${_field('monthly_ai_budget', 'Monthly AI Budget ($)', d.monthly_ai_budget != null ? d.monthly_ai_budget : 10.0, 'number')}
+        ${_field('max_trades', 'Max Trades', d.max_trades, 'number', null, 'Maximum simultaneous open positions across all strategies')}
+        ${_field('mata_profile', 'MATA Profile', d.mata_profile, 'select', ['Joint Brokerage','Custodial','Rollover IRA'], 'Active multi-account profile — sets which accounts receive trade allocations')}
+        ${_field('analysis_mode', 'Analysis Mode', d.analysis_mode, 'select', ['Universe','Manual'], 'Universe: scan full S&P 500; Manual: scan specified symbols only')}
+        ${_toggleField('use_ai_ranker', 'AI Ranker', d.use_ai_ranker, 'Enable Claude AI for PSA scanner signal scoring and ranking')}
+        ${_field('long_stop_loss_pct', 'Long Stop Loss %', _pct(d.long_stop_loss_pct), 'number', null, 'Default stop loss % for LONG positions (e.g. 5 = 5% below entry price)')}
+        ${_field('short_stop_loss_pct', 'Short Stop Loss %', _pct(d.short_stop_loss_pct), 'number', null, 'Default stop loss % for SHORT positions (e.g. 5 = 5% above entry price)')}
+        ${_field('time_stop_minutes', 'Time Stop (min)', d.time_stop_minutes, 'number', null, 'Auto-close LONG positions after this many minutes (e.g. 1950 = 4 trading days)')}
+        ${_field('short_size_multiplier', 'Short Size Multiplier', d.short_size_multiplier, 'number', null, 'Position size multiplier for SHORT trades (e.g. 0.5 = half the size of a LONG)')}
+        ${_field('stop_monitor_interval_seconds', 'Stop Monitor Interval (sec)', d.stop_monitor_interval_seconds || 60, 'number', null, 'How often the stop monitor checks positions for stop breaches (seconds)')}
+        ${_field('monthly_ai_budget', 'Monthly AI Budget ($)', d.monthly_ai_budget != null ? d.monthly_ai_budget : 10.0, 'number', null, 'Monthly AI API spending limit in USD — dashboard alert fires when exceeded')}
+      </div>
+      <div style="margin-top:14px">
+        <button class="btn-refresh" onclick="openMataEditor()" style="font-size:12px;padding:5px 14px">Edit MATA Distribution</button>
+        <span style="font-size:12px;color:var(--text3);margin-left:10px">Set % allocation per account in the active MATA profile</span>
       </div>
     </div>
 
@@ -313,31 +317,142 @@ function _pct(v) {
   return Math.round(Number(v) * 100);
 }
 
-function _field(id, label, val, type, options) {
+function _tip(text) {
+  if (!text) return '';
+  return `<sup title="${text}" style="cursor:help;color:var(--amber);font-size:10px;margin-left:3px;user-select:none">?</sup>`;
+}
+
+function _field(id, label, val, type, options, tooltip) {
+  const tip = _tip(tooltip);
   if (type === 'select') {
     const opts = (options || []).map(o =>
       `<option value="${o}"${val === o ? ' selected' : ''}>${o}</option>`
     ).join('');
     return `<label style="display:flex;flex-direction:column;gap:4px">
-      <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}</span>
+      <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}${tip}</span>
       <select id="sett-${id}" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">${opts}</select>
     </label>`;
   }
   return `<label style="display:flex;flex-direction:column;gap:4px">
-    <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}</span>
+    <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}${tip}</span>
     <input id="sett-${id}" type="${type}" value="${val != null ? val : ''}"
       style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
   </label>`;
 }
 
-function _toggleField(id, label, val) {
+function _toggleField(id, label, val, tooltip) {
+  const tip = _tip(tooltip);
   return `<label style="display:flex;flex-direction:column;gap:4px">
-    <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}</span>
+    <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}${tip}</span>
     <select id="sett-${id}" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">
       <option value="true"${val ? ' selected' : ''}>Enabled</option>
       <option value="false"${!val ? ' selected' : ''}>Disabled</option>
     </select>
   </label>`;
+}
+
+// ── Sprint 27 Item 5: MATA Profile Distribution Editor ────────────────────────
+
+const _MATA_DEFAULT_ACCOUNTS = [
+  { name: 'Joint Brokerage', type: 'BROKERAGE', buying_power: 100000, margin_available: 50000, weight: 60 },
+  { name: 'Custodial', type: 'BROKERAGE', buying_power: 40000, margin_available: 0, weight: 30 },
+  { name: 'Rollover IRA', type: 'ROLLOVER_IRA', buying_power: 30000, margin_available: 0, weight: 10 },
+];
+
+let _mataEditAccounts = [];
+
+function openMataEditor() {
+  const existing = (_settingsData.mata_accounts || []);
+  _mataEditAccounts = existing.length ? JSON.parse(JSON.stringify(existing))
+    : JSON.parse(JSON.stringify(_MATA_DEFAULT_ACCOUNTS));
+  _renderMataForm();
+  document.getElementById('mata-editor-modal').classList.add('open');
+}
+
+function closeMataEditor() {
+  document.getElementById('mata-editor-modal').classList.remove('open');
+  const msg = document.getElementById('mata-editor-msg');
+  if (msg) msg.textContent = '';
+}
+
+function _renderMataForm() {
+  const form = document.getElementById('mata-accounts-form');
+  if (!form) return;
+  form.innerHTML = _mataEditAccounts.map((a, i) => `
+    <div style="display:grid;grid-template-columns:1fr 100px 80px;gap:8px;align-items:end">
+      <label style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:11px;color:var(--text3);font-family:var(--mono)">Account Name</span>
+        <input type="text" value="${a.name}" id="mata-name-${i}"
+          style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px;font-family:var(--mono);width:100%"/>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:11px;color:var(--text3);font-family:var(--mono)">Type</span>
+        <select id="mata-type-${i}"
+          style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px">
+          <option value="BROKERAGE"${a.type==='BROKERAGE'?' selected':''}>BROKERAGE</option>
+          <option value="ROLLOVER_IRA"${a.type==='ROLLOVER_IRA'?' selected':''}>ROLLOVER_IRA</option>
+          <option value="ROTH_IRA"${a.type==='ROTH_IRA'?' selected':''}>ROTH_IRA</option>
+        </select>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:11px;color:var(--text3);font-family:var(--mono)">Weight %<sup title="Allocation % for this account; all weights must sum to 100" style="cursor:help;color:var(--amber)">?</sup></span>
+        <input type="number" min="0" max="100" step="1" value="${a.weight != null ? a.weight : 0}"
+          id="mata-weight-${i}" oninput="updateMataSum()"
+          style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px;font-family:var(--mono);width:100%"/>
+      </label>
+    </div>
+  `).join('');
+  updateMataSum();
+}
+
+function updateMataSum() {
+  let total = 0;
+  _mataEditAccounts.forEach((_, i) => {
+    const el = document.getElementById('mata-weight-' + i);
+    total += el ? (parseFloat(el.value) || 0) : 0;
+  });
+  const sumEl = document.getElementById('mata-weight-sum');
+  if (sumEl) {
+    sumEl.textContent = 'Sum: ' + total.toFixed(0) + '%';
+    sumEl.style.color = Math.abs(total - 100) < 0.01 ? 'var(--green)' : 'var(--red)';
+  }
+}
+
+async function saveMataDistribution() {
+  // Read form values into _mataEditAccounts
+  _mataEditAccounts.forEach((a, i) => {
+    const nameEl   = document.getElementById('mata-name-' + i);
+    const typeEl   = document.getElementById('mata-type-' + i);
+    const weightEl = document.getElementById('mata-weight-' + i);
+    if (nameEl)   a.name   = nameEl.value.trim();
+    if (typeEl)   a.type   = typeEl.value;
+    if (weightEl) a.weight = parseFloat(weightEl.value) || 0;
+  });
+
+  const total = _mataEditAccounts.reduce((s, a) => s + (a.weight || 0), 0);
+  const msg = document.getElementById('mata-editor-msg');
+  if (Math.abs(total - 100) > 0.5) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'Weights must sum to 100% (current: ' + total.toFixed(0) + '%)'; }
+    return;
+  }
+
+  try {
+    const resp = await fetch(_settApi() + '/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mata_accounts: _mataEditAccounts }),
+    });
+    if (resp.ok) {
+      _settingsData.mata_accounts = _mataEditAccounts;
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = 'Saved'; }
+      setTimeout(() => closeMataEditor(), 1000);
+    } else {
+      const d = await resp.json();
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = d.error || 'Save failed'; }
+    }
+  } catch (e) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'API error: ' + e.message; }
+  }
 }
 
 function _stratCard(stratKey, meta, vals) {
