@@ -111,9 +111,12 @@ async function loadScanStatus() {
       const statusColor = s.status === 'running' ? 'var(--amber)'
         : s.status === 'error' ? 'var(--red)'
         : s.status === 'complete' ? 'var(--green)' : 'var(--text3)';
+      const lastRunFmt = s.last_run
+        ? (typeof formatET === 'function' ? formatET(s.last_run, true) : s.last_run)
+        : '--';
       tbody.innerHTML += `<tr>
         <td style="font-family:var(--mono);font-weight:600">${s.scanner}</td>
-        <td style="font-family:var(--mono);font-size:13px">${s.last_run || '--'}</td>
+        <td style="font-family:var(--mono);font-size:13px" title="${s.last_run || ''}">${lastRunFmt}</td>
         <td style="color:${statusColor};font-family:var(--mono);font-size:12px">${s.status || 'idle'}</td>
         <td style="font-family:var(--mono)">${s.signals != null ? s.signals : '--'}</td>
       </tr>`;
@@ -151,6 +154,27 @@ async function loadPastLogFiles() {
         `<option value="${d}">${d}</option>`
       ).join('');
   } catch (e) {}
+}
+
+// ── Scan log copy / clear (Sprint 28 Item 6) ─────────────────────────────────
+
+function copyScanLog() {
+  const el = document.getElementById('scan-log-area');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).catch(() => {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('copy');
+    sel.removeAllRanges();
+  });
+}
+
+function clearScanLog() {
+  const el = document.getElementById('scan-log-area');
+  if (el) el.textContent = '(log cleared)';
 }
 
 function _startLogPolling() {
@@ -272,6 +296,25 @@ async function saveScanSchedule() {
   }
 }
 
+// ── Polygon rate limit indicator (Sprint 28 Item 4) ───────────────────────────
+
+async function loadPolygonPlanIndicator() {
+  try {
+    const resp = await fetch(_scansApi() + '/settings');
+    const data = await resp.json();
+    const el = document.getElementById('polygon-rate-indicator');
+    if (!el) return;
+    const plan = (data.polygon_plan || 'free').toLowerCase();
+    if (plan === 'free') {
+      const delayMs = data.polygon_rate_limit_delay_ms != null ? data.polygon_rate_limit_delay_ms : 13000;
+      el.textContent = `Rate limiting active (free tier) — ${delayMs / 1000}s between Polygon calls. IDX + SHORT scans will be slower. Upgrade to paid in Settings > Polygon.`;
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
+  } catch (e) {}
+}
+
 // ── Tab initialisation ────────────────────────────────────────────────────────
 
 function loadScans() {
@@ -279,6 +322,7 @@ function loadScans() {
   loadScanLog();
   loadScanSchedule();
   loadPastLogFiles();
+  loadPolygonPlanIndicator();
   // Auto-refresh scan status every 30s
   if (!_scanStatusInterval) {
     _scanStatusInterval = setInterval(loadScanStatus, 30000);
