@@ -253,6 +253,18 @@ def route_index_account(config_path: Optional[Path] = None) -> str:
 # Data fetch (Polygon daily aggregates)
 # ---------------------------------------------------------------------------
 
+def _polygon_delay():
+    """Sleep between Polygon API calls per ops_config rate-limit settings."""
+    try:
+        ops = PROJECT_ROOT / "ops_config.json"
+        cfg = json.loads(ops.read_text())
+        plan = cfg.get("polygon_plan", "free")
+        delay_ms = 100 if plan == "paid" else int(cfg.get("polygon_rate_limit_delay_ms", 13000))
+        time.sleep(delay_ms / 1000)
+    except Exception:
+        time.sleep(0.5)
+
+
 def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
     params["apiKey"] = api_key
     try:
@@ -333,7 +345,7 @@ def run_index_scan(
         if bars_by_symbol is not None:
             return bars_by_symbol.get(sym)
         bars = fetch_daily_bars(sym, api_key)
-        time.sleep(0)  # placeholder for rate-limit pacing if needed
+        _polygon_delay()
         return bars
 
     # SPY benchmark closes (needed for relative strength of every instrument).

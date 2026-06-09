@@ -496,6 +496,8 @@ _SETTINGS_FIELDS = [
     "monthly_ai_budget",
     # Sprint 27 Item 5: MATA account distribution editor
     "mata_accounts",
+    # Sprint 28 Item 4: Polygon rate limiting
+    "polygon_plan", "polygon_rate_limit_delay_ms",
 ]
 
 

@@ -30,6 +30,21 @@ POLYGON_BASE = "https://api.polygon.io"
 API_TIMEOUT = 10
 
 
+def _polygon_delay():
+    """Sleep between Polygon API calls per ops_config rate-limit settings."""
+    try:
+        from prime_config.prime_config import get_config
+        import json
+        from pathlib import Path
+        ops = Path(__file__).resolve().parent.parent / "ops_config.json"
+        cfg = json.loads(ops.read_text())
+        plan = cfg.get("polygon_plan", "free")
+        delay_ms = 100 if plan == "paid" else int(cfg.get("polygon_rate_limit_delay_ms", 13000))
+        time.sleep(delay_ms / 1000)
+    except Exception:
+        time.sleep(0.5)  # safe default
+
+
 def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
     params["apiKey"] = api_key
     try:
@@ -180,7 +195,7 @@ def run_index_scan(api_key: str) -> Dict[str, Any]:
             continue
 
         options = fetch_options_flow(symbol, api_key)
-        time.sleep(0.5)
+        _polygon_delay()
 
         result = evaluate_index_signal(symbol, snapshot, options)
         all_results[symbol] = result
