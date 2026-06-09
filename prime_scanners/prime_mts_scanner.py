@@ -6,6 +6,9 @@ Mean-reversion strategy for precious metals ETFs and mining equities.
 Two-phase staged entry: oversold screen (Phase 1) then momentum
 confirmation (Phase 2).
 
+Data source: Schwab daily bars (primary), Polygon (fallback).
+TradeStation is retired (Sprint 25). Scheduled at 12:45 ET alongside IDX.
+
 Targets: SLV, GLD, GDX, GDXJ, NEM, WPM, AG, PAAS, HL, FR
 Context: Gold/Silver ratio for macro positioning.
 
@@ -57,7 +60,61 @@ TIER_WATCH = "WATCH"
 
 
 # ---------------------------------------------------------------------------
-# API helpers
+# Schwab daily bars (primary)
+# ---------------------------------------------------------------------------
+
+def _get_schwab_client():
+    """Return a connected schwab-py Client, or None if unavailable."""
+    try:
+        import schwab
+        cfg = get_config()
+        ss = cfg.schwab_snapshot
+        if not ss.schwab_token_path or not ss.schwab_app_key:
+            return None
+        return schwab.auth.client_from_token_file(
+            token_path=ss.schwab_token_path,
+            api_key=ss.schwab_app_key,
+            app_secret=ss.schwab_app_secret,
+        )
+    except Exception as e:
+        logger.debug("Schwab unavailable for MTS: %s", e)
+        return None
+
+
+def _fetch_daily_bars_schwab(symbol: str, lookback_days: int, client) -> List[Dict]:
+    """Fetch daily OHLCV bars via Schwab price history API."""
+    try:
+        today = datetime.now()
+        start = today - timedelta(days=lookback_days + 15)
+        resp = client.get_price_history_every_day(
+            symbol,
+            start_datetime=start,
+            end_datetime=today,
+        )
+        if resp.status_code != 200:
+            logger.debug("%s: Schwab price history HTTP %s", symbol, resp.status_code)
+            return []
+        data = resp.json()
+        bars = []
+        for c in data.get("candles", []):
+            ts_ms = c.get("datetime", 0)
+            dt_str = datetime.utcfromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d")
+            bars.append({
+                "date": dt_str,
+                "open": c.get("open", 0),
+                "high": c.get("high", 0),
+                "low": c.get("low", 0),
+                "close": c.get("close", 0),
+                "volume": c.get("volume", 0),
+            })
+        return bars
+    except Exception as e:
+        logger.debug("%s: Schwab bars error: %s", symbol, e)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Polygon helpers (fallback)
 # ---------------------------------------------------------------------------
 
 def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
@@ -75,7 +132,7 @@ def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
         return None
 
 
-def fetch_daily_bars(symbol: str, lookback_days: int, api_key: str) -> List[Dict]:
+def _fetch_daily_bars_polygon(symbol: str, lookback_days: int, api_key: str) -> List[Dict]:
     today = datetime.now().date()
     from_date = today - timedelta(days=lookback_days + 10)
 
@@ -98,6 +155,19 @@ def fetch_daily_bars(symbol: str, lookback_days: int, api_key: str) -> List[Dict
             "volume": r.get("v", 0),
         })
     return bars
+
+
+def fetch_daily_bars(symbol: str, lookback_days: int, api_key: str,
+                     schwab_client=None) -> List[Dict]:
+    """Fetch daily bars: Schwab primary, Polygon fallback."""
+    if schwab_client is not None:
+        bars = _fetch_daily_bars_schwab(symbol, lookback_days, schwab_client)
+        if bars:
+            return bars
+        logger.debug("%s: Schwab bars empty, falling back to Polygon", symbol)
+    if api_key:
+        return _fetch_daily_bars_polygon(symbol, lookback_days, api_key)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +300,11 @@ def evaluate_signal(
 # Gold/Silver ratio
 # ---------------------------------------------------------------------------
 
-def fetch_gs_ratio(api_key: str) -> Optional[float]:
-    gld_bars = fetch_daily_bars("GLD", 5, api_key)
-    slv_bars = fetch_daily_bars("SLV", 5, api_key)
-    time.sleep(API_DELAY)
+def fetch_gs_ratio(api_key: str, schwab_client=None) -> Optional[float]:
+    gld_bars = fetch_daily_bars("GLD", 5, api_key, schwab_client)
+    slv_bars = fetch_daily_bars("SLV", 5, api_key, schwab_client)
+    if schwab_client is None:
+        time.sleep(API_DELAY)
 
     if not gld_bars or not slv_bars:
         return None
@@ -256,7 +327,15 @@ def run_mts_scan(api_key: str) -> Dict[str, Any]:
 
     logger.info("MTS SCAN -- %s", scan_time.strftime("%Y-%m-%d %H:%M ET"))
 
-    gs_ratio = fetch_gs_ratio(api_key)
+    schwab_client = _get_schwab_client()
+    if schwab_client:
+        logger.info("MTS: using Schwab daily bars (primary)")
+    elif api_key:
+        logger.info("MTS: Schwab unavailable, using Polygon fallback")
+    else:
+        logger.warning("MTS: no data source available -- 0 signals")
+
+    gs_ratio = fetch_gs_ratio(api_key, schwab_client)
     if gs_ratio:
         logger.info("Gold/Silver ratio: %.1f", gs_ratio)
 
@@ -264,8 +343,9 @@ def run_mts_scan(api_key: str) -> Dict[str, Any]:
     all_results: Dict[str, Any] = {}
 
     for symbol in MTS_TARGETS:
-        bars = fetch_daily_bars(symbol, BARS_NEEDED, api_key)
-        time.sleep(API_DELAY)
+        bars = fetch_daily_bars(symbol, BARS_NEEDED, api_key, schwab_client)
+        if schwab_client is None:
+            time.sleep(API_DELAY)
 
         if not bars:
             all_results[symbol] = {"status": "NO_DATA"}

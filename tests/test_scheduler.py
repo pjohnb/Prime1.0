@@ -61,11 +61,11 @@ class TestBuildTaskDefinitions(unittest.TestCase):
         for expected in ("uoa", "pead", "srs", "idx"):
             self.assertIn(expected, midday_scanners, f"{expected} should run at 12:40")
 
-    def test_mts_runs_after_close(self):
+    def test_mts_runs_midday(self):
         tasks = build_task_definitions()
         mts_tasks = [t for t in tasks if t["scanner"] == "mts"]
         self.assertEqual(len(mts_tasks), 1)
-        self.assertEqual(mts_tasks[0]["time_et"], "16:32")
+        self.assertEqual(mts_tasks[0]["time_et"], "12:45")
 
     def test_all_weekdays(self):
         tasks = build_task_definitions()
