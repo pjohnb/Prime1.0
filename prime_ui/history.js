@@ -67,7 +67,7 @@ async function loadHistory() {
       const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text2)';
       const dir = (t.direction || 'LONG').toUpperCase();
       const dirCls = dir === 'SHORT' ? 'nullifying' : 'confirming';
-      const exitTs = t.exit_time ? t.exit_time.substring(0, 16) : '--';
+      const exitTs = typeof formatETFull === 'function' ? formatETFull(t.exit_time) : (t.exit_time || '').substring(0, 16);
       tbody.innerHTML += `<tr>
         <td style="font-family:var(--mono);font-size:11px">${exitTs}</td>
         <td style="font-weight:600">${t.symbol || '--'}</td>

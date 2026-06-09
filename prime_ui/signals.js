@@ -33,26 +33,10 @@ async function populateStrategyFilter() {
   }
 }
 
-// Sprint 22 Item 1: relative time formatting.
+// Sprint 28 Item 7: relative time uses formatETFull from tz.js (UTC->ET conversion).
+// _fmtRelTime retained as alias for backward compat with any external callers.
 function _fmtRelTime(scanTs) {
-  if (!scanTs) return '--';
-  try {
-    const d = new Date(scanTs.replace(' ', 'T'));
-    const now = new Date();
-    const todayStr = now.toISOString().substring(0, 10);
-    const tsStr = scanTs.substring(0, 10);
-    const timeStr = scanTs.substring(11, 16);
-    if (tsStr === todayStr) return 'Today ' + timeStr;
-    // Within last 7 days: show "Jun 2 10:12"
-    const diffMs = now - d;
-    if (diffMs < 7 * 86400 * 1000) {
-      const mo = d.toLocaleString('en-US', { month: 'short' });
-      return mo + ' ' + d.getDate() + ' ' + timeStr;
-    }
-    return scanTs.substring(0, 16);
-  } catch (e) {
-    return (scanTs || '').substring(0, 16);
-  }
+  return typeof formatETFull === 'function' ? formatETFull(scanTs) : (scanTs || '').substring(0, 16);
 }
 
 // Sprint 22 Item 1: date scope filter.

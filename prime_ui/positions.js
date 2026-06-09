@@ -25,7 +25,7 @@ async function refreshPrices() {
     if (!resp.ok) return;
     const data = await resp.json();
     _livePrices = data.prices || {};
-    _priceTs = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    _priceTs = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
     const tsEl = document.getElementById('prices-updated-ts');
     if (tsEl) tsEl.textContent = 'Prices updated: ' + _priceTs;
     loadPositions();
