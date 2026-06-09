@@ -2,10 +2,13 @@
 PRIME v1.0 Unusual Options Activity Scanner (UOA).
 Ported from v0.9 prime_uoa_scanner.py + prime_uoa_enhancements.py.
 
-Scans 101 symbols for unusual options volume via TradeStation streaming
-options chain API. Signals are scored by sizzle index (current volume /
-historical baseline), classified by DTE horizon (ST/MT/LT), and checked
-for covered-call noise before output.
+Data source: Schwab options chain API (schwab-py get_option_chain).
+TradeStation is retired (Sprint 25 / RETIRED.md). TS credential code
+removed -- missing Schwab credentials yield 0 signals, never rc=1.
+
+Scans 101 symbols for unusual options volume. Signals are scored by
+sizzle index (current volume / historical baseline), classified by DTE
+horizon (ST/MT/LT), and checked for covered-call noise before output.
 
 Standalone: python prime_scanners/prime_uoa_scanner.py
 """
@@ -16,11 +19,9 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as date_type
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -38,16 +39,10 @@ STRONG_THRESHOLD = 5.0
 WATCH_THRESHOLD = 4.0
 MAX_WORKERS = 15
 OPTIONS_EXPIRY_DAYS = 60
-MAX_STREAM_CONTRACTS = 2000
 DIRECTION_RATIO_THRESHOLD = 1.5
 DEFAULT_BASELINE = 100_000
 
-API_TIMEOUT_CONNECT = 10
-API_TIMEOUT_READ = 20
 QUOTE_TIMEOUT = 8
-TOKEN_REFRESH_BUFFER = 120
-
-TS_AUTH_URL = "https://signin.tradestation.com/oauth/token"
 
 # DTE classification bands (locked -- do not adjust without owner sign-off)
 _ST_MAX_DTE = 10
@@ -82,143 +77,100 @@ SP100_SYMBOLS = [
 
 
 # ---------------------------------------------------------------------------
-# Token management (thread-safe)
+# Schwab client (replaces TS token management)
 # ---------------------------------------------------------------------------
 
-_token_lock = threading.Lock()
-_cached_token: Optional[str] = None
-_cached_expiry: Optional[datetime] = None
-
-
-def _refresh_ts_token(cfg) -> Optional[str]:
-    global _cached_token, _cached_expiry
-    ts = cfg.tradestation
-    if not ts.client_id or not ts.refresh_token:
-        return None
+def _get_schwab_client():
+    """Return a connected schwab-py Client, or None if unavailable."""
     try:
-        r = requests.post(TS_AUTH_URL, data={
-            "grant_type": "refresh_token",
-            "client_id": ts.client_id,
-            "client_secret": ts.client_secret,
-            "refresh_token": ts.refresh_token,
-        }, timeout=10)
-        if r.status_code != 200:
-            logger.error("TS token refresh failed: HTTP %s", r.status_code)
+        import schwab
+        cfg = get_config()
+        ss = cfg.schwab_snapshot
+        if not ss.schwab_token_path or not ss.schwab_app_key:
+            logger.warning("UOA: Schwab credentials not configured -- 0 signals")
             return None
-        body = r.json()
-        _cached_token = body.get("access_token")
-        expires_in = body.get("expires_in", 1200)
-        _cached_expiry = datetime.now() + timedelta(seconds=expires_in)
-        return _cached_token
+        client = schwab.auth.client_from_token_file(
+            token_path=ss.schwab_token_path,
+            api_key=ss.schwab_app_key,
+            app_secret=ss.schwab_app_secret,
+        )
+        return client
     except Exception as e:
-        logger.error("TS token refresh error: %s", e)
+        logger.warning("UOA: Schwab client unavailable (%s) -- 0 signals", e)
         return None
 
 
-def get_ts_token() -> Optional[str]:
-    global _cached_token, _cached_expiry
-    with _token_lock:
-        if _cached_token and _cached_expiry:
-            if datetime.now() < _cached_expiry - timedelta(seconds=TOKEN_REFRESH_BUFFER):
-                return _cached_token
-        cfg = get_config()
-        ts = cfg.tradestation
-        if ts.access_token and ts.token_expiry:
-            try:
-                exp = datetime.fromisoformat(ts.token_expiry)
-                if datetime.now() < exp - timedelta(seconds=TOKEN_REFRESH_BUFFER):
-                    _cached_token = ts.access_token
-                    _cached_expiry = exp
-                    return _cached_token
-            except ValueError:
-                pass
-        return _refresh_ts_token(cfg)
-
-
 # ---------------------------------------------------------------------------
-# TradeStation API
+# Schwab options chain fetch
 # ---------------------------------------------------------------------------
 
 def fetch_options_volume(
-    symbol: str, today: datetime, token: str
+    symbol: str, today: datetime, client
 ) -> Optional[Dict[str, Any]]:
-    cfg = get_config()
-    base = cfg.tradestation.api_base_url if hasattr(cfg.tradestation, "api_base_url") else "https://api.tradestation.com/v3"
-    if not base:
-        base = "https://api.tradestation.com/v3"
-    url = f"{base}/marketdata/stream/options/chains/{symbol}"
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {"StrikeProximity": 200}
+    """
+    Fetch total/call/put options volume for a symbol via Schwab options chain.
 
-    exp_cutoff = today + timedelta(days=OPTIONS_EXPIRY_DAYS)
+    Uses schwab-py client.get_option_chain(). Aggregates volume across all
+    strikes within OPTIONS_EXPIRY_DAYS. Returns None on failure or no data.
+    """
+    if client is None:
+        return None
+
+    exp_cutoff = (today + timedelta(days=OPTIONS_EXPIRY_DAYS)).date()
 
     try:
-        r = requests.get(
-            url, headers=headers, params=params, stream=True,
-            timeout=(API_TIMEOUT_CONNECT, API_TIMEOUT_READ),
+        resp = client.get_option_chain(
+            symbol,
+            include_underlying_quote=True,
         )
-        if r.status_code == 401:
-            logger.warning("%s: 401 auth failure -- token may be expired", symbol)
+        if resp.status_code != 200:
+            logger.warning("%s: Schwab options chain HTTP %s", symbol, resp.status_code)
             return None
-        if r.status_code != 200:
-            logger.warning("%s: HTTP %s from options chain", symbol, r.status_code)
-            return None
+
+        data = resp.json()
 
         call_vol = 0
         put_vol = 0
         legs: List[Dict[str, Any]] = []
-        contract_count = 0
 
-        for raw_line in r.iter_lines():
-            if not raw_line:
-                continue
-            contract_count += 1
-            if contract_count > MAX_STREAM_CONTRACTS:
-                break
+        for exp_map_key, opt_type in (("callExpDateMap", "CALL"), ("putExpDateMap", "PUT")):
+            for exp_key, strikes in data.get(exp_map_key, {}).items():
+                # exp_key format: "2026-06-20:25" (date:dte)
+                exp_date_str = exp_key.split(":")[0]
+                try:
+                    exp_date = datetime.strptime(exp_date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
 
-            try:
-                contract = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
+                if exp_date > exp_cutoff:
+                    continue
 
-            contract_legs = contract.get("Legs", [])
-            if not contract_legs:
-                continue
-
-            leg = contract_legs[0]
-            exp_str = leg.get("Expiration", "")
-            if not exp_str:
-                continue
-
-            try:
-                exp_date = datetime.fromisoformat(exp_str.replace("Z", "+00:00")).date()
-            except ValueError:
-                continue
-
-            if exp_date > exp_cutoff.date():
-                continue
-
-            vol = int(contract.get("Volume", 0) or 0)
-            side = leg.get("Side", "").upper()
-
-            if side == "CALL":
-                call_vol += vol
-            elif side == "PUT":
-                put_vol += vol
-
-            if vol > 0:
                 dte = (exp_date - today.date()).days
-                legs.append({
-                    "dte": max(dte, 0),
-                    "volume": vol,
-                    "open_interest": contract.get("OpenInterest") or leg.get("OpenInterest"),
-                    "strike": leg.get("StrikePrice"),
-                    "option_type": "CALL" if side == "CALL" else "PUT",
-                })
 
-        r.close()
+                for _strike_str, contracts in strikes.items():
+                    for contract in contracts:
+                        vol = int(contract.get("totalVolume", 0) or 0)
+                        oi = contract.get("openInterest")
+                        strike = contract.get("strikePrice")
+
+                        if opt_type == "CALL":
+                            call_vol += vol
+                        else:
+                            put_vol += vol
+
+                        if vol > 0:
+                            legs.append({
+                                "dte": max(dte, 0),
+                                "volume": vol,
+                                "open_interest": oi,
+                                "strike": strike,
+                                "option_type": opt_type,
+                            })
 
         total = call_vol + put_vol
+        if total == 0:
+            return None
+
         return {
             "total_volume": total,
             "call_volume": call_vol,
@@ -226,27 +178,27 @@ def fetch_options_volume(
             "legs": legs,
         }
 
-    except requests.RequestException as e:
+    except Exception as e:
         logger.warning("%s: options fetch error: %s", symbol, e)
         return None
 
 
-def fetch_underlying_quote(symbol: str, token: str) -> float:
-    cfg = get_config()
-    base = cfg.tradestation.api_base_url if hasattr(cfg.tradestation, "api_base_url") else "https://api.tradestation.com/v3"
-    if not base:
-        base = "https://api.tradestation.com/v3"
-    url = f"{base}/marketdata/quotes/{symbol}"
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        r = requests.get(url, headers=headers, timeout=QUOTE_TIMEOUT)
-        if r.status_code != 200:
-            return 0.0
-        data = r.json()
-        quotes = data.get("Quotes", [])
-        if quotes:
-            return float(quotes[0].get("Last", 0) or 0)
+def fetch_underlying_quote(symbol: str, client) -> float:
+    """Fetch underlying last-trade price via Schwab quote endpoint."""
+    if client is None:
         return 0.0
+    try:
+        resp = client.get_quote(symbol)
+        if resp.status_code != 200:
+            return 0.0
+        data = resp.json()
+        quote_data = data.get(symbol, {})
+        price = (
+            quote_data.get("quote", {}).get("lastPrice")
+            or quote_data.get("quote", {}).get("closePrice")
+            or 0.0
+        )
+        return float(price)
     except Exception:
         return 0.0
 
@@ -357,9 +309,9 @@ def scan_symbol(
     baseline: float,
     today: datetime,
     group: str,
-    token: str,
+    client,
 ) -> Optional[Dict[str, Any]]:
-    opts = fetch_options_volume(symbol, today, token)
+    opts = fetch_options_volume(symbol, today, client)
     if opts is None:
         return None
 
@@ -381,7 +333,7 @@ def scan_symbol(
     legs = opts.get("legs", [])
     dte_result = classify_dte(legs)
 
-    price = fetch_underlying_quote(symbol, token)
+    price = fetch_underlying_quote(symbol, client)
     cc_result = detect_covered_call(price, legs, dte_result["dte_class"])
 
     return {
@@ -414,7 +366,6 @@ def load_baselines(db_paths: List[Path]) -> Dict[str, float]:
             logger.warning("Baseline DB not found: %s", db_path)
             continue
         try:
-            from prime_data.prime_db import get_connection
             import sqlite3
             conn = sqlite3.connect(str(db_path))
             conn.row_factory = sqlite3.Row
@@ -453,15 +404,19 @@ def run_uoa_scan(
             "signals": [],
         }
 
-    token = get_ts_token()
-    if not token:
-        logger.error("No valid TradeStation token -- cannot scan")
+    client = _get_schwab_client()
+    if not client:
+        logger.warning("UOA: Schwab options data unavailable -- continuing with 0 signals")
         return {
             "scan_time": scan_time.isoformat(),
             "scanner": "prime_uoa_scanner",
             "version": "1.0",
-            "skipped": True,
-            "reason": "no_ts_token",
+            "skipped": False,
+            "reason": "schwab_unavailable",
+            "signals_found": 0,
+            "tier1_count": 0,
+            "tier2_count": 0,
+            "macro_count": 0,
             "signals": [],
         }
 
@@ -482,7 +437,7 @@ def run_uoa_scan(
         futures = {}
         for sym, group in all_symbols:
             bl = baselines.get(sym, DEFAULT_BASELINE)
-            f = pool.submit(scan_symbol, sym, bl, scan_time, group, token)
+            f = pool.submit(scan_symbol, sym, bl, scan_time, group, client)
             futures[f] = sym
 
         for f in as_completed(futures):
@@ -545,12 +500,6 @@ def main():
         format="%(asctime)s [UOA] %(levelname)s %(message)s",
     )
 
-    cfg = get_config()
-    ts = cfg.tradestation
-    if not ts.access_token and not ts.refresh_token:
-        logger.error("No TradeStation credentials in config.json")
-        sys.exit(1)
-
     from prime_data.prime_db import init_db, log_ops_event
 
     init_db()
@@ -561,6 +510,8 @@ def main():
 
     if scan_data.get("skipped"):
         print(f"\nUOA Scan skipped: {scan_data.get('reason')}")
+    elif scan_data.get("reason") == "schwab_unavailable":
+        print("\nUOA Scan: Schwab unavailable -- 0 signals (graceful)")
     else:
         print(f"\nUOA Scan: {scan_data['signals_found']} signals "
               f"(Tier1={scan_data['tier1_count']} Tier2={scan_data['tier2_count']})")
