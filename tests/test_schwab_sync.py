@@ -165,6 +165,112 @@ class TestSchwabSync(unittest.TestCase):
         self.assertIn("imported", result)
 
 
+class TestSchwabSyncReconcile(unittest.TestCase):
+    """Sprint 28: auto-close OPEN SCHWAB_IMPORT records no longer in Schwab."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_schwab_reconcile.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self._patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_closed_position_auto_reconciled(self):
+        """Import MSFT, then sync with empty positions — should auto-close MSFT."""
+        import_positions = {
+            "7926": [_mock_position("MSFT", 20, 0, 415.00)]
+        }
+        client = _make_mock_client(import_positions)
+        r1 = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(r1["imported"], 1)
+
+        # Second sync: MSFT no longer in Schwab
+        empty_client = _make_mock_client({"7926": []})
+        r2 = sync_schwab_positions(db_path=self.db, schwab_client=empty_client)
+
+        self.assertEqual(r2["reconciled"], 1, "Should reconcile 1 closed position")
+        self.assertEqual(r2["errors"], [])
+
+        from prime_data.prime_db import get_connection
+        with get_connection(self.db) as conn:
+            row = conn.execute(
+                "SELECT status, exit_reason FROM prime_trade_log WHERE symbol='MSFT'"
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "CLOSED")
+        self.assertEqual(row["exit_reason"], "SCHWAB_RECONCILE")
+
+    def test_still_open_position_not_reconciled(self):
+        """Position still in Schwab must not be closed."""
+        positions = {"7926": [_mock_position("AAPL", 10, 0, 180.00)]}
+        client = _make_mock_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        # Same positions still live
+        r2 = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(r2["reconciled"], 0)
+
+        trades = get_open_trades(db_path=self.db)
+        aapl = [t for t in trades if t["symbol"] == "AAPL"]
+        self.assertEqual(len(aapl), 1)
+        self.assertEqual(aapl[0]["status"], "OPEN")
+
+    def test_reconcile_logs_ops_health(self):
+        """Auto-close should write a SCHWAB_RECONCILE_CLOSE event to prime_ops_health."""
+        from prime_data.prime_db import get_ops_events
+
+        positions = {"7926": [_mock_position("TSLA", 5, 0, 250.00)]}
+        client = _make_mock_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        empty_client = _make_mock_client({"7926": []})
+        sync_schwab_positions(db_path=self.db, schwab_client=empty_client)
+
+        events = get_ops_events(component="schwab_sync", db_path=self.db)
+        reconcile_events = [e for e in events if e["event_type"] == "SCHWAB_RECONCILE_CLOSE"]
+        self.assertEqual(len(reconcile_events), 1)
+        self.assertEqual(reconcile_events[0]["symbol"], "TSLA")
+
+    def test_multi_account_partial_reconcile(self):
+        """Close NVDA in account 7926 while AAPL in 0461 stays open."""
+        positions = {
+            "7926": [_mock_position("NVDA", 10, 0, 820.00)],
+            "0461": [_mock_position("AAPL", 20, 0, 175.00)],
+        }
+        client = _make_mock_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        # NVDA closed in 7926, AAPL still open in 0461
+        partial_client = _make_mock_client({"7926": [], "0461": [_mock_position("AAPL", 20, 0, 175.00)]})
+        r2 = sync_schwab_positions(db_path=self.db, schwab_client=partial_client)
+
+        self.assertEqual(r2["reconciled"], 1)
+
+        from prime_data.prime_db import get_connection
+        with get_connection(self.db) as conn:
+            nvda = conn.execute(
+                "SELECT status FROM prime_trade_log WHERE symbol='NVDA'"
+            ).fetchone()
+            aapl = conn.execute(
+                "SELECT status FROM prime_trade_log WHERE symbol='AAPL'"
+            ).fetchone()
+        self.assertEqual(nvda["status"], "CLOSED")
+        self.assertEqual(aapl["status"], "OPEN")
+
+    def test_result_includes_reconciled_key(self):
+        """sync_schwab_positions result must always include 'reconciled' key."""
+        client = _make_mock_client({"7926": []})
+        result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertIn("reconciled", result)
+
+
 class TestSyncEndpoint(unittest.TestCase):
 
     def setUp(self):

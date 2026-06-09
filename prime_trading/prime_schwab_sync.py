@@ -5,6 +5,10 @@ Reads live holdings from all three Schwab accounts and imports any position not
 already in prime_trade_log (as OPEN) as a synthetic OPEN record tagged
 trade_source='SCHWAB_IMPORT'. Safe to run repeatedly -- deduplication is by
 (symbol, account suffix, status=OPEN).
+
+Sprint 28 (reconciliation): when sync runs, OPEN SCHWAB_IMPORT records whose
+symbol/account no longer appears in Schwab (0 shares or fully closed) are
+auto-closed with exit_reason='SCHWAB_RECONCILE' and logged to prime_ops_health.
 """
 
 import logging
@@ -78,6 +82,89 @@ def _open_positions_index(db_path: Optional[Path] = None) -> set:
     return {(row[0].upper(), (row[1] or "")) for row in rows}
 
 
+def _get_open_schwab_import_records(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return all OPEN SCHWAB_IMPORT records with fields needed for reconciliation."""
+    from prime_data.prime_db import get_connection
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT log_id, symbol, account, direction, shares, entry_price, entry_time "
+            "FROM prime_trade_log "
+            "WHERE status='OPEN' AND trade_source='SCHWAB_IMPORT'"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _reconcile_closed_positions(
+    live_schwab_keys: set,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Auto-close OPEN SCHWAB_IMPORT records no longer present in Schwab.
+
+    live_schwab_keys: set of (symbol_upper, account_suffix) from current sync.
+    Returns count of records closed.
+    """
+    from prime_data.prime_db import close_trade, log_ops_event
+
+    open_records = _get_open_schwab_import_records(db_path)
+    now_ts = datetime.utcnow().isoformat()
+    closed = 0
+
+    for rec in open_records:
+        key = (rec["symbol"].upper(), rec["account"] or "")
+        if key in live_schwab_keys:
+            continue  # still open in Schwab
+
+        log_id = rec["log_id"]
+        symbol = rec["symbol"]
+        direction = (rec["direction"] or "LONG").upper()
+        shares = int(rec["shares"] or 0)
+        entry_price = float(rec["entry_price"] or 0)
+
+        # Use entry_price as exit_price fallback; reconcile P&L at cost basis = 0.
+        exit_price = entry_price
+        pnl_dollars = 0.0
+        pnl_pct = 0.0
+
+        hold_minutes = 0
+        try:
+            entry_dt = datetime.fromisoformat(rec["entry_time"])
+            hold_minutes = max(0, int((datetime.utcnow() - entry_dt).total_seconds() / 60))
+        except Exception:
+            pass
+
+        try:
+            close_trade(
+                log_id=log_id,
+                exit_price=exit_price,
+                exit_time=now_ts,
+                exit_reason="SCHWAB_RECONCILE",
+                pnl_dollars=pnl_dollars,
+                pnl_pct=pnl_pct,
+                hold_minutes=hold_minutes,
+                db_path=db_path,
+            )
+            log_ops_event(
+                event_type="SCHWAB_RECONCILE_CLOSE",
+                component="schwab_sync",
+                symbol=symbol,
+                detail=(
+                    f"Auto-closed {direction} {shares} {symbol} "
+                    f"(entry=${entry_price:.2f}) — not found in Schwab positions"
+                ),
+                severity="INFO",
+                db_path=db_path,
+            )
+            logger.info(
+                "SCHWAB_RECONCILE: auto-closed %s %s (%s) log_id=%s",
+                direction, symbol, rec["account"], log_id,
+            )
+            closed += 1
+        except Exception as e:
+            logger.error("SCHWAB_RECONCILE: failed to close %s log_id=%s: %s", symbol, log_id, e)
+
+    return closed
+
+
 def sync_schwab_positions(
     db_path: Optional[Path] = None,
     schwab_client=None,
@@ -95,7 +182,7 @@ def sync_schwab_positions(
     """
     from prime_data.prime_db import insert_trade, TradeRecordError
 
-    result: Dict[str, Any] = {"imported": 0, "skipped": 0, "errors": []}
+    result: Dict[str, Any] = {"imported": 0, "skipped": 0, "reconciled": 0, "errors": []}
 
     if schwab_client is None:
         try:
@@ -119,6 +206,9 @@ def sync_schwab_positions(
     existing = _open_positions_index(db_path)
     now_ts = datetime.now().isoformat()
 
+    # Build set of live (symbol, account_suffix) keys for reconciliation.
+    live_keys: set = set()
+
     for acct_num, suffix, positions in all_accounts:
         for pos in positions:
             instrument = pos.get("instrument", {})
@@ -136,6 +226,9 @@ def sync_schwab_positions(
 
             if net_qty == 0:
                 continue
+
+            # Track this live position for reconciliation.
+            live_keys.add((symbol, suffix))
 
             direction = "SHORT" if net_qty < 0 else "LONG"
             shares = int(abs(net_qty))
@@ -181,8 +274,11 @@ def sync_schwab_positions(
                 logger.error(msg)
                 result["errors"].append(msg)
 
+    # Reconcile: auto-close OPEN SCHWAB_IMPORT records no longer in Schwab.
+    result["reconciled"] = _reconcile_closed_positions(live_keys, db_path)
+
     logger.info(
-        "Schwab sync complete: imported=%d skipped=%d errors=%d",
-        result["imported"], result["skipped"], len(result["errors"]),
+        "Schwab sync complete: imported=%d skipped=%d reconciled=%d errors=%d",
+        result["imported"], result["skipped"], result["reconciled"], len(result["errors"]),
     )
     return result
