@@ -10,17 +10,58 @@ function _orderToken() {
 }
 
 // Sprint 27 Item 3: toggle MARKET/LIMIT order type fields.
+// Sprint 28 Item 5: limit price row wraps input + % toggle button.
 function toggleOrderTypeFields() {
-  const orderType   = (document.getElementById('ord-order-type')?.value || 'MARKET');
-  const limitPriceEl = document.getElementById('ord-limit-price');
-  if (limitPriceEl) {
-    limitPriceEl.style.display = orderType === 'LIMIT' ? '' : 'none';
-    // Pre-fill limit price with current price when switching to LIMIT
-    if (orderType === 'LIMIT' && !limitPriceEl.value) {
-      const priceEl = document.getElementById('ord-price');
-      if (priceEl && priceEl.value) limitPriceEl.value = priceEl.value;
+  const orderType = (document.getElementById('ord-order-type')?.value || 'MARKET');
+  const limitRowEl = document.getElementById('ord-limit-row');
+  if (limitRowEl) {
+    limitRowEl.style.display = orderType === 'LIMIT' ? 'flex' : 'none';
+    if (orderType === 'LIMIT') {
+      const limitPriceEl = document.getElementById('ord-limit-price');
+      if (limitPriceEl && !limitPriceEl.value) {
+        const priceEl = document.getElementById('ord-price');
+        if (priceEl && priceEl.value) limitPriceEl.value = priceEl.value;
+      }
     }
+    const derivedEl = document.getElementById('ord-limit-derived');
+    if (derivedEl && orderType !== 'LIMIT') derivedEl.style.display = 'none';
   }
+}
+
+// Sprint 28 Item 5: limit price entry mode ($ vs %).
+let _limitPriceMode = '$';
+
+function toggleLimitPriceMode() {
+  _limitPriceMode = _limitPriceMode === '$' ? '%' : '$';
+  const btn   = document.getElementById('ord-limit-mode-btn');
+  const input = document.getElementById('ord-limit-price');
+  if (btn) btn.textContent = _limitPriceMode;
+  if (input) {
+    if (_limitPriceMode === '%') {
+      input.placeholder = '% e.g. +1.5';
+      input.step = '0.1';
+      input.removeAttribute('min');
+    } else {
+      input.placeholder = 'Limit $';
+      input.step = '0.01';
+      input.setAttribute('min', '0');
+    }
+    input.value = '';
+  }
+  const derived = document.getElementById('ord-limit-derived');
+  if (derived) { derived.style.display = 'none'; derived.textContent = ''; }
+}
+
+function updateLimitDerived() {
+  if (_limitPriceMode !== '%') return;
+  const derived = document.getElementById('ord-limit-derived');
+  const pct   = parseFloat(document.getElementById('ord-limit-price')?.value);
+  const price = parseFloat(document.getElementById('ord-price')?.value);
+  if (!derived) return;
+  if (isNaN(pct) || isNaN(price) || price <= 0) { derived.style.display = 'none'; return; }
+  const calc = price * (1 + pct / 100);
+  derived.textContent = `Limit: $${calc.toFixed(2)}`;
+  derived.style.display = 'block';
 }
 
 // Sprint 27 Item 2: toggle FIXED/TRAILING stop fields.
@@ -42,10 +83,19 @@ function _readOrderForm(side) {
   const account   = (document.getElementById('ord-account').value || '').trim();
 
   // Sprint 27 Item 3: order type (MARKET/LIMIT) + limit price.
-  const orderType   = (document.getElementById('ord-order-type')?.value || 'MARKET');
+  // Sprint 28 Item 5: % mode calculates actual dollar limit from current price.
+  const orderType     = (document.getElementById('ord-order-type')?.value || 'MARKET');
   const limitPriceRaw = document.getElementById('ord-limit-price')?.value;
-  const limitPrice = orderType === 'LIMIT' && limitPriceRaw && parseFloat(limitPriceRaw) > 0
-    ? parseFloat(limitPriceRaw) : null;
+  let limitPrice = null;
+  if (orderType === 'LIMIT' && limitPriceRaw) {
+    if (_limitPriceMode === '%') {
+      const pct = parseFloat(limitPriceRaw);
+      if (!isNaN(pct) && price > 0) limitPrice = parseFloat((price * (1 + pct / 100)).toFixed(2));
+    } else {
+      const raw = parseFloat(limitPriceRaw);
+      if (raw > 0) limitPrice = raw;
+    }
+  }
 
   // Sprint 27 Item 2: stop type selector.
   const stopType  = (document.getElementById('ord-stop-type')?.value || 'FIXED');
@@ -197,6 +247,14 @@ async function submitOrder() {
       // Reset stop type selector back to FIXED
       const stEl = document.getElementById('ord-stop-type');
       if (stEl) { stEl.value = 'FIXED'; toggleStopTypeFields(); }
+      // Reset limit price mode to $
+      _limitPriceMode = '$';
+      const lmBtn = document.getElementById('ord-limit-mode-btn');
+      if (lmBtn) lmBtn.textContent = '$';
+      const lmInput = document.getElementById('ord-limit-price');
+      if (lmInput) { lmInput.placeholder = 'Limit $'; lmInput.step = '0.01'; lmInput.setAttribute('min', '0'); }
+      const lmDerived = document.getElementById('ord-limit-derived');
+      if (lmDerived) { lmDerived.style.display = 'none'; lmDerived.textContent = ''; }
       loadPositions();
 
       // Detect LIVE mode from successful LIVE response
