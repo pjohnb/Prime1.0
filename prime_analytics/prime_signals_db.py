@@ -228,6 +228,18 @@ def get_distinct_strategies(db_path: Optional[Path] = None) -> List[str]:
         return [row[0] for row in rows]
 
 
+def get_distinct_tiers(db_path: Optional[Path] = None) -> List[str]:
+    """Return the distinct, non-empty tier values present in prime_signals,
+    sorted alphabetically. Used to populate the UI tier filter dynamically
+    (SIG-01) so any tier in the data — e.g. WEAK-LONG, TRANCHE_1 — is filterable."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT tier FROM prime_signals "
+            "WHERE tier IS NOT NULL AND tier != '' ORDER BY tier"
+        ).fetchall()
+        return [row[0] for row in rows]
+
+
 def link_signal_to_trade(
     signal_id: str,
     trade_id: str,

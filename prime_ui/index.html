@@ -237,6 +237,11 @@ tr:hover td { background: var(--bg3); }
       <span id="scan-msg-srs" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
     <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-mts" class="btn-refresh" onclick="triggerScan('mts','scan-btn-mts')" style="min-width:90px"
+              title="MTS — Multi-Timeframe Scanner: confirms momentum signals across 5-min, 15-min, and 60-min bars simultaneously, eliminating single-timeframe false breakouts.">Run MTS</button>
+      <span id="scan-msg-mts" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
       <button id="scan-btn-idx" class="btn-refresh" onclick="triggerScan('idx','scan-btn-idx')" style="min-width:90px"
               title="IDX — Index Trader: scans SPY/QQQ/IWM relative-strength signals using daily bars from Polygon. Rate-limited on free tier.">Run IDX</button>
       <span id="scan-msg-idx" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
@@ -377,11 +382,9 @@ tr:hover td { background: var(--bg3); }
       <option value="ALL">All</option>
     </select>
     <!-- Sprint 22 Item 1: tier filter -->
+    <!-- SIG-01: options populated dynamically from prime_signals via populateTierFilter() -->
     <select id="sig-tier" onchange="loadSignals()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:14px">
       <option value="">All Tiers</option>
-      <option value="STRONG">STRONG</option>
-      <option value="WATCH">WATCH</option>
-      <option value="SUPPRESSED">SUPPRESSED</option>
     </select>
     <select id="sig-strategy" onchange="loadSignals()">
       <option value="">All Strategies</option>
@@ -807,6 +810,7 @@ function refreshActiveView() {
 checkHealth();
 loadDashboard();
 populateStrategyFilter();
+populateTierFilter();
 updateMarketStatus();
 pollStopAlerts();
 updateModePill();

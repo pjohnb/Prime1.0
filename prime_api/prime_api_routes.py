@@ -131,6 +131,22 @@ def get_strategies():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/tiers", methods=["GET"])
+def get_tiers():
+    """GET /api/v1/tiers -- distinct tier values for the UI filter (SIG-01).
+
+    Populated dynamically from prime_signals so every tier present in the data
+    (e.g. WEAK-LONG, TRANCHE_1) is selectable, regardless of when introduced.
+    """
+    from prime_analytics.prime_signals_db import get_distinct_tiers
+    try:
+        tiers = get_distinct_tiers()
+        return jsonify({"tiers": tiers, "count": len(tiers)}), 200
+    except Exception as e:
+        logger.error("tiers endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/analytics/summary", methods=["GET"])
 def get_analytics_summary():
     """GET /api/v1/analytics/summary -- Overview tab data."""

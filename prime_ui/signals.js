@@ -33,6 +33,28 @@ async function populateStrategyFilter() {
   }
 }
 
+// SIG-01: populate the tier filter from the actual tier values in the DB so any
+// tier present in the data (e.g. WEAK-LONG, TRANCHE_1) is always selectable.
+async function populateTierFilter() {
+  try {
+    const resp = await fetch(API + '/tiers');
+    const data = await resp.json();
+    const sel = document.getElementById('sig-tier');
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">All Tiers</option>';
+    (data.tiers || []).forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = (t || '').toUpperCase();
+      opt.textContent = t;
+      sel.appendChild(opt);
+    });
+    sel.value = current;
+  } catch (e) {
+    console.error('populateTierFilter:', e);
+  }
+}
+
 // Sprint 28 Item 7: relative time uses formatETFull from tz.js (UTC->ET conversion).
 // _fmtRelTime retained as alias for backward compat with any external callers.
 function _fmtRelTime(scanTs) {
