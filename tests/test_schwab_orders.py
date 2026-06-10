@@ -59,6 +59,30 @@ def _make_mock_client(buying_power=50_000.0, liquidation=100_000.0):
     return mock_client
 
 
+# ---------------------------------------------------------------------------
+# BUG-01 root-cause fix: the LIVE-mode success-path tests below exercise the
+# real submit_order(), which on success calls
+# `from prime_data.prime_db import log_ops_event` and logs LIVE_ORDER_SUBMITTED.
+# prime_db binds get_config at import time, so patching get_config here does NOT
+# redirect that write — it lands in the *production* prime_ops_health DB, with
+# the exact fixtures seen in the field (AAPL/NVDA $100, TSLA $250, GLD $180,
+# order_id=99999). Patch log_ops_event at its source for the whole module so the
+# test suite never pollutes the operational database.
+_log_event_patcher = None
+_mock_log_event = None
+
+
+def setUpModule():
+    global _log_event_patcher, _mock_log_event
+    _log_event_patcher = patch("prime_data.prime_db.log_ops_event")
+    _mock_log_event = _log_event_patcher.start()
+
+
+def tearDownModule():
+    if _log_event_patcher is not None:
+        _log_event_patcher.stop()
+
+
 class TestSafetyGate1PaperMode(unittest.TestCase):
     """Gate 1: PAPER mode blocks all live orders."""
 
@@ -265,6 +289,35 @@ class TestPaperModeNoSchwabCall(unittest.TestCase):
         # Gate 1 fires before any Schwab API call
         client.client.get_account.assert_not_called()
         client.client.place_order.assert_not_called()
+
+
+class TestPaperModeNeverLogsOrder(unittest.TestCase):
+    """BUG-01: in PAPER mode, LIVE_ORDER_SUBMITTED must never be logged.
+
+    Gate 1 raises before submit_order() ever reaches the log_ops_event() call,
+    so no order event can leak into prime_ops_health regardless of how
+    submit_order() is invoked. This is the regression guard for the fake-order
+    pollution that surfaced in the field.
+    """
+
+    def test_paper_mode_never_reaches_log_event(self):
+        _mock_log_event.reset_mock()
+        paper_cfg = MagicMock()
+        paper_cfg.trading_mode = "PAPER"
+        client = _make_mock_client()
+        with patch("prime_config.prime_config.get_config", return_value=paper_cfg):
+            with self.assertRaises(OrderGateError) as ctx:
+                submit_order("AAPL", 10, "BUY", "MARKET", 100.0, "hash",
+                             confirmed=True, schwab_client=client)
+        self.assertEqual(ctx.exception.gate, "PAPER_MODE")
+        # No ops event of any kind, and specifically no LIVE_ORDER_SUBMITTED.
+        _mock_log_event.assert_not_called()
+        live_events = [
+            c for c in _mock_log_event.call_args_list
+            if (c.kwargs.get("event_type")
+                or (c.args[0] if c.args else None)) == "LIVE_ORDER_SUBMITTED"
+        ]
+        self.assertEqual(live_events, [])
 
 
 if __name__ == "__main__":
