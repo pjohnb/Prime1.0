@@ -667,8 +667,9 @@ def close_trade_endpoint():
         return jsonify({"error": "exit_price must be positive"}), 400
 
     try:
+        # TZ-01: store close timestamp as UTC (tz.js converts to ET for display).
         result = close_trade_manual(log_id, exit_price, exit_reason,
-                                    close_ts=datetime.now().isoformat())
+                                    close_ts=datetime.utcnow().isoformat())
     except Exception as e:
         logger.error("close_trade error: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -1120,9 +1121,12 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
     _LOGS_DIR.mkdir(exist_ok=True)
     _prune_old_scan_logs()
     scan_log = _get_scan_log_path()
+    # TZ-01: human-readable local time for the raw log line; UTC for the
+    # `last_run` field that the UI converts to ET via tz.js.
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_ts = datetime.utcnow().isoformat()
     with _scan_lock:
-        _scan_state[scanner] = {"status": "running", "last_run": ts, "signals": None, "pid": None}
+        _scan_state[scanner] = {"status": "running", "last_run": run_ts, "signals": None, "pid": None}
 
     log_line = f"\n--- {ts} START {scanner.upper()} ---\n"
     # Sprint 26 Item 4: pass PYTHONPATH explicitly so APScheduler subprocesses
@@ -1181,7 +1185,10 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
         finish_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status = "complete" if proc.returncode == 0 else "error"
         with _scan_lock:
-            _scan_state[scanner].update({"status": status, "last_run": finish_ts, "signals": signals})
+            # TZ-01: store last_run as UTC (display-converted to ET); log line stays local.
+            _scan_state[scanner].update({"status": status,
+                                         "last_run": datetime.utcnow().isoformat(),
+                                         "signals": signals})
         with open(scan_log, "a", encoding="utf-8") as lf:
             lf.write(f"--- {finish_ts} END {scanner.upper()} rc={proc.returncode} ---\n")
 
@@ -1446,6 +1453,7 @@ _SCHEDULER: Any = None
 _SCAN_SCHEDULE_DEFAULTS = {
     "psa_time":           "09:45",
     "uoa_pead_srs_time":  "12:40",
+    "mts_time":           "12:45",
     "idx_time":           "12:45",
     "short_time":         "12:50",
     "schedule_enabled":   True,
@@ -1488,6 +1496,7 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
 
     psa_h, psa_m = _parse_time(schedule.get("psa_time", "09:45"))
     uoa_h, uoa_m = _parse_time(schedule.get("uoa_pead_srs_time", "12:40"))
+    mts_h, mts_m = _parse_time(schedule.get("mts_time", "12:45"))
     idx_h, idx_m = _parse_time(schedule.get("idx_time", "12:45"))
     sht_h, sht_m = _parse_time(schedule.get("short_time", "12:50"))
 
@@ -1495,7 +1504,7 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
     deep_h, deep_m = _parse_time(schedule.get("deep_scan_time", "08:00"))
 
     def _deep_scan_job():
-        _DEEP_ORDER = ["psa", "pead", "uoa", "srs", "idx", "short"]
+        _DEEP_ORDER = ["psa", "pead", "uoa", "srs", "mts", "idx", "short"]
         for s in _DEEP_ORDER:
             mod = _SCANNER_MAP.get(s)
             if not mod:
@@ -1511,6 +1520,7 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
         ("scan_job_uoa",   _make_job("uoa"),   uoa_h, uoa_m),
         ("scan_job_pead",  _make_job("pead"),  uoa_h, uoa_m),
         ("scan_job_srs",   _make_job("srs"),   uoa_h, uoa_m),
+        ("scan_job_mts",   _make_job("mts"),   mts_h, mts_m),
         ("scan_job_idx",   _make_job("idx"),   idx_h, idx_m),
         ("scan_job_short", _make_job("short"), sht_h, sht_m),
     ]
