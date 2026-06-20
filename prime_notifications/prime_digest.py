@@ -50,6 +50,50 @@ def _get_next_scan_time(scanner_name: str) -> str:
     return f"{next_time} ET next trading day ({days})"
 
 
+# CIL-091 (Sprint 30 Thread 3): all-scanner schedule summary for the footer.
+# Canonical display order; any scanner present in config but not listed here is
+# appended in config order.
+_SCAN_SUMMARY_ORDER = ["psa", "uoa", "pead", "srs", "idx", "mts", "short"]
+_SCAN_SUMMARY_FALLBACK = (
+    "PSA: 09:45/11:20/12:50/14:20 ET | UOA+PEAD+SRS: 12:40 ET | "
+    "IDX+MTS: 12:45 ET | SHORT: 12:50 ET"
+)
+
+
+def _format_scan_schedule_summary() -> str:
+    """Build an all-scanner schedule summary line from ops_config.json.
+
+    Scanners that share an identical times_et list are grouped together
+    (e.g. "UOA+PEAD+SRS: 12:40 ET"). Falls back to a static string if
+    ops_config.json is unavailable or has no scan_schedule. (CIL-091.)
+    """
+    schedule = _load_ops_config().get("scan_schedule", {})
+    if not schedule:
+        return _SCAN_SUMMARY_FALLBACK
+
+    ordered = [s for s in _SCAN_SUMMARY_ORDER if s in schedule]
+    ordered += [s for s in schedule if s not in _SCAN_SUMMARY_ORDER]
+
+    groups: List[Tuple[Tuple[str, ...], List[str]]] = []
+    for code in ordered:
+        times = tuple(schedule.get(code, {}).get("times_et", []))
+        if not times:
+            continue
+        for g_times, g_codes in groups:
+            if g_times == times:
+                g_codes.append(code.upper())
+                break
+        else:
+            groups.append((times, [code.upper()]))
+
+    if not groups:
+        return _SCAN_SUMMARY_FALLBACK
+
+    return " | ".join(
+        f"{'+'.join(codes)}: {'/'.join(times)} ET" for times, codes in groups
+    )
+
+
 def assemble_digest(
     scanner_name: str,
     signals: List[Dict[str, Any]],
@@ -124,6 +168,7 @@ def assemble_digest(
         "signals": signal_rows,
         "open_positions": position_rows,
         "next_scan_time": next_scan,
+        "scan_schedule_summary": _format_scan_schedule_summary(),
         "token_refresh_count": token_refresh_count,
     }
 
@@ -168,6 +213,8 @@ def _format_plaintext(digest: Dict[str, Any]) -> str:
 
     lines.append("")
     lines.append(f"Next scan: {digest['next_scan_time']}")
+    summary = digest.get("scan_schedule_summary") or _format_scan_schedule_summary()
+    lines.append(f"Next scheduled scans: {summary}")
     lines.append(f"TS token refreshes: {digest.get('token_refresh_count', 0)}")
     lines.append("")
 
