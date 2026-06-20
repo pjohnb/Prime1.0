@@ -168,7 +168,7 @@ _SCAN_EXPLAIN_GENERIC = (
 def scan_explain():
     """POST /api/v1/advisory/scan-explain -- AI explanation of a scanner run.
 
-    UI-AskPrime-01. Body: {scanner, run_ts, signal_count, log_excerpt}.
+    UI-AskPrime-01. Body: {scanner, run_ts, signal_count, log_excerpt, rejection_summary}.
     Returns {explanation: string}.
     """
     payload = request.get_json(silent=True) or {}
@@ -215,7 +215,7 @@ def scan_explain():
         return jsonify({"explanation": "Advisory unavailable — check Anthropic API key in Settings."}), 200
 
 
-# PORT-03: advisory/rebalance cache
+# ── PORT-03: advisory/rebalance cache ────────────────────────────────────────
 _rebalance_cache: Dict[str, Any] = {}
 
 
@@ -239,6 +239,7 @@ def advisory_rebalance():
         max_position_pct = float(getattr(ops, "max_position_pct", 0.15))
         max_sector_pct = float(getattr(ops, "max_sector_pct", 0.30))
 
+        # Build sector summary from portfolio_factor
         from prime_intelligence.prime_portfolio_factor import sector_map
         sector_totals: Dict[str, float] = {}
         portfolio_value = 0.0
@@ -1042,7 +1043,7 @@ def get_portfolio():
                     })
         warnings.extend(sector_warnings)
 
-        # PORT-03: Cash Available — sum cashBalance + sweepCashBalance across accounts
+        # Cash Available: sum Cash & Sweep Vehicle across all Schwab accounts (PORT-03)
         cash_available = None
         try:
             from prime_trading.prime_schwab_sync import get_schwab_cash_total
@@ -1901,36 +1902,78 @@ def get_position_prices():
 
 @api_bp.route("/trades/history", methods=["GET"])
 def get_trade_history():
-    """GET /api/v1/trades/history -- all CLOSED trades with entry/exit/P&L.
+    """GET /api/v1/trades/history -- CLOSED and/or OPEN trades with entry/exit/P&L.
 
-    Sprint 26 Item 7. Query params: strategy, direction, limit (default 500).
+    Sprint 26 Item 7. Sprint 29 H-01/H-02/H-03.
+    Query params: strategy, direction, limit (default 500),
+                  from_date (ISO date), to_date (ISO date),
+                  status (all|open|closed, default all).
     """
-    from prime_data.prime_db import get_closed_trades
+    from prime_data.prime_db import get_closed_trades, get_open_trades
     strategy  = request.args.get("strategy")
     direction = request.args.get("direction", "").upper()
     limit     = int(request.args.get("limit", 500))
-    try:
-        trades = get_closed_trades(limit=limit)
-        if strategy:
-            trades = [t for t in trades if t.get("strategy") == strategy]
-        if direction:
-            trades = [t for t in trades if (t.get("direction") or "").upper() == direction]
+    from_date = request.args.get("from_date")        # e.g. "2026-06-01"
+    to_date   = request.args.get("to_date")          # e.g. "2026-06-19"
+    status    = request.args.get("status", "all").lower()  # all | open | closed
 
-        total    = len(trades)
-        wins     = sum(1 for t in trades if (t.get("pnl_dollars") or 0) > 0)
-        total_pnl = sum((t.get("pnl_dollars") or 0) for t in trades)
-        win_rate = round(wins / total * 100, 1) if total else 0.0
-        avg_hold = round(
-            sum((t.get("hold_minutes") or 0) for t in trades) / total, 0
+    def _apply_filters(rows, time_field):
+        if strategy:
+            rows = [t for t in rows if t.get("strategy") == strategy]
+        if direction:
+            rows = [t for t in rows if (t.get("direction") or "").upper() == direction]
+        if from_date:
+            rows = [t for t in rows if (t.get(time_field) or "") >= from_date]
+        if to_date:
+            rows = [t for t in rows if (t.get(time_field) or "") <= to_date + "T23:59:59"]
+        return rows
+
+    try:
+        closed_trades: list = []
+        if status in ("all", "closed"):
+            closed_trades = get_closed_trades(limit=limit)
+            closed_trades = _apply_filters(closed_trades, "exit_time")
+
+        open_trades: list = []
+        if status in ("all", "open"):
+            open_trades = get_open_trades()
+            open_trades = _apply_filters(open_trades, "entry_time")
+            from datetime import timezone
+            now_utc = datetime.now(timezone.utc)
+            for t in open_trades:
+                try:
+                    et = t.get("entry_time") or ""
+                    if et:
+                        entry_dt = datetime.fromisoformat(et.replace("Z", "+00:00"))
+                        if entry_dt.tzinfo is None:
+                            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                        t["hold_minutes"] = int((now_utc - entry_dt).total_seconds() / 60)
+                    else:
+                        t["hold_minutes"] = None
+                except Exception:
+                    t["hold_minutes"] = None
+                t["pnl_dollars"] = None
+                t["pnl_pct"] = None
+
+        # OPEN rows sort before CLOSED rows of the same date.
+        trades = open_trades + closed_trades
+
+        # Summary statistics cover only CLOSED trades.
+        total     = len(closed_trades)
+        wins      = sum(1 for t in closed_trades if (t.get("pnl_dollars") or 0) > 0)
+        total_pnl = sum((t.get("pnl_dollars") or 0) for t in closed_trades)
+        win_rate  = round(wins / total * 100, 1) if total else 0.0
+        avg_hold  = round(
+            sum((t.get("hold_minutes") or 0) for t in closed_trades) / total, 0
         ) if total else 0.0
 
         return jsonify({
-            "trades":    trades,
+            "trades": trades,
             "summary": {
-                "total":     total,
-                "wins":      wins,
-                "win_rate":  win_rate,
-                "total_pnl": round(total_pnl, 2),
+                "total":            total,
+                "wins":             wins,
+                "win_rate":         win_rate,
+                "total_pnl":        round(total_pnl, 2),
                 "avg_hold_minutes": avg_hold,
             },
         }), 200

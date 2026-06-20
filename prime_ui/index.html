@@ -257,7 +257,7 @@ tr:hover td { background: var(--bg3); }
   <!-- Last Scan Results -->
   <h3 style="font-size:12px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">Last Scan Results</h3>
   <table style="margin-bottom:20px">
-    <thead><tr><th>Scanner</th><th>Last Run</th><th>Status</th><th>Signals</th></tr></thead>
+    <thead><tr><th>Scanner</th><th>Last Run</th><th>Status</th><th>Signals</th><th>AI</th></tr></thead>
     <tbody id="scan-status-body"></tbody>
   </table>
   <!-- Live Scan Log -->
@@ -414,7 +414,8 @@ tr:hover td { background: var(--bg3); }
   </div>
   <table id="sig-table">
     <!-- Sprint 22 Item 1: Score hidden, trigger_source column added -->
-    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
+    <!-- SIG-02: Tier column header carries a (?) help icon with native tooltip explaining the naming convention. -->
+    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Tier <span id="tier-help-icon" title="Tier = [Strength]-[Direction]. Strength: STRONG (high conviction), WATCH (moderate conviction — monitor closely), WEAK (informational only), TRANCHE_1 (MTS first entry — highest confidence), TRANCHE_2 (MTS second entry — scaling in). Direction: LONG (bullish) or SHORT (bearish). Some tiers omit direction — see DIR column." style="cursor:help;font-size:11px;opacity:.7">(?)</span></th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
     <tbody id="sig-body"></tbody>
   </table>
 </div>
@@ -431,7 +432,8 @@ tr:hover td { background: var(--bg3); }
     <button class="btn-refresh" onclick="exportHistoryCsv()" style="font-size:12px;padding:5px 14px">Export CSV</button>
   </div>
   <div id="hist-summary" style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;font-size:13px;color:var(--text2)"></div>
-  <div class="filter-row">
+  <!-- H-01: date range filter + quick-select buttons -->
+  <div class="filter-row" style="flex-wrap:wrap;gap:8px">
     <select id="hist-strategy" onchange="loadHistory()">
       <option value="">All Strategies</option>
       <option value="UOA">UOA</option><option value="PEAD">PEAD</option>
@@ -443,9 +445,24 @@ tr:hover td { background: var(--bg3); }
       <option value="LONG">LONG</option>
       <option value="SHORT">SHORT</option>
     </select>
+    <label style="font-size:13px;color:var(--text2);align-self:center">From</label>
+    <input type="date" id="hist-from" onchange="loadHistory()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px">
+    <label style="font-size:13px;color:var(--text2);align-self:center">To</label>
+    <input type="date" id="hist-to" onchange="loadHistory()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px">
+    <button class="btn-sm" onclick="_histSetRange('today')" style="padding:5px 10px;font-size:12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer">Today</button>
+    <button class="btn-sm" onclick="_histSetRange('week')" style="padding:5px 10px;font-size:12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer">This Week</button>
+    <button class="btn-sm" onclick="_histSetRange('month')" style="padding:5px 10px;font-size:12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer">This Month</button>
+    <button class="btn-sm" onclick="_histSetRange('all')" style="padding:5px 10px;font-size:12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer">All Time</button>
+    <!-- H-03: status filter -->
+    <select id="hist-status" onchange="loadHistory()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:13px">
+      <option value="all">All Status</option>
+      <option value="open">Open Only</option>
+      <option value="closed">Closed Only</option>
+    </select>
   </div>
+  <!-- H-02: Signal column; H-03: STATUS column -->
   <table>
-    <thead><tr><th>Exit Time</th><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Hold</th><th>Reason</th></tr></thead>
+    <thead><tr><th>Status</th><th>Time</th><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Hold</th><th>Reason</th><th>Signal</th></tr></thead>
     <tbody id="hist-body"></tbody>
   </table>
 </div>
@@ -454,10 +471,12 @@ tr:hover td { background: var(--bg3); }
 <div class="view" id="view-portfolio">
   <div id="portfolio-warnings" style="display:none;background:#78350f;color:#fcd34d;padding:8px 16px;border-radius:6px;font-size:13px;margin-bottom:14px"></div>
   <div id="portfolio-summary" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
+  <!-- PORT-03: Sector Exposure breakdown -->
+  <div id="portfolio-sector-breakdown" style="display:none;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px"></div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
     <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Holdings</span>
     <div style="display:flex;gap:8px">
-      <button class="btn-refresh" onclick="loadPortfolio()" title="Sync Schwab + refresh">Refresh</button>
+      <button id="portfolio-refresh-btn" class="btn-refresh" onclick="refreshPortfolio()" title="Sync Schwab + refresh">Refresh</button>
       <button class="btn-refresh" onclick="requestRebalance()" title="ML-17 AI rebalance suggestions">Rebalance</button>
     </div>
   </div>
