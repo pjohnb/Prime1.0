@@ -110,7 +110,7 @@ function _renderSectorBreakdown(s) {
       const over = pct > maxSectorPct;
       const barColor = over ? 'var(--amber)' : 'var(--blue)';
       const label = over ? `<span style="color:var(--amber);font-weight:700">${sec}</span>` : sec;
-      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      return `<div data-tooltip="Sector exposure as % of total portfolio. Amber = above 30% concentration limit." style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
         <div style="width:130px;font-size:12px;color:var(--text2);font-family:var(--mono);text-align:right">${label}</div>
         <div style="flex:1;background:var(--bg4);border-radius:3px;height:10px;overflow:hidden">
           <div style="width:${Math.min(pct, 100)}%;background:${barColor};height:100%;border-radius:3px"></div>
@@ -159,7 +159,10 @@ function _renderRows(rows) {
     const pnlPctColor = row.unrealized_pnl_pct >= 0 ? '#22c55e' : '#ef4444';
     const dkStyle = _dkStyle(row.dk_status);
     const accounts = (row.accounts || []).join(' · ') || '--';
-    const warnIcon = row.position_warning ? ' ⚠' : '';
+    // TT-01: warning triangle carries a concentration-limit tooltip.
+    const warnIcon = row.position_warning
+      ? ' <span data-tooltip="This position exceeds the 15% concentration limit. Consider trimming or using the Rebalance advisor.">⚠</span>'
+      : '';
     return `<tr>
       <td style="font-family:var(--mono);font-weight:700">${row.symbol}${warnIcon}</td>
       <td style="font-family:var(--mono)">${row.total_shares}</td>
@@ -169,8 +172,9 @@ function _renderRows(rows) {
       <td style="font-family:var(--mono);color:${pnlColor}">$${_fmt(row.unrealized_pnl)}</td>
       <td style="font-family:var(--mono);color:${pnlPctColor}">${row.unrealized_pnl_pct.toFixed(2)}%</td>
       <td style="font-size:12px;color:var(--text3)">${accounts}</td>
-      <td><span style="${dkStyle}">${row.dk_status}</span></td>
+      <td><span style="${dkStyle}" data-tooltip="CONFIRMING = institutional dark pool buying detected (bullish). NULLIFYING = institutional selling detected (bearish). NEUTRAL = no significant dark pool activity.">${row.dk_status}</span></td>
       <td><button class="btn-sell" style="padding:3px 10px;font-size:12px"
+           data-tooltip="Close this position via proportional sell across all accounts. A confirmation dialog will appear before any order is placed."
            onclick='openSellModal(${JSON.stringify(row)})'>Sell</button></td>
     </tr>`;
   }).join('');

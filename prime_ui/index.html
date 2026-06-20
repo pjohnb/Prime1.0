@@ -125,6 +125,19 @@ tr:hover td { background: var(--bg3); }
 .sod-step:last-child { border-bottom: none; }
 .sod-step input[type=checkbox] { margin-top: 2px; accent-color: var(--amber); cursor: pointer; }
 .sod-step label { font-size: 14px; color: var(--text2); cursor: pointer; line-height: 1.5; }
+/* Sprint 30 Thread 2: shared tooltip pattern (TT-01, TT-02). Apply via data-tooltip="..." on any element. */
+[data-tooltip] { position: relative; }
+th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute; bottom: 125%; left: 50%; transform: translateX(-50%);
+  background: #1a1a2e; color: #e2e8f0; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
+  line-height: 1.4; white-space: normal; width: max-content; max-width: 280px;
+  z-index: 999; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+[data-tooltip]:hover::after { opacity: 1; }
 </style>
 </head>
 <body>
@@ -476,8 +489,8 @@ tr:hover td { background: var(--bg3); }
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
     <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Holdings</span>
     <div style="display:flex;gap:8px">
-      <button id="portfolio-refresh-btn" class="btn-refresh" onclick="refreshPortfolio()" title="Sync Schwab + refresh">Refresh</button>
-      <button class="btn-refresh" onclick="requestRebalance()" title="ML-17 AI rebalance suggestions">Rebalance</button>
+      <button id="portfolio-refresh-btn" class="btn-refresh" onclick="refreshPortfolio()" data-tooltip="Sync latest Schwab holdings then reload portfolio.">Refresh</button>
+      <button class="btn-refresh" onclick="requestRebalance()" data-tooltip="Request AI-generated trim suggestions based on current concentration and P&amp;L. Advisory only — no orders placed automatically.">Rebalance</button>
     </div>
   </div>
   <table id="portfolio-table">
