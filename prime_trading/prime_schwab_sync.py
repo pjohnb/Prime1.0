@@ -18,6 +18,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Sector overrides for ETF and COLLECTIVE_INVESTMENT symbols.  EQUITY symbols
+# use prime_portfolio_factor.sector_map instead.  Unknown COLLECTIVE_INVESTMENT
+# symbols default to 'ETF' at import time.
+SYMBOL_SECTOR_MAP: dict = {
+    "GLD": "Commodities", "SLV": "Commodities", "GDX": "Commodities", "GDXJ": "Commodities",
+    "USO": "Energy", "XLE": "Energy",
+    "XLF": "Financials",
+    "XLK": "Technology",
+    "XLV": "Healthcare",
+    "XLP": "Consumer Staples",
+    "XLY": "Consumer Discretionary",
+    "XLI": "Industrials",
+    "XLB": "Materials",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+    "SPY": "Broad Market", "QQQ": "Broad Market", "IWM": "Broad Market",
+}
+
 # Account suffix labels (last 4 digits) for each Schwab account.
 _ACCOUNT_LABELS = {
     "7926": "Joint",
@@ -165,6 +183,49 @@ def _reconcile_closed_positions(
     return closed
 
 
+def get_schwab_cash_total(schwab_client=None) -> Optional[float]:
+    """Return the total Cash & Sweep Vehicle balance across all Schwab accounts.
+
+    Returns None if Schwab is not connected or an error occurs.
+    Used by the Portfolio tab Cash Available tile (PORT-03).
+    """
+    if schwab_client is None:
+        try:
+            from prime_trading.prime_schwab import SchwabClient
+            schwab_client = SchwabClient()
+            schwab_client.connect()
+        except Exception as e:
+            logger.debug("get_schwab_cash_total: Schwab not connected: %s", e)
+            return None
+
+    total_cash = 0.0
+    try:
+        resp = schwab_client.client.get_account_numbers()
+        if resp.status_code != 200:
+            return None
+        accounts = resp.json()
+    except Exception as e:
+        logger.debug("get_schwab_cash_total: cannot fetch account numbers: %s", e)
+        return None
+
+    for acct in accounts:
+        hash_val = acct.get("hashValue", "")
+        suffix = (acct.get("accountNumber") or "")[-4:]
+        try:
+            resp2 = schwab_client.client.get_account(hash_val)
+            if resp2.status_code != 200:
+                continue
+            balances = resp2.json().get("securitiesAccount", {}).get("currentBalances", {})
+            cash = float(balances.get("cashBalance") or 0)
+            sweep = float(balances.get("sweepCashBalance") or balances.get("moneyMarketFund") or 0)
+            total_cash += cash + sweep
+            logger.debug("Account ...%s: cash=%.2f sweep=%.2f", suffix, cash, sweep)
+        except Exception as e:
+            logger.debug("get_schwab_cash_total: error for account ...%s: %s", suffix, e)
+
+    return round(total_cash, 2)
+
+
 def sync_schwab_positions(
     db_path: Optional[Path] = None,
     schwab_client=None,
@@ -213,7 +274,11 @@ def sync_schwab_positions(
         for pos in positions:
             instrument = pos.get("instrument", {})
             asset_type = instrument.get("assetType", "")
-            if asset_type != "EQUITY":
+            if asset_type not in ("EQUITY", "ETF", "COLLECTIVE_INVESTMENT"):
+                logger.debug(
+                    "Skipping %s ...%s: unsupported asset type %s",
+                    instrument.get("symbol", "?"), suffix, asset_type,
+                )
                 continue
 
             symbol = (instrument.get("symbol") or "").strip().upper()
@@ -245,6 +310,11 @@ def sync_schwab_positions(
                 result["skipped"] += 1
                 continue
 
+            # Determine sector: explicit map first; COLLECTIVE_INVESTMENT fallback to 'ETF'.
+            sector = SYMBOL_SECTOR_MAP.get(symbol)
+            if sector is None and asset_type == "COLLECTIVE_INVESTMENT":
+                sector = "ETF"
+
             try:
                 insert_trade(
                     strategy="SCHWAB_IMPORT",
@@ -260,6 +330,7 @@ def sync_schwab_positions(
                     signal_source="schwab_import",
                     trade_source="SCHWAB_IMPORT",
                     notes=f"Imported from Schwab account ...{suffix}",
+                    sector=sector,
                     db_path=db_path,
                 )
                 existing.add(dedup_key)

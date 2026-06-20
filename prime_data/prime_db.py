@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS prime_trade_log (
     advisory_history    TEXT NOT NULL DEFAULT '[]',
     dark_pool_eval      TEXT NOT NULL DEFAULT '{}',
     trade_source        TEXT NOT NULL DEFAULT 'PAPER',
+    signal_id           TEXT,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -102,6 +103,10 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_trade_log(db_path, "stop_type", "TEXT")
     # Sprint 27 Item 3: limit_price for LIMIT order type
     _migrate_add_column_trade_log(db_path, "limit_price", "REAL")
+    # Sprint 29 PORT-02: sector for ETF/COLLECTIVE_INVESTMENT classification
+    _migrate_add_column_trade_log(db_path, "sector", "TEXT")
+    # Sprint 29 H-02: originating signal linkage for History tab
+    _migrate_add_column_trade_log(db_path, "signal_id", "TEXT")
 
     return path
 
@@ -189,6 +194,8 @@ def insert_trade(
     time_stop_minutes: Optional[int] = None,
     stop_type: str = "FIXED",
     limit_price: Optional[float] = None,
+    sector: Optional[str] = None,
+    signal_id: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -219,8 +226,9 @@ def insert_trade(
                 order_id, account, routed_to, notes, mata_batch_id, status,
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
-                stop_price, target_price, time_stop_minutes, stop_type, limit_price
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                stop_price, target_price, time_stop_minutes, stop_type, limit_price, sector,
+                signal_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
@@ -228,7 +236,7 @@ def insert_trade(
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type or "FIXED",
-                limit_price,
+                limit_price, sector, signal_id,
             ),
         )
         conn.commit()

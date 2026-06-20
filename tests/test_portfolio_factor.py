@@ -38,7 +38,7 @@ class TestSectorMap(unittest.TestCase):
         self.assertEqual(sector_map("QQQ"), "Technology")
 
     def test_legacy_positions(self):
-        self.assertEqual(sector_map("GLD"), "Materials")
+        self.assertEqual(sector_map("GLD"), "Commodities")  # PORT-02: updated from Materials
         self.assertEqual(sector_map("NIO"), "Consumer Discretionary")
         self.assertEqual(sector_map("TJX"), "Consumer Discretionary")
         self.assertEqual(sector_map("MSFT"), "Technology")

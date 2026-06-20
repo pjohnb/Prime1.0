@@ -316,5 +316,76 @@ class TestSyncEndpoint(unittest.TestCase):
             self.assertIn("errors", data)
 
 
+class TestCollectiveInvestmentSectorMapping(unittest.TestCase):
+    """PORT-02: sector field stored correctly for COLLECTIVE_INVESTMENT imports."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_schwab_sector.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self._patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def _make_position(self, symbol, asset_type, qty=10, avg_price=100.0):
+        return {
+            "instrument": {"symbol": symbol, "assetType": asset_type},
+            "longQuantity": qty,
+            "shortQuantity": 0,
+            "averagePrice": avg_price,
+        }
+
+    def _make_client(self, positions_by_account):
+        return _make_mock_client(positions_by_account)
+
+    def _get_trade_sector(self, symbol):
+        from prime_data.prime_db import get_connection
+        with get_connection(self.db) as conn:
+            row = conn.execute(
+                "SELECT sector FROM prime_trade_log WHERE symbol=? AND status='OPEN'",
+                (symbol,)
+            ).fetchone()
+        return row["sector"] if row else None
+
+    def test_gld_imports_with_commodities_sector(self):
+        positions = {"7926": [self._make_position("GLD", "COLLECTIVE_INVESTMENT", qty=5, avg_price=391.0)]}
+        client = self._make_client(positions)
+        result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(self._get_trade_sector("GLD"), "Commodities")
+
+    def test_slv_imports_with_commodities_sector(self):
+        positions = {"7926": [self._make_position("SLV", "COLLECTIVE_INVESTMENT", qty=10, avg_price=25.0)]}
+        client = self._make_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(self._get_trade_sector("SLV"), "Commodities")
+
+    def test_unknown_collective_investment_imports_with_etf_sector(self):
+        positions = {"7926": [self._make_position("XYZZ", "COLLECTIVE_INVESTMENT", qty=10, avg_price=50.0)]}
+        client = self._make_client(positions)
+        result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(self._get_trade_sector("XYZZ"), "ETF")
+
+    def test_equity_symbol_sector_is_none(self):
+        positions = {"7926": [self._make_position("AAPL", "EQUITY", qty=10, avg_price=180.0)]}
+        client = self._make_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+        # EQUITY symbols not in SYMBOL_SECTOR_MAP get None sector (not 'ETF')
+        self.assertIsNone(self._get_trade_sector("AAPL"))
+
+    def test_etf_asset_type_uses_symbol_map(self):
+        positions = {"7926": [self._make_position("GLD", "ETF", qty=5, avg_price=391.0)]}
+        client = self._make_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(self._get_trade_sector("GLD"), "Commodities")
+
+
 if __name__ == "__main__":
     unittest.main()
