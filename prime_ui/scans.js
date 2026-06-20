@@ -9,6 +9,18 @@ let _scanLogInterval = null;
 let _scanStatusInterval = null;
 let _runAllActive = false;
 
+// TT-03 (Sprint 30 Thread 3): scanner name tooltips. Keyed by uppercase scanner code.
+const _SCANNER_TOOLTIPS = {
+  PSA:   'PSA: Price &amp; Signal Action — monitors intraday price acceleration and volume for momentum breakouts. Requires UOA or PEAD trigger confirmation before approving.',
+  UOA:   'UOA: Unusual Options Activity — detects anomalous options volume vs. open interest. High sizzle index = institutional positioning signal.',
+  MTS:   'MTS: Momentum &amp; Trend — multi-window momentum scanner for metals ETFs (GLD, SLV). Uses RSI, SMA deviation, and volume surge.',
+  PEAD:  'PEAD: Post-Earnings Announcement Drift — identifies stocks drifting after earnings beats or misses. Classifies guidance flags.',
+  DK:    'DK: Dark Pool — detects off-exchange institutional accumulation or distribution. Confirms or nullifies other scanner signals.',
+  IDX:   'IDX: Index &amp; Sector — tracks relative strength across sector ETFs vs. S&amp;P 500. Provides market regime context.',
+  SHORT: 'SHORT: Short-Selling — identifies bearish setups combining put-heavy UOA with borrow availability and DK nullification confirmation.',
+  SRS:   'SRS: Short-Squeeze &amp; Reversal — targets heavily shorted stocks showing early reversal signals. Generates long squeeze and short continuation entries.',
+};
+
 // ── Scan trigger buttons ─────────────────────────────────────────────────────
 
 async function triggerScan(scanner, btnId) {
@@ -119,8 +131,9 @@ async function loadScanStatus() {
         ? `<button class="btn-refresh" style="padding:2px 8px;font-size:11px"
              onclick="askPrimeScanner('${s.scanner}','${s.last_run || ''}',${s.signals ?? 0})">Ask PRIME</button>`
         : '';
+      const scanTip = _SCANNER_TOOLTIPS[(s.scanner || '').toUpperCase()] || '';
       tbody.innerHTML += `<tr id="scan-row-${s.scanner}">
-        <td style="font-family:var(--mono);font-weight:600">${s.scanner}</td>
+        <td style="font-family:var(--mono);font-weight:600"${scanTip ? ` data-tooltip="${scanTip}"` : ''}>${s.scanner}</td>
         <td style="font-family:var(--mono);font-size:13px" title="${s.last_run || ''}">${lastRunFmt}</td>
         <td style="color:${statusColor};font-family:var(--mono);font-size:12px">${s.status || 'idle'}</td>
         <td style="font-family:var(--mono)">${s.signals != null ? s.signals : '--'}</td>
