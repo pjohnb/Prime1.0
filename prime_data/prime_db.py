@@ -6,7 +6,7 @@ All DB access goes through this module — no other module imports sqlite3 direc
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -487,6 +487,38 @@ def _recent_trade_exists(
             (event_type, (symbol or "").upper(), since_iso),
         ).fetchone()
         return row is not None
+
+
+def _recent_open_trade_exists(
+    symbol: str,
+    strategy: str,
+    window_seconds: int = 60,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Return True if an OPEN prime_trade_log record for the same symbol and
+    strategy has an entry_time within the last window_seconds seconds.
+
+    Sprint 30 Thread 3 (CIL-095). Used by the /trades POST route to reject
+    rapid duplicate submissions (double-click / submit-handler race). Named
+    distinctly from _recent_trade_exists() (PM-04, prime_ops_health) to avoid
+    a collision. Follows the module convention of self-managing the connection
+    via db_path rather than taking a live conn.
+    """
+    cutoff = datetime.now() - timedelta(seconds=window_seconds)
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT entry_time FROM prime_trade_log"
+            " WHERE symbol=? AND strategy=? AND status='OPEN'",
+            ((symbol or "").upper(), strategy),
+        ).fetchall()
+    for row in rows:
+        try:
+            ts = datetime.fromisoformat(str(row[0]))
+        except (TypeError, ValueError):
+            continue
+        if ts >= cutoff:
+            return True
+    return False
 
 
 def set_trade_stop_target(

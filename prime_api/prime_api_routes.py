@@ -426,7 +426,7 @@ def create_trade():
     """
     from prime_config.prime_config import get_config
     from prime_data.prime_db import (
-        get_open_by_symbol,
+        _recent_open_trade_exists,
         insert_trade,
         TradeRecordError,
     )
@@ -471,6 +471,15 @@ def create_trade():
     direction  = {"BUY": "LONG", "SELL": "SHORT"}.get(direction, direction)
     side_schwab = "BUY" if direction == "LONG" else "SELL"
     now = datetime.now()
+
+    # CIL-095 (Sprint 30 Thread 3): double-execute guard. Reject a second
+    # submission for the same symbol+strategy while an OPEN position from the
+    # last 60s already exists (rapid double-click / submit-handler race).
+    # Placed before the LIVE/PAPER branch so both modes are protected.
+    if _recent_open_trade_exists(symbol, strategy, window_seconds=60):
+        return jsonify({
+            "error": "Duplicate trade submission detected — this position is already open."
+        }), 409
 
     # ── LIVE mode path ────────────────────────────────────────────────────────
     if mode_cfg == "LIVE":
@@ -599,13 +608,6 @@ def create_trade():
         pass
 
     try:
-        for t in get_open_by_symbol(symbol):
-            if (t.get("strategy") == strategy
-                    and (t.get("direction") or "").upper() == direction
-                    and t.get("shares") == qty
-                    and _is_recent(t.get("entry_time", ""), now)):
-                return jsonify({"error": "duplicate trade within 60s"}), 409
-
         # Sprint 27 Item 3: PAPER LIMIT fills immediately at limit_price
         paper_fill = limit_price_val if order_type == "LIMIT" and limit_price_val else price
 
