@@ -24,14 +24,9 @@ logger = logging.getLogger(__name__)
 SYMBOL_SECTOR_MAP: dict = {
     "GLD": "Commodities", "SLV": "Commodities", "GDX": "Commodities", "GDXJ": "Commodities",
     "USO": "Energy", "XLE": "Energy",
-    "XLF": "Financials",
-    "XLK": "Technology",
-    "XLV": "Healthcare",
-    "XLP": "Consumer Staples",
-    "XLY": "Consumer Discretionary",
-    "XLI": "Industrials",
-    "XLB": "Materials",
-    "XLU": "Utilities",
+    "XLF": "Financials", "XLK": "Technology", "XLV": "Healthcare",
+    "XLP": "Consumer Staples", "XLY": "Consumer Discretionary",
+    "XLI": "Industrials", "XLB": "Materials", "XLU": "Utilities",
     "XLRE": "Real Estate",
     "SPY": "Broad Market", "QQQ": "Broad Market", "IWM": "Broad Market",
 }

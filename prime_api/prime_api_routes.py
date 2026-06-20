@@ -119,6 +119,172 @@ def get_advisory_briefing():
                         "recommended_actions": [], "error": str(e)}), 200
 
 
+_SCAN_EXPLAIN_PROMPTS = {
+    "mts": (
+        "You are analyzing a Momentum Trading System (MTS) scan run. "
+        "MTS uses RSI thresholds, SMA filters, and pct_from_sma to identify momentum setups. "
+        "Explain in plain English why this run produced {signal_count} signal(s). "
+        "Reference the RSI/SMA/momentum metrics visible in the log. "
+        "If 0 signals: explain what conditions were not met. "
+        "Be specific — mention actual metric values from the log if present. "
+        "150–300 words."
+    ),
+    "uoa": (
+        "You are analyzing an Unusual Options Activity (UOA) scan run. "
+        "UOA detects elevated options volume via sizzle index and DTE filters. "
+        "Explain in plain English why this run produced {signal_count} signal(s). "
+        "Reference sizzle index minimums, DTE windows, and volume ratios from the log. "
+        "If 0 signals: explain what thresholds were not reached. "
+        "150–300 words."
+    ),
+    "psa": (
+        "You are analyzing a Price-and-Signal Analyzer (PSA) scan run. "
+        "PSA uses volume surge, momentum scores, and trend filters. "
+        "Explain in plain English why this run produced {signal_count} signal(s). "
+        "Reference volume thresholds and momentum scores from the log. "
+        "If 0 signals: explain which filter eliminated candidates. "
+        "150–300 words."
+    ),
+    "short": (
+        "You are analyzing a Short-Selling scan run. "
+        "SHORT identifies deteriorating stocks using borrow rate checks and put volume surges. "
+        "Explain in plain English why this run produced {signal_count} signal(s). "
+        "Reference borrow availability, put/call ratios, and downtrend signals from the log. "
+        "If 0 signals: explain what conditions were not met. "
+        "150–300 words."
+    ),
+}
+
+_SCAN_EXPLAIN_GENERIC = (
+    "You are analyzing a PRIME scanner ({scanner}) run. "
+    "Explain in plain English why this run produced {signal_count} signal(s). "
+    "Reference any metric values, thresholds, or rejection reasons visible in the log. "
+    "If 0 signals: speculate on what may have prevented signals based on the log. "
+    "150–300 words."
+)
+
+
+@api_bp.route("/advisory/scan-explain", methods=["POST"])
+def scan_explain():
+    """POST /api/v1/advisory/scan-explain -- AI explanation of a scanner run.
+
+    UI-AskPrime-01. Body: {scanner, run_ts, signal_count, log_excerpt}.
+    Returns {explanation: string}.
+    """
+    payload = request.get_json(silent=True) or {}
+    scanner = (payload.get("scanner") or "").lower()
+    signal_count = payload.get("signal_count", 0)
+    log_excerpt = payload.get("log_excerpt", "")
+    rejection_summary = payload.get("rejection_summary", "")
+
+    template = _SCAN_EXPLAIN_PROMPTS.get(scanner, _SCAN_EXPLAIN_GENERIC)
+    system_prompt = template.format(scanner=scanner, signal_count=signal_count)
+    user_msg = (
+        f"Scanner: {scanner.upper()}\n"
+        f"Run time: {payload.get('run_ts', 'unknown')}\n"
+        f"Signals produced: {signal_count}\n\n"
+        f"LOG EXCERPT (last 50 lines):\n{log_excerpt}\n\n"
+        f"REJECTION SUMMARY:\n{rejection_summary}"
+    )
+
+    api_key = ""
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            from prime_config.prime_config import get_config
+            api_key = get_config().ops.anthropic_api_key or ""
+    except Exception:
+        pass
+
+    if not api_key:
+        return jsonify({"explanation": "Advisory unavailable — check Anthropic API key in Settings."}), 200
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-6-20250514",
+            max_tokens=500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        explanation = response.content[0].text.strip()
+        return jsonify({"explanation": explanation}), 200
+    except Exception as e:
+        logger.warning("scan-explain Claude call failed: %s", e)
+        return jsonify({"explanation": "Advisory unavailable — check Anthropic API key in Settings."}), 200
+
+
+# PORT-03: advisory/rebalance cache
+_rebalance_cache: Dict[str, Any] = {}
+
+
+@api_bp.route("/advisory/rebalance", methods=["POST"])
+def advisory_rebalance():
+    """POST /api/v1/advisory/rebalance -- ML-17 AI Rebalance Advisor.
+
+    PORT-03. Calls Claude with current portfolio and ops thresholds.
+    Returns ranked suggestions [{symbol, action, rationale, urgency}].
+    Caches last successful response and returns it with stale indicator when API unavailable.
+    """
+    global _rebalance_cache
+    try:
+        from prime_data.prime_db import get_open_trades
+        from prime_config.prime_config import get_config
+        from prime_intelligence.prime_rebalance_advisor import get_rebalance_advice
+
+        cfg = get_config()
+        ops = cfg.ops
+        positions = get_open_trades()
+        max_position_pct = float(getattr(ops, "max_position_pct", 0.15))
+        max_sector_pct = float(getattr(ops, "max_sector_pct", 0.30))
+
+        from prime_intelligence.prime_portfolio_factor import sector_map
+        sector_totals: Dict[str, float] = {}
+        portfolio_value = 0.0
+        for p in positions:
+            mv = float(p.get("entry_price") or 0) * int(p.get("shares") or 0)
+            portfolio_value += mv
+            sec = sector_map(p.get("symbol") or "")
+            sector_totals[sec] = sector_totals.get(sec, 0.0) + mv
+
+        sector_summary = {
+            s: round(v / portfolio_value * 100, 1) if portfolio_value else 0.0
+            for s, v in sector_totals.items()
+        }
+
+        api_key = ""
+        try:
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                api_key = ops.anthropic_api_key or ""
+        except Exception:
+            pass
+
+        result = get_rebalance_advice(
+            positions=positions,
+            portfolio_value=portfolio_value,
+            sector_summary=sector_summary,
+            max_position_pct=max_position_pct,
+            max_sector_pct=max_sector_pct,
+            api_key=api_key,
+        )
+
+        if not result.get("_fallback"):
+            _rebalance_cache = {"data": result, "timestamp": result.get("timestamp", "")}
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        logger.error("advisory rebalance error: %s", e)
+        if _rebalance_cache:
+            cached = dict(_rebalance_cache["data"])
+            cached["_stale"] = True
+            cached["_stale_from"] = _rebalance_cache["timestamp"]
+            return jsonify(cached), 200
+        return jsonify({"error": str(e), "suggestions": []}), 500
+
+
 @api_bp.route("/strategies", methods=["GET"])
 def get_strategies():
     """GET /api/v1/strategies -- distinct strategies for the UI filter (Item 3)."""
@@ -876,14 +1042,24 @@ def get_portfolio():
                     })
         warnings.extend(sector_warnings)
 
+        # PORT-03: Cash Available — sum cashBalance + sweepCashBalance across accounts
+        cash_available = None
+        try:
+            from prime_trading.prime_schwab_sync import get_schwab_cash_total
+            cash_available = get_schwab_cash_total()
+        except Exception:
+            pass
+
         summary = {
             "total_market_value": round(total_market_value, 2),
             "total_cost_basis":   round(total_cost_basis, 2),
             "total_unrealized_pnl": round(total_unrealized, 2),
             "position_count":     len(rows),
+            "cash_available":     cash_available,
             "sector_breakdown":   {
                 s: round(v / total_market_value * 100, 1) if total_market_value else 0.0
                 for s, v in sector_totals.items()
+                if v > 0
             },
         }
 

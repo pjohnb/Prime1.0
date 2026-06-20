@@ -111,6 +111,79 @@ def build_portfolio_snapshot(
     }
 
 
+def _advice_fallback(reason: str) -> Dict[str, Any]:
+    """Return a minimal deterministic fallback for get_rebalance_advice."""
+    return {
+        "suggestions": [{
+            "symbol": "[portfolio]",
+            "action": "HOLD",
+            "rationale": f"AI advisor unavailable ({reason}) — no automated suggestions.",
+            "urgency": "LOW",
+        }],
+        "timestamp": datetime.utcnow().isoformat(),
+        "_fallback": True,
+    }
+
+
+def get_rebalance_advice(
+    positions: List[Dict[str, Any]],
+    portfolio_value: float,
+    sector_summary: Dict[str, float],
+    max_position_pct: float,
+    max_sector_pct: float,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """PORT-03 (ML-17): AI rebalance suggestions with TRIM/HOLD/EXIT actions.
+
+    Returns {suggestions: [{symbol, action, rationale, urgency}], timestamp, _fallback}.
+    Never raises — falls back to HOLD suggestion on any failure.
+    """
+    if not api_key:
+        return _advice_fallback("no API key configured")
+
+    overweight = [s for s, pct in sector_summary.items() if pct > max_sector_pct * 100]
+    position_flags = []
+    if portfolio_value > 0:
+        for p in positions:
+            sym = p.get("symbol", "")
+            mv = float(p.get("entry_price") or 0) * int(p.get("shares") or 0)
+            if portfolio_value and (mv / portfolio_value) > max_position_pct:
+                position_flags.append(f"{sym} at {mv/portfolio_value*100:.1f}%")
+
+    user_msg = (
+        f"Portfolio value: ${portfolio_value:,.0f}\n"
+        f"Max position limit: {max_position_pct*100:.0f}%\n"
+        f"Max sector limit: {max_sector_pct*100:.0f}%\n\n"
+        f"SECTOR BREAKDOWN:\n{json.dumps(sector_summary, indent=2)}\n\n"
+        f"POSITIONS ({len(positions)} open):\n"
+        + "\n".join(f"  {p.get('symbol','?')}: {p.get('shares',0)} shares @ ${p.get('entry_price',0):.2f}" for p in positions[:20])
+        + (f"\n\nOVERWEIGHT SECTORS: {', '.join(overweight)}" if overweight else "")
+        + (f"\nOVERSIZED POSITIONS: {', '.join(position_flags)}" if position_flags else "")
+        + "\n\nReturn JSON: {\"suggestions\": [{\"symbol\": \"...\", \"action\": \"TRIM|HOLD|EXIT\", \"rationale\": \"...\", \"urgency\": \"HIGH|MEDIUM|LOW\"}]}"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            system=REBALANCE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        result = json.loads(response.content[0].text)
+        result["timestamp"] = datetime.utcnow().isoformat()
+        result["_fallback"] = False
+        return result
+    except ImportError:
+        return _advice_fallback("anthropic library not installed")
+    except json.JSONDecodeError as e:
+        return _advice_fallback(f"invalid JSON: {e}")
+    except Exception as e:
+        logger.warning("get_rebalance_advice Claude call failed: %s", e)
+        return _advice_fallback(str(e))
+
+
 def get_ai_rebalance_suggestions(
     portfolio_snapshot: Dict[str, Any],
     api_key: Optional[str] = None,
