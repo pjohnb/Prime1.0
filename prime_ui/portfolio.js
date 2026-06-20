@@ -205,7 +205,24 @@ function openSellModal(row) {
       `<div>Avg Entry: <b>$${_fmt(row.avg_entry_price)}</b> &nbsp; Current: <b>$${_fmt(row.current_price)}</b></div>` +
       `<div>Unrealized P&amp;L: <b style="color:${row.unrealized_pnl >= 0 ? '#22c55e' : '#ef4444'}">$${_fmt(row.unrealized_pnl)}</b></div>`;
   }
-  document.getElementById('sell-qty-input').value = '';
+  // PM-01: pre-fill qty with full position size for a one-click full close.
+  const qtyInput = document.getElementById('sell-qty-input');
+  qtyInput.value = row.total_shares;
+  // Helper text + "Full Position" reset link, injected below the qty input (idempotent).
+  let helper = document.getElementById('sell-qty-helper');
+  if (!helper) {
+    helper = document.createElement('div');
+    helper.id = 'sell-qty-helper';
+    helper.style.cssText = 'font-size:11px;color:var(--text3);margin-top:-2px;line-height:1.4';
+    qtyInput.insertAdjacentElement('afterend', helper);
+  }
+  helper.innerHTML =
+    `Full position: ${row.total_shares} shares. Edit for partial exit. ` +
+    `<a href="#" id="sell-full-pos-link" style="color:var(--blue);text-decoration:none;font-weight:600">Full Position</a>`;
+  document.getElementById('sell-full-pos-link').onclick = (e) => {
+    e.preventDefault();
+    qtyInput.value = _pendingSell ? _pendingSell.total_shares : row.total_shares;
+  };
   document.getElementById('sell-order-type').value = 'MARKET';
   document.getElementById('sell-limit-row').style.display = 'none';
   document.getElementById('sell-allocation-preview').textContent = '';
@@ -237,6 +254,16 @@ async function submitSell() {
   const btn      = document.getElementById('sell-confirm-btn');
 
   if (!qtyRaw) { msgEl.textContent = 'Enter a quantity'; msgEl.className = 'order-msg err'; return; }
+
+  // PM-01: block share counts above the total position. Percentages (e.g. "50%") are exempt.
+  if (!qtyRaw.includes('%')) {
+    const qtyNum = parseInt(qtyRaw, 10);
+    if (!Number.isNaN(qtyNum) && qtyNum > row.total_shares) {
+      msgEl.textContent = 'Quantity exceeds total position size';
+      msgEl.className = 'order-msg err';
+      return;
+    }
+  }
 
   // Build account_holdings from row
   const holdings = (row.accounts || []).map(acc => ({
