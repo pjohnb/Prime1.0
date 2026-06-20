@@ -414,7 +414,8 @@ tr:hover td { background: var(--bg3); }
   </div>
   <table id="sig-table">
     <!-- Sprint 22 Item 1: Score hidden, trigger_source column added -->
-    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Tier</th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
+    <!-- SIG-02: Tier column header carries a (?) help icon with native tooltip explaining the naming convention. -->
+    <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Tier <span id="tier-help-icon" title="Tier = [Strength]-[Direction]. Strength: STRONG (high conviction), WATCH (moderate conviction — monitor closely), WEAK (informational only), TRANCHE_1 (MTS first entry — highest confidence), TRANCHE_2 (MTS second entry — scaling in). Direction: LONG (bullish) or SHORT (bearish). Some tiers omit direction — see DIR column." style="cursor:help;font-size:11px;opacity:.7">(?)</span></th><th>DK Status</th><th>Entry</th><th>Status</th></tr></thead>
     <tbody id="sig-body"></tbody>
   </table>
 </div>
@@ -457,7 +458,7 @@ tr:hover td { background: var(--bg3); }
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
     <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Holdings</span>
     <div style="display:flex;gap:8px">
-      <button class="btn-refresh" onclick="loadPortfolio()" title="Sync Schwab + refresh">Refresh</button>
+      <button id="portfolio-refresh-btn" class="btn-refresh" onclick="refreshPortfolio()" title="Sync Schwab + refresh">Refresh</button>
       <button class="btn-refresh" onclick="requestRebalance()" title="ML-17 AI rebalance suggestions">Rebalance</button>
     </div>
   </div>
