@@ -114,16 +114,69 @@ async function loadScanStatus() {
       const lastRunFmt = s.last_run
         ? (typeof formatET === 'function' ? formatET(s.last_run, true) : s.last_run)
         : '--';
-      tbody.innerHTML += `<tr>
+      const canAsk = s.status === 'complete' || s.status === 'error';
+      const askBtn = canAsk
+        ? `<button class="btn-refresh" style="padding:2px 8px;font-size:11px"
+             onclick="askPrimeScanner('${s.scanner}','${s.last_run || ''}',${s.signals ?? 0})">Ask PRIME</button>`
+        : '';
+      tbody.innerHTML += `<tr id="scan-row-${s.scanner}">
         <td style="font-family:var(--mono);font-weight:600">${s.scanner}</td>
         <td style="font-family:var(--mono);font-size:13px" title="${s.last_run || ''}">${lastRunFmt}</td>
         <td style="color:${statusColor};font-family:var(--mono);font-size:12px">${s.status || 'idle'}</td>
         <td style="font-family:var(--mono)">${s.signals != null ? s.signals : '--'}</td>
+        <td>${askBtn}</td>
+      </tr>
+      <tr id="scan-explain-${s.scanner}" style="display:none">
+        <td colspan="5" style="padding:0">
+          <div id="scan-explain-panel-${s.scanner}"
+               style="background:var(--bg4);border-top:1px solid var(--border);padding:12px 16px;font-size:13px;color:var(--text2);line-height:1.6;white-space:pre-wrap"></div>
+        </td>
       </tr>`;
     });
   } catch (e) {
     const tbody = document.getElementById('scan-status-body');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="empty-state">API offline</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="empty-state">API offline</td></tr>';
+  }
+}
+
+// UI-AskPrime-01: fetch scan log and POST to /advisory/scan-explain
+async function askPrimeScanner(scanner, runTs, signalCount) {
+  const panelRow = document.getElementById('scan-explain-' + scanner);
+  const panel = document.getElementById('scan-explain-panel-' + scanner);
+  if (!panelRow || !panel) return;
+
+  // Toggle off if already open
+  if (panelRow.style.display !== 'none') {
+    panelRow.style.display = 'none';
+    return;
+  }
+  panelRow.style.display = 'table-row';
+  panel.textContent = 'Asking PRIME AI...';
+
+  // Fetch last 50 lines of scan log
+  let logExcerpt = '';
+  try {
+    const lr = await fetch(_scansApi() + '/scans/log?lines=50');
+    const ld = await lr.json();
+    logExcerpt = (ld.lines || []).join('\n');
+  } catch (e) {}
+
+  try {
+    const r = await fetch(_scansApi() + '/advisory/scan-explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scanner: scanner,
+        run_ts: runTs,
+        signal_count: signalCount,
+        log_excerpt: logExcerpt,
+        rejection_summary: '',
+      }),
+    });
+    const d = await r.json();
+    panel.textContent = d.explanation || 'No explanation returned.';
+  } catch (e) {
+    panel.textContent = 'Advisory unavailable — check API connection.';
   }
 }
 
