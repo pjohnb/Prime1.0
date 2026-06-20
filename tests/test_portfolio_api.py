@@ -163,5 +163,76 @@ class TestPortfolioEndpoint(unittest.TestCase):
         self.assertIsInstance(d["warnings"], list)
 
 
+class TestPortfolioRefreshSync(unittest.TestCase):
+    """PORT-01: /sync/schwab returns importable summary; portfolio responds 200 after sync."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_refresh.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+
+        self._cfg_patcher = patch(
+            "prime_config.prime_config.get_config", return_value=_mock_config()
+        )
+        self._cfg_patcher.start()
+
+        self._schwab_patcher = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation — no live Schwab"),
+        )
+        self._schwab_patcher.start()
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self._schwab_patcher.stop()
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_sync_endpoint_returns_imported_count(self):
+        mock_sync = MagicMock(return_value={"imported": 3, "skipped": 0, "errors": []})
+        with patch("prime_trading.prime_schwab_sync.sync_schwab_positions", mock_sync):
+            resp = self.client.get("/api/v1/sync/schwab")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertEqual(d["imported"], 3)
+
+    def test_sync_endpoint_zero_on_no_positions(self):
+        mock_sync = MagicMock(return_value={"imported": 0, "skipped": 0, "errors": []})
+        with patch("prime_trading.prime_schwab_sync.sync_schwab_positions", mock_sync):
+            resp = self.client.get("/api/v1/sync/schwab")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertEqual(d["imported"], 0)
+
+    def test_sync_endpoint_degrades_gracefully_on_error(self):
+        with patch(
+            "prime_trading.prime_schwab_sync.sync_schwab_positions",
+            side_effect=Exception("connection refused"),
+        ):
+            resp = self.client.get("/api/v1/sync/schwab")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertIn("imported", d)
+        self.assertEqual(d["imported"], 0)
+
+    def test_portfolio_returns_200_after_sync(self):
+        mock_sync = MagicMock(return_value={"imported": 0, "skipped": 0, "errors": []})
+        with patch("prime_trading.prime_schwab_sync.sync_schwab_positions", mock_sync):
+            self.client.get("/api/v1/sync/schwab")
+        resp = self.client.get("/api/v1/portfolio")
+        self.assertEqual(resp.status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

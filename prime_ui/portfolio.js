@@ -31,9 +31,54 @@ async function loadPortfolio() {
   }
 }
 
+// PORT-01: Refresh button triggers /sync/schwab before reloading portfolio
+async function refreshPortfolio() {
+  const btn = document.getElementById('portfolio-refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
+  let syncWarning = null;
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 15000);
+    const r = await fetch(_portApi() + '/sync/schwab', { signal: ctrl.signal });
+    clearTimeout(timeout);
+    const d = await r.json();
+    if (d.imported > 0) {
+      _showPortToast(d.imported + ' new position(s) imported from Schwab.', 'green');
+    } else if (d.errors && d.errors.length) {
+      syncWarning = 'Schwab sync completed with warnings — some positions may be stale.';
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      syncWarning = 'Schwab sync timed out — showing cached positions.';
+    } else {
+      syncWarning = 'Schwab sync failed — showing cached positions.';
+    }
+  }
+  if (syncWarning) _showPortToast(syncWarning, 'amber');
+  if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
+  loadPortfolio();
+}
+
+function _showPortToast(msg, color) {
+  const existing = document.getElementById('port-toast');
+  if (existing) existing.remove();
+  const bg = color === 'green' ? '#052e16' : '#451a03';
+  const fg = color === 'green' ? '#86efac' : '#fde68a';
+  const border = color === 'green' ? '#16a34a' : '#d97706';
+  const el = document.createElement('div');
+  el.id = 'port-toast';
+  el.style.cssText = `position:fixed;top:60px;right:20px;background:${bg};color:${fg};border:1px solid ${border};` +
+    'border-radius:6px;padding:10px 16px;font-size:13px;font-family:var(--mono);z-index:500;' +
+    'max-width:360px;box-shadow:0 4px 12px rgba(0,0,0,0.4)';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 5000);
+}
+
 function _renderPortfolio(data) {
   _renderSummary(data.summary || {});
   _renderWarnings(data.warnings || []);
+  _renderSectorBreakdown(data.summary || {});
   _renderRows(_portRows);
 }
 
@@ -41,12 +86,38 @@ function _renderSummary(s) {
   const el = document.getElementById('portfolio-summary');
   if (!el) return;
   const pnlColor = (s.total_unrealized_pnl || 0) >= 0 ? '#22c55e' : '#ef4444';
+  const cashVal = s.cash_available != null ? '$' + _fmt(s.cash_available) : '--';
   el.innerHTML =
     _summCard('Total Market Value', '$' + _fmt(s.total_market_value)) +
     _summCard('Unrealized P&L',
       `<span style="color:${pnlColor}">$${_fmt(s.total_unrealized_pnl)}</span>`) +
     _summCard('Cost Basis', '$' + _fmt(s.total_cost_basis)) +
-    _summCard('Positions', s.position_count || 0);
+    _summCard('Positions', s.position_count || 0) +
+    _summCard('Cash Available', cashVal);
+}
+
+function _renderSectorBreakdown(s) {
+  const el = document.getElementById('portfolio-sector-breakdown');
+  if (!el) return;
+  const breakdown = s.sector_breakdown || {};
+  const entries = Object.entries(breakdown).filter(([, pct]) => pct > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!entries.length) { el.style.display = 'none'; return; }
+  const maxSectorPct = 30;
+  el.style.display = 'block';
+  el.innerHTML = '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);margin-bottom:8px">Sector Exposure</div>' +
+    entries.map(([sec, pct]) => {
+      const over = pct > maxSectorPct;
+      const barColor = over ? 'var(--amber)' : 'var(--blue)';
+      const label = over ? `<span style="color:var(--amber);font-weight:700">${sec}</span>` : sec;
+      return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <div style="width:130px;font-size:12px;color:var(--text2);font-family:var(--mono);text-align:right">${label}</div>
+        <div style="flex:1;background:var(--bg4);border-radius:3px;height:10px;overflow:hidden">
+          <div style="width:${Math.min(pct, 100)}%;background:${barColor};height:100%;border-radius:3px"></div>
+        </div>
+        <div style="width:42px;font-size:12px;font-family:var(--mono);color:${over ? 'var(--amber)' : 'var(--text3)'};text-align:right">${pct.toFixed(1)}%</div>
+      </div>`;
+    }).join('');
 }
 
 function _summCard(label, val) {
@@ -203,29 +274,44 @@ async function submitSell() {
 
 // ── ML-17 Rebalance ─────────────────────────────────────────────────────────
 
+// PORT-03: Rebalance button calls /advisory/rebalance (ML-17)
 async function requestRebalance() {
   const panel = document.getElementById('rebalance-panel');
   if (!panel) return;
   panel.style.display = 'block';
   panel.innerHTML = '<div style="color:var(--text3);font-size:13px">Requesting AI rebalance suggestions…</div>';
   try {
-    const r = await fetch(_portApi() + '/portfolio/rebalance', { method: 'POST' });
+    const r = await fetch(_portApi() + '/advisory/rebalance', { method: 'POST' });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    const suggestions = d.suggestions || d.rebalance_suggestions || [];
+    const suggestions = d.suggestions || [];
     if (!suggestions.length) {
       panel.innerHTML = '<div style="color:var(--text3);font-size:13px">No rebalance suggestions at this time.</div>';
       return;
     }
-    panel.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;font-family:var(--mono)">AI Rebalance Suggestions (Advisory Only)</div>' +
-      suggestions.map(s => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">
-        <span style="font-family:var(--mono);font-weight:700;color:var(--amber)">${s.symbol || s.action || ''}</span>
-        <span style="color:var(--text2);margin-left:8px">${s.action || s.recommendation || ''}</span>
-        <span style="color:var(--text3);font-size:12px;margin-left:8px">${s.reason || ''}</span>
-      </div>`).join('');
-    if (d._fallback) {
-      panel.innerHTML += '<div style="color:var(--text3);font-size:11px;margin-top:8px">Deterministic fallback (AI unavailable)</div>';
+    const urgencyColor = u => u === 'HIGH' ? 'var(--red)' : u === 'MEDIUM' ? 'var(--amber)' : 'var(--text3)';
+    const actionBadge = a => {
+      const c = a === 'TRIM' ? '#92400e' : a === 'EXIT' ? '#7f1d1d' : '#1e3a5f';
+      const t = a === 'TRIM' ? '#fde68a' : a === 'EXIT' ? '#fca5a5' : '#93c5fd';
+      return `<span style="background:${c};color:${t};padding:2px 7px;border-radius:3px;font-size:11px;font-family:var(--mono);font-weight:700">${a}</span>`;
+    };
+    let html = '<div style="font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;font-family:var(--mono)">AI Rebalance Suggestions</div>';
+    html += suggestions.map(s =>
+      `<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:13px;display:flex;gap:8px;align-items:flex-start">
+        <span style="font-family:var(--mono);font-weight:700;color:var(--text);min-width:70px">${s.symbol || ''}</span>
+        ${actionBadge(s.action || 'HOLD')}
+        <span style="color:var(--text2);flex:1">${s.rationale || ''}</span>
+        <span style="font-size:11px;font-family:var(--mono);color:${urgencyColor(s.urgency)}">${s.urgency || ''}</span>
+      </div>`
+    ).join('');
+    html += '<div style="color:var(--text3);font-size:11px;margin-top:10px;font-style:italic">These are AI-generated suggestions only. No orders will be placed automatically.</div>';
+    if (d._stale) {
+      html += `<div style="color:var(--amber);font-size:11px;margin-top:4px;font-family:var(--mono)">[STALE — from ${d._stale_from || 'prior run'}]</div>`;
     }
+    if (d._fallback) {
+      html += '<div style="color:var(--text3);font-size:11px;margin-top:4px">Deterministic fallback (AI unavailable)</div>';
+    }
+    panel.innerHTML = html;
   } catch(e) {
     panel.innerHTML = `<div style="color:var(--red);font-size:13px">${e.message}</div>`;
   }
