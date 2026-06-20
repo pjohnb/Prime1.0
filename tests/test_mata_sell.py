@@ -224,6 +224,165 @@ class TestMATASellEndpoint(unittest.TestCase):
                                 headers=self._auth, content_type="application/json")
         self.assertEqual(resp.status_code, 400)
 
+    # ── Sprint 30 PM-02: trade-log close on /sell/mata ────────────────────────
+    def test_mata_sell_closes_trade_log_manual(self):
+        from prime_data.prime_db import insert_trade, get_trade
+        log_id = insert_trade(
+            strategy="TEST", symbol="MSFT", direction="LONG", mode="PAPER",
+            order_type="MARKET", shares=20, entry_time="2026-06-10T10:00:00",
+            price_at_scan=400.0, entry_price=400.0, account="7926",
+            trade_source="PAPER", db_path=self.db,
+        )
+        payload = {
+            "symbol": "MSFT", "total_qty": 10, "order_type": "MARKET",
+            "price": 415.0,
+            "account_holdings": [{"account": "7926", "shares": 20}],
+            "confirmed": True,
+        }
+        resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                headers=self._auth, content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertEqual(len(d["closed_logs"]), 1)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "CLOSED")
+        self.assertEqual(row["exit_reason"], "MANUAL")
+        self.assertAlmostEqual(row["exit_price"], 415.0)
+        # pnl = (415 - 400) * 20 = 300 ; pct = 15/400*100 = 3.75
+        self.assertAlmostEqual(row["pnl_dollars"], 300.0)
+        self.assertAlmostEqual(row["pnl_pct"], 3.75)
+
+    def test_mata_sell_missing_log_warns_not_blocks(self):
+        from prime_data.prime_db import get_ops_events
+        payload = {
+            "symbol": "ZZZZ", "total_qty": 5, "order_type": "MARKET",
+            "price": 50.0,
+            "account_holdings": [{"account": "7926", "shares": 10}],
+            "confirmed": True,
+        }
+        resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                headers=self._auth, content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertEqual(d["closed_logs"], [])
+        events = get_ops_events(db_path=self.db)
+        self.assertTrue(any(e["event_type"] == "MATA_SELL_NO_LOG" for e in events))
+
+
+class TestMATASellAccountHash(unittest.TestCase):
+    """Sprint 30 PM-03: LIVE MATA sell resolves account suffix to hash."""
+
+    def setUp(self):
+        from unittest.mock import patch, MagicMock
+        import tempfile, json
+        from pathlib import Path
+
+        self.db = Path(__file__).parent / "_test_mata_hash.db"
+        if self.db.exists():
+            self.db.unlink()
+        from prime_data.prime_db import init_db
+        from prime_analytics.prime_signals_db import init_signals_table
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self.tmp_dir = tempfile.mkdtemp()
+        self.ops_path = Path(self.tmp_dir) / "ops_config.json"
+        with open(self.ops_path, "w") as f:
+            json.dump({"scan_schedule": {}, "notification_channels": "TBD"}, f)
+
+        self.mock_cfg = MagicMock()
+        self.mock_cfg.trading_mode = "LIVE"
+        self.mock_cfg.api_token = "test-token"
+        self.mock_cfg.ops.max_order_pct = 0.10
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch("prime_config.prime_config.get_config", return_value=self.mock_cfg)
+        self._cfg_patcher.start()
+        import prime_api.prime_api_routes as routes
+        self._orig_ops = routes._OPS_CONFIG_PATH
+        routes._OPS_CONFIG_PATH = self.ops_path
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self._auth = {"Authorization": "Bearer test-token"}
+
+    def tearDown(self):
+        import prime_api.prime_api_routes as routes
+        routes._OPS_CONFIG_PATH = self._orig_ops
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def _mock_client(self, accounts):
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client.connect.return_value = True
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = accounts
+        client.client.get_account_numbers.return_value = resp
+        client.get_quotes.return_value = {}
+        return client
+
+    def test_mata_sell_resolves_account_hash(self):
+        from unittest.mock import patch
+        client = self._mock_client([
+            {"accountNumber": "123457926", "hashValue": "HASH_7926"},
+            {"accountNumber": "999990461", "hashValue": "HASH_0461"},
+        ])
+        captured = {}
+
+        def fake_submit(**kwargs):
+            captured["account_hash"] = kwargs.get("account_hash")
+            return {"order_id": "ORD1", "status": "SUBMITTED"}
+
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_schwab_orders.submit_order", side_effect=fake_submit):
+            payload = {
+                "symbol": "MSFT", "total_qty": 10, "order_type": "MARKET",
+                "price": 415.0,
+                "account_holdings": [{"account": "7926", "shares": 20}],
+                "confirmed": True,
+            }
+            resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                    headers=self._auth, content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(captured.get("account_hash"), "HASH_7926")
+
+    def test_mata_sell_failed_hash_skips_account(self):
+        from unittest.mock import patch
+        # Only 7926 resolvable; 0461 has no matching Schwab account -> skipped.
+        client = self._mock_client([
+            {"accountNumber": "123457926", "hashValue": "HASH_7926"},
+        ])
+        calls = []
+
+        def fake_submit(**kwargs):
+            calls.append(kwargs.get("account_hash"))
+            return {"order_id": "ORD", "status": "SUBMITTED"}
+
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_schwab_orders.submit_order", side_effect=fake_submit):
+            payload = {
+                "symbol": "MSFT", "total_qty": 10, "order_type": "MARKET",
+                "price": 415.0,
+                "account_holdings": [
+                    {"account": "7926", "shares": 20},
+                    {"account": "0461", "shares": 16},
+                ],
+                "confirmed": True,
+            }
+            resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                    headers=self._auth, content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertEqual(calls, ["HASH_7926"])  # only the resolvable account submitted
+        self.assertTrue(any(f["account"] == "0461" for f in d["failures"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -681,6 +681,9 @@ _SETTINGS_FIELDS = [
     "mata_accounts",
     # Sprint 28 Item 4: Polygon rate limiting
     "polygon_plan", "polygon_rate_limit_delay_ms",
+    # Sprint 30 PM-04: automated exit management
+    "exit_gain_trigger_pct", "exit_trail_pct",
+    "exit_day_count_max", "exit_day_count_action",
 ]
 
 
@@ -1075,6 +1078,66 @@ def get_portfolio():
         return jsonify({"error": str(e)}), 500
 
 
+def _resolve_account_hash(suffix: str, schwab_client) -> str:
+    """Resolve a 4-digit account suffix to its Schwab account hash (Sprint 30 PM-03).
+
+    Mirrors the resolution block in the /trades route. Returns the hash for the
+    given suffix, or an empty string if it cannot be resolved. Never raises.
+    """
+    suffix = str(suffix or "")
+    try:
+        acct_resp = schwab_client.client.get_account_numbers()
+        if acct_resp.status_code == 200:
+            for a in acct_resp.json():
+                if a.get("accountNumber", "").endswith(suffix) or a.get("hashValue") == suffix:
+                    return a["hashValue"]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("account hash resolution failed for %s: %s", suffix, e)
+    return ""
+
+
+def _mata_live_quote_price(symbol: str, schwab_client=None) -> float:
+    """Fetch a live last/mark price for the symbol (Sprint 30 PM-02). 0.0 on failure."""
+    try:
+        if schwab_client is None:
+            from prime_trading.prime_schwab import SchwabClient
+            schwab_client = SchwabClient()
+            schwab_client.connect()
+        quotes = schwab_client.get_quotes([symbol])
+        data = quotes.get(symbol) or quotes.get(symbol.upper()) or {}
+        price = (
+            data.get("quote", {}).get("lastPrice")
+            or data.get("quote", {}).get("mark")
+            or data.get("regularMarketLastPrice")
+            or 0.0
+        )
+        return float(price) if price else 0.0
+    except Exception as e:  # noqa: BLE001
+        logger.debug("mata_sell live quote failed for %s: %s", symbol, e)
+        return 0.0
+
+
+def _match_open_record(records, account, consumed):
+    """Find an unconsumed OPEN trade-log record matching an account (Sprint 30 PM-02).
+
+    Prefers an exact/suffix account match; falls back to any record with no
+    account set. Returns the record dict or None.
+    """
+    acct = str(account or "")
+    for r in records:
+        if r["log_id"] in consumed:
+            continue
+        ra = str(r.get("account") or "")
+        if ra and acct and (ra == acct or ra.endswith(acct) or acct.endswith(ra)):
+            return r
+    for r in records:
+        if r["log_id"] in consumed:
+            continue
+        if not r.get("account"):
+            return r
+    return None
+
+
 @api_bp.route("/sell/mata", methods=["POST"])
 @require_local_token
 def mata_sell():
@@ -1127,19 +1190,42 @@ def mata_sell():
     orders_placed = []
     failures      = []
 
+    # Sprint 30 PM-03: in LIVE mode connect once and reuse the client for both
+    # account-hash resolution and order submission. PAPER mode never touches Schwab.
+    schwab_client = None
+    if mode == "LIVE":
+        try:
+            from prime_trading.prime_schwab import SchwabClient
+            schwab_client = SchwabClient()
+            schwab_client.connect()
+        except Exception as e:
+            logger.error("mata_sell: could not connect Schwab client: %s", e)
+
     for alloc in allocation["allocations"]:
         sell_qty     = alloc["sell_qty"]
         account      = alloc["account"]
-        account_hash = alloc.get("account_hash", "")
         if sell_qty <= 0:
             continue
 
         if mode == "LIVE":
             from prime_trading.prime_schwab_orders import submit_order, OrderGateError
+            # Sprint 30 PM-03: resolve the account suffix to a hash before routing.
+            account_hash = ""
+            if schwab_client is not None:
+                account_hash = _resolve_account_hash(account, schwab_client)
+            if not account_hash:
+                account_hash = alloc.get("account_hash", "")
+            if not account_hash:
+                logger.error(
+                    "mata_sell: account_hash resolution failed for %s — skipping allocation",
+                    account,
+                )
+                failures.append({
+                    "account": account,
+                    "error":   "account_hash resolution failed",
+                })
+                continue
             try:
-                from prime_trading.prime_schwab import SchwabClient
-                _sc = SchwabClient()
-                _sc.connect()
                 result = submit_order(
                     symbol=symbol,
                     qty=sell_qty,
@@ -1148,7 +1234,7 @@ def mata_sell():
                     price=price or 0.0,
                     account_hash=account_hash,
                     confirmed=True,
-                    schwab_client=_sc,
+                    schwab_client=schwab_client,
                 )
                 orders_placed.append({
                     "account":  account,
@@ -1165,12 +1251,57 @@ def mata_sell():
             except Exception as e:
                 failures.append({"account": account, "error": str(e)})
         else:
-            # PAPER mode: close proportional shares from each account's log_ids
+            # PAPER mode: no Schwab order — the trade-log close below records the exit.
             orders_placed.append({
                 "account":  account,
                 "sell_qty": sell_qty,
                 "status":   "PAPER_CLOSE",
             })
+
+    # ── Sprint 30 PM-02: write exit_reason=MANUAL to prime_trade_log ──────────
+    # Close matching OPEN records for each sold account. In LIVE the exit price
+    # is a live quote at confirm time; in PAPER it's the price passed by the UI
+    # (current price from the portfolio row). Missing records log a WARNING and
+    # never block the response.
+    closed_logs = []
+    try:
+        from prime_data.prime_db import (
+            get_open_by_symbol, close_trade_manual, log_ops_event,
+        )
+
+        exit_price = price
+        if mode == "LIVE":
+            live_px = _mata_live_quote_price(symbol, schwab_client)
+            if live_px > 0:
+                exit_price = live_px
+
+        if exit_price and exit_price > 0:
+            open_recs = get_open_by_symbol(symbol)
+            consumed = set()
+            now_iso = datetime.now().isoformat()
+            sold_accounts = [
+                a["account"] for a in allocation["allocations"] if a["sell_qty"] > 0
+            ]
+            for acct in sold_accounts:
+                match = _match_open_record(open_recs, acct, consumed)
+                if match is None:
+                    log_ops_event(
+                        event_type="MATA_SELL_NO_LOG",
+                        component="prime_api_routes",
+                        symbol=symbol,
+                        detail=f"account={acct}: no OPEN prime_trade_log record to close",
+                        severity="WARN",
+                    )
+                    continue
+                consumed.add(match["log_id"])
+                summary = close_trade_manual(
+                    match["log_id"], float(exit_price),
+                    exit_reason="MANUAL", close_ts=now_iso,
+                )
+                if summary:
+                    closed_logs.append(summary)
+    except Exception as e:
+        logger.error("mata_sell trade-log close error: %s", e)
 
     return jsonify({
         "symbol":          symbol,
@@ -1179,6 +1310,7 @@ def mata_sell():
         "allocated_total": allocation["allocated_total"],
         "orders":          orders_placed,
         "failures":        failures,
+        "closed_logs":     closed_logs,
     }), 200
 
 

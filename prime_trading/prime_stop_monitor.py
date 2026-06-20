@@ -266,6 +266,182 @@ def _fire_auto_sell(position: Dict[str, Any], current_price: float, db_path: Opt
 
 
 # ---------------------------------------------------------------------------
+# Sprint 30 PM-04 — Automated exits: trailing stop (gain-triggered) + day count
+# ---------------------------------------------------------------------------
+
+def _utc_day_start() -> str:
+    """ISO timestamp for 00:00 UTC today — used as the 'once per day' boundary."""
+    now = datetime.utcnow()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _fire_exit_sell(
+    position: Dict[str, Any],
+    current_price: float,
+    exit_reason: str,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Fire an automated MATA exit sell and close the trade log record (PM-04).
+
+    LIVE  → submit a MARKET SELL via submit_order(), then close the log.
+    PAPER → close the log only (no Schwab order).
+    In both modes the prime_trade_log record is closed with the given
+    exit_reason and an event is written to prime_ops_health.
+    """
+    from prime_config.prime_config import get_config
+    from prime_data.prime_db import close_trade_manual, log_ops_event
+
+    log_id = position.get("log_id")
+    symbol = position.get("symbol", "")
+    mode   = (get_config().trading_mode or "PAPER").upper()
+
+    order_id = None
+    if mode == "LIVE":
+        try:
+            from prime_trading.prime_schwab import SchwabClient
+            from prime_trading.prime_schwab_orders import submit_order
+            client = SchwabClient()
+            client.connect()
+            account_hash = position.get("account") or client.account_hash or ""
+            result = submit_order(
+                symbol=symbol,
+                qty=int(position.get("shares", 0)),
+                side="SELL",
+                order_type="MARKET",
+                price=current_price,
+                account_hash=account_hash,
+                confirmed=True,   # automated exits are pre-confirmed
+                schwab_client=client,
+                db_path=db_path,
+            )
+            order_id = result.get("order_id")
+        except Exception as e:  # noqa: BLE001 — still close the log so we don't loop
+            logger.error("Automated exit (%s) sell failed for %s: %s", exit_reason, symbol, e)
+
+    try:
+        close_trade_manual(log_id, current_price, exit_reason=exit_reason, db_path=db_path)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Could not close trade log %s on %s exit: %s", log_id, exit_reason, e)
+
+    log_ops_event(
+        event_type=exit_reason,
+        component="prime_stop_monitor",
+        symbol=(symbol or "").upper(),
+        detail=f"log_id={log_id} price={current_price:.4f} order_id={order_id}",
+        severity="WARN",
+        db_path=db_path,
+    )
+    logger.warning(
+        "AUTOMATED EXIT %s: %s price=%.4f order_id=%s",
+        exit_reason, symbol, current_price, order_id,
+    )
+
+
+def _check_trailing_stop(
+    position: Dict[str, Any],
+    current_price: float,
+    ops: Dict[str, Any],
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Gain-triggered trailing stop (CIL-097). Returns True if an exit fired.
+
+    Arms when price rises to entry*(1 + exit_gain_trigger_pct/100); thereafter
+    trails the rolling peak and fires when price falls to peak*(1 - exit_trail_pct/100).
+    LONG positions only — shorts use the per-trade trailing_stop_pct mechanism.
+    """
+    direction = (position.get("direction") or "LONG").upper()
+    if direction != "LONG":
+        return False
+
+    entry = float(position.get("entry_price") or position.get("price_at_scan") or 0.0)
+    if entry <= 0 or current_price <= 0:
+        return False
+
+    trigger_pct = float(ops.get("exit_gain_trigger_pct", 3.0))
+    trail_pct   = float(ops.get("exit_trail_pct", 1.5))
+    active      = bool(position.get("trailing_stop_active"))
+    log_id      = position.get("log_id")
+
+    if not active:
+        if current_price >= entry * (1 + trigger_pct / 100.0):
+            from prime_data.prime_db import set_trailing_stop_active
+            set_trailing_stop_active(log_id, True, current_price, db_path=db_path)
+            logger.info(
+                "Trailing stop ARMED for %s at %.4f (entry %.4f, trigger %.2f%%)",
+                position.get("symbol"), current_price, entry, trigger_pct,
+            )
+        return False
+
+    peak = position.get("trailing_stop_peak")
+    peak_val = float(peak) if peak else entry
+
+    # New high watermark — raise the peak, no exit.
+    if current_price > peak_val:
+        from prime_data.prime_db import update_trailing_stop_peak
+        update_trailing_stop_peak(log_id, current_price, db_path=db_path)
+        return False
+
+    # Trail breach — fire the exit.
+    if current_price <= peak_val * (1 - trail_pct / 100.0):
+        _fire_exit_sell(position, current_price, "TRAILING_STOP", db_path=db_path)
+        return True
+
+    return False
+
+
+def _check_day_count(
+    position: Dict[str, Any],
+    current_price: Optional[float],
+    ops: Dict[str, Any],
+    db_path: Optional[Path] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Day-count exit (CIL-097). Returns True if it alerted or sold.
+
+    When a position has been held >= exit_day_count_max calendar days, either log
+    a DAY_COUNT_ALERT (ALERT, once per day) or fire a MATA sell (AUTO_SELL).
+    """
+    now = now or datetime.now()
+    try:
+        entry_dt = datetime.fromisoformat(str(position.get("entry_time")))
+    except (TypeError, ValueError):
+        return False
+
+    hold_days = (now.date() - entry_dt.date()).days
+    max_days  = int(ops.get("exit_day_count_max", 3))
+    if hold_days < max_days:
+        return False
+
+    action = (ops.get("exit_day_count_action") or "ALERT").upper()
+    symbol = (position.get("symbol") or "").upper()
+    log_id = position.get("log_id")
+    from prime_data.prime_db import _recent_trade_exists, log_ops_event
+
+    if action == "AUTO_SELL":
+        if current_price is None or current_price <= 0:
+            return False
+        # Fire at most once per day for this symbol.
+        if _recent_trade_exists(symbol, "DAY_COUNT_AUTO", _utc_day_start(), db_path=db_path):
+            return False
+        _fire_exit_sell(position, current_price, "DAY_COUNT_AUTO", db_path=db_path)
+        return True
+
+    # ALERT (default): warn once per day.
+    if _recent_trade_exists(symbol, "DAY_COUNT_ALERT", _utc_day_start(), db_path=db_path):
+        return False
+    log_ops_event(
+        event_type="DAY_COUNT_ALERT",
+        component="prime_stop_monitor",
+        symbol=symbol,
+        detail=f"log_id={log_id} hold_days={hold_days} max={max_days}",
+        severity="WARN",
+        db_path=db_path,
+    )
+    logger.warning("DAY_COUNT_ALERT: %s held %d days (max %d)", symbol, hold_days, max_days)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Monitor loop
 # ---------------------------------------------------------------------------
 
@@ -303,6 +479,15 @@ def _run_check_cycle(db_path: Optional[Path] = None) -> None:
         sym   = (pos.get("symbol") or "").upper()
         price = prices.get(sym)
         if not price:
+            continue
+
+        # Sprint 30 PM-04: automated exits (gain-triggered trailing stop + day
+        # count). These run only inside RTH because the whole cycle is gated by
+        # _is_rth() in _monitor_loop. If either fires an exit, skip the legacy
+        # stop-breach check for this (now-closed) position.
+        if _check_trailing_stop(pos, price, ops, db_path):
+            continue
+        if _check_day_count(pos, price, ops, db_path):
             continue
 
         # Update trailing high-water mark
