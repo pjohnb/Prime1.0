@@ -346,5 +346,177 @@ class TestTrailingStopEndpoint(unittest.TestCase):
         self.assertIsNone(resp.get_json()["trailing_stop_pct"])
 
 
+# ===========================================================================
+# Sprint 30 PM-04 — Automated exits: trailing stop (gain-triggered) + day count
+# ===========================================================================
+
+from datetime import timedelta
+
+from prime_trading.prime_stop_monitor import (
+    _check_trailing_stop,
+    _check_day_count,
+)
+from prime_data.prime_db import (
+    set_trailing_stop_active,
+    get_ops_events,
+)
+
+_PM04_OPS = {
+    "exit_gain_trigger_pct": 3.0,
+    "exit_trail_pct": 1.5,
+    "exit_day_count_max": 3,
+    "exit_day_count_action": "ALERT",
+}
+
+
+class _PM04Base(unittest.TestCase):
+
+    def setUp(self):
+        self.db = Path(__file__).parent / f"_test_{self._db_name()}.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        # PAPER cfg so automated exits never hit Schwab.
+        self._paper_cfg = MagicMock()
+        self._paper_cfg.trading_mode = "PAPER"
+        self._cfg_p = patch("prime_config.prime_config.get_config", return_value=self._paper_cfg)
+        self._cfg_p.start()
+
+    def tearDown(self):
+        self._cfg_p.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def _db_name(self):
+        return "pm04"
+
+    def _seed(self, entry=100.0, shares=10, entry_time="2026-06-05T10:00:00", symbol="AAPL"):
+        return insert_trade(
+            strategy="TEST", symbol=symbol, direction="LONG", mode="PAPER",
+            order_type="MARKET", shares=shares, entry_time=entry_time,
+            price_at_scan=entry, entry_price=entry, account="7926",
+            trade_source="PAPER", db_path=self.db,
+        )
+
+
+class TestTrailingStopExit(_PM04Base):
+
+    def _db_name(self):
+        return "pm04_trail"
+
+    def test_arms_at_gain_trigger(self):
+        log_id = self._seed(entry=100.0)
+        pos = get_trade(log_id, db_path=self.db)
+        # 100 * 1.03 = 103 -> price 103.5 arms it
+        fired = _check_trailing_stop(pos, 103.5, _PM04_OPS, db_path=self.db)
+        self.assertFalse(fired)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["trailing_stop_active"], 1)
+        self.assertAlmostEqual(row["trailing_stop_peak"], 103.5)
+
+    def test_does_not_arm_below_trigger(self):
+        log_id = self._seed(entry=100.0)
+        pos = get_trade(log_id, db_path=self.db)
+        fired = _check_trailing_stop(pos, 102.0, _PM04_OPS, db_path=self.db)
+        self.assertFalse(fired)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertIn(row["trailing_stop_active"], (0, None))
+
+    def test_peak_updates_to_new_high(self):
+        log_id = self._seed(entry=100.0)
+        set_trailing_stop_active(log_id, True, 103.5, db_path=self.db)
+        pos = get_trade(log_id, db_path=self.db)
+        fired = _check_trailing_stop(pos, 110.0, _PM04_OPS, db_path=self.db)
+        self.assertFalse(fired)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertAlmostEqual(row["trailing_stop_peak"], 110.0)
+
+    def test_fires_exit_below_trail(self):
+        log_id = self._seed(entry=100.0)
+        set_trailing_stop_active(log_id, True, 110.0, db_path=self.db)
+        pos = get_trade(log_id, db_path=self.db)
+        # 110 * 0.985 = 108.35 -> price 108.3 fires
+        fired = _check_trailing_stop(pos, 108.3, _PM04_OPS, db_path=self.db)
+        self.assertTrue(fired)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "CLOSED")
+        self.assertEqual(row["exit_reason"], "TRAILING_STOP")
+
+    def test_no_fire_above_trail(self):
+        log_id = self._seed(entry=100.0)
+        set_trailing_stop_active(log_id, True, 110.0, db_path=self.db)
+        pos = get_trade(log_id, db_path=self.db)
+        fired = _check_trailing_stop(pos, 109.0, _PM04_OPS, db_path=self.db)
+        self.assertFalse(fired)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "OPEN")
+
+    def test_state_persists_across_restart(self):
+        log_id = self._seed(entry=100.0)
+        pos = get_trade(log_id, db_path=self.db)
+        _check_trailing_stop(pos, 105.0, _PM04_OPS, db_path=self.db)
+        # Simulate a restart: re-read state purely from the DB columns.
+        reread = get_trade(log_id, db_path=self.db)
+        self.assertEqual(reread["trailing_stop_active"], 1)
+        self.assertAlmostEqual(reread["trailing_stop_peak"], 105.0)
+
+    def test_short_position_ignored(self):
+        log_id = insert_trade(
+            strategy="TEST", symbol="TSLA", direction="SHORT", mode="PAPER",
+            order_type="MARKET", shares=10, entry_time="2026-06-05T10:00:00",
+            price_at_scan=100.0, entry_price=100.0, trade_source="PAPER", db_path=self.db,
+        )
+        pos = get_trade(log_id, db_path=self.db)
+        fired = _check_trailing_stop(pos, 200.0, _PM04_OPS, db_path=self.db)
+        self.assertFalse(fired)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertIn(row["trailing_stop_active"], (0, None))
+
+
+class TestDayCountExit(_PM04Base):
+
+    def _db_name(self):
+        return "pm04_day"
+
+    def test_alert_fires_once_per_day(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        entry = (now - timedelta(days=5)).isoformat()
+        log_id = self._seed(entry_time=entry, symbol="AAPL")
+        pos = get_trade(log_id, db_path=self.db)
+        acted = _check_day_count(pos, 100.0, _PM04_OPS, db_path=self.db, now=now)
+        self.assertTrue(acted)
+        events = get_ops_events(component="prime_stop_monitor", db_path=self.db)
+        self.assertEqual(sum(1 for e in events if e["event_type"] == "DAY_COUNT_ALERT"), 1)
+        # Second call same day is a no-op (deduped).
+        acted2 = _check_day_count(pos, 100.0, _PM04_OPS, db_path=self.db, now=now)
+        self.assertFalse(acted2)
+        events = get_ops_events(component="prime_stop_monitor", db_path=self.db)
+        self.assertEqual(sum(1 for e in events if e["event_type"] == "DAY_COUNT_ALERT"), 1)
+
+    def test_no_action_below_max_days(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        entry = (now - timedelta(days=1)).isoformat()
+        log_id = self._seed(entry_time=entry, symbol="MSFT")
+        pos = get_trade(log_id, db_path=self.db)
+        acted = _check_day_count(pos, 100.0, _PM04_OPS, db_path=self.db, now=now)
+        self.assertFalse(acted)
+
+    def test_auto_sell_fires_market_exit(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        entry = (now - timedelta(days=4)).isoformat()
+        log_id = self._seed(entry=100.0, entry_time=entry, symbol="NVDA")
+        ops_auto = dict(_PM04_OPS, exit_day_count_action="AUTO_SELL")
+        pos = get_trade(log_id, db_path=self.db)
+        acted = _check_day_count(pos, 105.0, ops_auto, db_path=self.db, now=now)
+        self.assertTrue(acted)
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "CLOSED")
+        self.assertEqual(row["exit_reason"], "DAY_COUNT_AUTO")
+
+
 if __name__ == "__main__":
     unittest.main()

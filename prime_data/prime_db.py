@@ -107,6 +107,11 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_trade_log(db_path, "sector", "TEXT")
     # Sprint 29 H-02: originating signal linkage for History tab
     _migrate_add_column_trade_log(db_path, "signal_id", "TEXT")
+    # Sprint 30 PM-04: automated trailing-stop exit state (CIL-097).
+    # trailing_stop_active toggles on at the gain trigger; trailing_stop_peak is
+    # the rolling high watermark used to compute the trail exit price.
+    _migrate_add_column_trade_log(db_path, "trailing_stop_active", "INTEGER DEFAULT 0")
+    _migrate_add_column_trade_log(db_path, "trailing_stop_peak", "REAL")
 
     return path
 
@@ -417,6 +422,71 @@ def update_trailing_stop(
         )
         conn.commit()
         return cursor.rowcount > 0
+
+
+def set_trailing_stop_active(
+    log_id: str,
+    active: bool,
+    peak: Optional[float] = None,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Activate/deactivate the automated trailing stop and seed its peak (PM-04).
+
+    Writes trailing_stop_active (0/1) and, when activating, trailing_stop_peak.
+    Returns True if a row was updated. Only touches OPEN records.
+    """
+    with get_connection(db_path) as conn:
+        if peak is not None:
+            cursor = conn.execute(
+                "UPDATE prime_trade_log SET trailing_stop_active=?, trailing_stop_peak=?"
+                " WHERE log_id=? AND status='OPEN'",
+                (1 if active else 0, peak, log_id),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE prime_trade_log SET trailing_stop_active=?"
+                " WHERE log_id=? AND status='OPEN'",
+                (1 if active else 0, log_id),
+            )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def update_trailing_stop_peak(
+    log_id: str,
+    peak: float,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Raise the rolling trailing_stop_peak high watermark for an OPEN trade (PM-04)."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE prime_trade_log SET trailing_stop_peak=?"
+            " WHERE log_id=? AND status='OPEN'",
+            (peak, log_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def _recent_trade_exists(
+    symbol: str,
+    event_type: str,
+    since_iso: str,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Return True if a prime_ops_health event of event_type exists for symbol at/after since_iso.
+
+    Sprint 30 PM-04. Used by the automated exit logic to (a) fire DAY_COUNT_ALERT
+    only once per day and (b) avoid double-submitting an automated exit for the
+    same symbol within a single market session.
+    """
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM prime_ops_health"
+            " WHERE event_type=? AND symbol=? AND timestamp >= ? LIMIT 1",
+            (event_type, (symbol or "").upper(), since_iso),
+        ).fetchone()
+        return row is not None
 
 
 def set_trade_stop_target(

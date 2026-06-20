@@ -681,6 +681,9 @@ _SETTINGS_FIELDS = [
     "mata_accounts",
     # Sprint 28 Item 4: Polygon rate limiting
     "polygon_plan", "polygon_rate_limit_delay_ms",
+    # Sprint 30 PM-04: automated exit management
+    "exit_gain_trigger_pct", "exit_trail_pct",
+    "exit_day_count_max", "exit_day_count_action",
 ]
 
 

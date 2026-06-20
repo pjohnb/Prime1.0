@@ -297,6 +297,17 @@ function _renderSettings() {
     </div>
 
     <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">EXIT MANAGEMENT</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
+        ${_field('exit_gain_trigger_pct', 'Trailing Gain Trigger %', d.exit_gain_trigger_pct != null ? d.exit_gain_trigger_pct : 3.0, 'number', null, 'Arm the trailing stop once a LONG gains this % above entry (e.g. 3 = +3%)')}
+        ${_field('exit_trail_pct', 'Trail %', d.exit_trail_pct != null ? d.exit_trail_pct : 1.5, 'number', null, 'Once armed, exit when price falls this % below the rolling peak (e.g. 1.5 = 1.5%)')}
+        ${_field('exit_day_count_max', 'Max Days Held', d.exit_day_count_max != null ? d.exit_day_count_max : 3, 'number', null, 'Trigger the day-count exit when a position has been held this many calendar days')}
+        ${_field('exit_day_count_action', 'Day-Count Action', d.exit_day_count_action || 'ALERT', 'select', ['ALERT','AUTO_SELL'], 'ALERT: warn on the dashboard; AUTO_SELL: automatically sell at market open on Day N')}
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">Automated exits (CIL-097) run inside RTH only. Trailing stop is LONG-only.</div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">AI USAGE (THIS MONTH)</div>
       <div id="ai-usage-table"><div class="empty-state" style="padding:10px">Loading…</div></div>
     </div>
@@ -511,6 +522,14 @@ async function saveSettings() {
   payload.polygon_plan = _v('polygon_plan');
   const polyDelay = _n('polygon_rate_limit_delay_ms');
   if (polyDelay !== null) payload.polygon_rate_limit_delay_ms = polyDelay;
+  // Sprint 30 PM-04: exit management (whole-number percents, stored as-is)
+  const gainTrig = _n('exit_gain_trigger_pct');
+  if (gainTrig !== null) payload.exit_gain_trigger_pct = gainTrig;
+  const trailPct = _n('exit_trail_pct');
+  if (trailPct !== null) payload.exit_trail_pct = trailPct;
+  const dayMax = _n('exit_day_count_max');
+  if (dayMax !== null) payload.exit_day_count_max = dayMax;
+  payload.exit_day_count_action = _v('exit_day_count_action');
 
   // Strategy thresholds
   const thresholds = {};

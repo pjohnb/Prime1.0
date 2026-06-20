@@ -150,6 +150,15 @@ class OpsConfig:
     max_position_pct: float = 0.15
     # Sprint 26 Item 8: configurable stop monitor poll interval (seconds).
     stop_monitor_interval_seconds: int = 60
+    # Sprint 30 PM-04: automated exit parameters (CIL-097).
+    # exit_gain_trigger_pct  — % gain above entry that arms the trailing stop.
+    # exit_trail_pct         — % below the rolling peak that fires the trail exit.
+    # exit_day_count_max     — max calendar days held before the day-count exit.
+    # exit_day_count_action  — 'ALERT' (log a warning) or 'AUTO_SELL' (fire a sell).
+    exit_gain_trigger_pct: float = 3.0
+    exit_trail_pct: float = 1.5
+    exit_day_count_max: int = 3
+    exit_day_count_action: str = "ALERT"
     # Sprint 26 Item 6: monthly AI budget alert threshold (USD).
     monthly_ai_budget: float = 10.0
     # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
