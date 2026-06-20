@@ -475,7 +475,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
   </div>
   <!-- H-02: Signal column; H-03: STATUS column -->
   <table>
-    <thead><tr><th>Status</th><th>Time</th><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Hold</th><th>Reason</th><th>Signal</th></tr></thead>
+    <thead><tr><th>Status</th><th>Time</th><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Shares</th><th data-tooltip="Price at trade entry (live quote fetched at execution time).">Entry</th><th data-tooltip="Price at trade exit. Shows -- for open positions.">Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th data-tooltip="Duration from entry to exit (or current hold time for open positions).">Hold</th><th data-tooltip="Exit trigger: STOP_LOSS | TIME_STOP | TRAILING_STOP | DAY_COUNT_AUTO | MANUAL | SCHWAB_RECONCILE">Reason</th><th>Signal</th></tr></thead>
     <tbody id="hist-body"></tbody>
   </table>
 </div>

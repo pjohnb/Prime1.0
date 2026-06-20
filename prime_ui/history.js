@@ -135,9 +135,11 @@ async function loadHistory() {
       const isOpen = tradeStatus === 'OPEN';
 
       // H-03: STATUS badge — green OPEN, grey CLOSED.
+      // TT-04 (Sprint 30 Thread 3): tooltip explaining OPEN vs CLOSED.
+      const statusTip = 'OPEN = position currently held. Values show mark-to-market P&amp;L and hold duration so far. CLOSED = position fully exited with realized P&amp;L.';
       const statusBadge = isOpen
-        ? '<span class="badge confirming" style="background:#166534;color:#bbf7d0">OPEN</span>'
-        : '<span class="badge" style="background:var(--bg3);color:var(--text2);border:1px solid var(--border)">CLOSED</span>';
+        ? `<span class="badge confirming" style="background:#166534;color:#bbf7d0" data-tooltip="${statusTip}">OPEN</span>`
+        : `<span class="badge" style="background:var(--bg3);color:var(--text2);border:1px solid var(--border)" data-tooltip="${statusTip}">CLOSED</span>`;
 
       // Time column: entry_time for OPEN, exit_time for CLOSED.
       const displayTs = isOpen ? t.entry_time : t.exit_time;
@@ -161,7 +163,7 @@ async function loadHistory() {
       const noSigSources = ['SCHWAB_IMPORT'];
       const showSigLink = sigId && !noSigSources.includes(t.trade_source || '');
       const sigCell = showSigLink
-        ? `<span title="${sigId}" style="cursor:pointer;color:var(--blue,#60a5fa);font-size:12px" onclick="_viewSignal('${sigId}')">&#128279;</span>`
+        ? `<span title="${sigId}" data-tooltip="View the scanner signal that triggered this trade entry. Opens or filters to the originating signal record." style="cursor:pointer;color:var(--blue,#60a5fa);font-size:12px" onclick="_viewSignal('${sigId}')">&#128279;</span>`
         : '--';
 
       tbody.innerHTML += `<tr>
