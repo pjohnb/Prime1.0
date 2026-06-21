@@ -118,7 +118,7 @@ async function loadSignals() {
     signals = _tierFilter(signals);
 
     if (!signals.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No signals found</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No signals found</td></tr>';
       return;
     }
     signals.forEach(s => {
@@ -180,12 +180,20 @@ async function loadSignals() {
         ? 'WATCH: Valid signal, lower conviction — reduced size'
         : `Status: ${status}`;
       const relTime = _fmtRelTime(s.scan_ts);
+      // SIG-Score-01: restore Score column — 1 decimal, color-coded by strength.
+      const sc = (s.score == null) ? null : Number(s.score);
+      const scColor = sc == null ? 'var(--text3)'
+        : sc >= 70 ? 'var(--green)'
+        : sc >= 50 ? 'var(--amber)'
+        : 'var(--text3)';
+      const scStr = sc == null ? '--' : sc.toFixed(1);
       const isSuppressed = status.toUpperCase() === 'SUPPRESSED';
       const rowStyle = isSuppressed
         ? ' style="opacity:0.55;border-left:3px solid #C00000"' : '';
       tbody.innerHTML += `<tr${rowStyle}>
         <td style="font-family:var(--mono);font-size:13px" title="${s.scan_ts || ''}">${relTime}</td>
         <td style="font-weight:600">${s.symbol || '--'}</td>
+        <td style="font-family:var(--mono);font-weight:600;color:${scColor}">${scStr}</td>
         <td>${s.strategy || '--'}</td>
         <td style="font-family:var(--mono);font-size:12px;color:${guidanceFlagColor}" title="${triggerTooltip}">${triggerDisplay || '--'}</td>
         <td title="${tierTooltip}">${tier}</td>
@@ -196,6 +204,6 @@ async function loadSignals() {
     });
   } catch(e) {
     console.error('loadSignals:', e);
-    document.getElementById('sig-body').innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load signals</td></tr>';
+    document.getElementById('sig-body').innerHTML = '<tr><td colspan="9" class="empty-state">Failed to load signals</td></tr>';
   }
 }

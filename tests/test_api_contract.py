@@ -72,6 +72,17 @@ class TestApiEndpoints(unittest.TestCase):
         resp = self.client.get("/api/v1/signals?strategy=UOA")
         self.assertEqual(resp.status_code, 200)
 
+    def test_signals_include_score_field(self):
+        # SIG-Score-01: the restored Score column relies on `score` in the payload.
+        from prime_analytics.prime_signals_db import insert_signal
+        insert_signal("AAPL", "UOA", "2026-06-01T10:00:00", score=72.5, db_path=self.db)
+        resp = self.client.get("/api/v1/signals")
+        self.assertEqual(resp.status_code, 200)
+        signals = resp.get_json()["signals"]
+        self.assertTrue(signals)
+        self.assertIn("score", signals[0])
+        self.assertEqual(signals[0]["score"], 72.5)
+
     def test_analytics_effectiveness_returns_200(self):
         # CIL-063: effectiveness endpoint returns grouping structure.
         resp = self.client.get("/api/v1/analytics/effectiveness")
