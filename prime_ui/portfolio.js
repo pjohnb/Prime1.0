@@ -29,6 +29,42 @@ async function loadPortfolio() {
     document.getElementById('portfolio-rows').innerHTML =
       `<tr><td colspan="10" style="color:var(--red);padding:16px">${e.message}</td></tr>`;
   }
+  // PM-HEALTH-05: re-evaluate the RED position banner on every load.
+  _renderHealthBanner();
+}
+
+// PM-HEALTH-05: amber banner above Holdings when any position thesis is RED.
+// Links to the Health tab. Degrades silently if the health endpoint errors.
+async function _renderHealthBanner() {
+  const el = document.getElementById('portfolio-health-banner');
+  if (!el) return;
+  try {
+    const r = await fetch(_portApi() + '/positions/health');
+    const d = await r.json();
+    if (!r.ok) throw new Error('health unavailable');
+    const red = d.red_count || 0;
+    if (red > 0) {
+      const noun = red === 1 ? 'position' : 'positions';
+      el.innerHTML =
+        `<div style="background:#451a03;color:#fde68a;border:1px solid #d97706;border-radius:6px;` +
+        `padding:10px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px">` +
+        `<span style="cursor:pointer;flex:1" onclick="showView('health')">` +
+        `${red} ${noun} showing reversal signals — view Health tab for details →</span>` +
+        `<button onclick="_dismissHealthBanner()" title="Dismiss" ` +
+        `style="background:none;border:none;color:#fde68a;font-size:16px;cursor:pointer;line-height:1;padding:0 4px">×</button>` +
+        `</div>`;
+      el.style.display = 'block';
+    } else {
+      _dismissHealthBanner();
+    }
+  } catch (e) {
+    _dismissHealthBanner();  // silent degrade — no banner on error
+  }
+}
+
+function _dismissHealthBanner() {
+  const el = document.getElementById('portfolio-health-banner');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
 
 // PORT-01: Refresh button triggers /sync/schwab before reloading portfolio
