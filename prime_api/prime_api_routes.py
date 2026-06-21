@@ -72,6 +72,123 @@ def get_positions():
         return jsonify({"error": str(e)}), 500
 
 
+def _health_current_prices(symbols: list) -> Dict[str, float]:
+    """Best-effort batch of live Schwab last/mark prices, keyed by upper symbol."""
+    prices: Dict[str, float] = {}
+    if not symbols:
+        return prices
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        sc = SchwabClient()
+        sc.connect()
+        for sym, q in (sc.get_quotes(symbols) or {}).items():
+            price = q.get("quote", {}).get("lastPrice") or q.get("quote", {}).get("mark") or 0.0
+            if price:
+                prices[sym.upper()] = float(price)
+    except Exception:
+        pass
+    return prices
+
+
+def _days_held(entry_time: Any, now: datetime) -> int:
+    """Whole calendar days between entry_time and now (0 if unparseable)."""
+    if not entry_time:
+        return 0
+    raw = str(entry_time).strip().replace("Z", "")
+    for parse in (datetime.fromisoformat,):
+        try:
+            entered = parse(raw)
+            return max(0, (now - entered.replace(tzinfo=None)).days)
+        except ValueError:
+            break
+    try:
+        entered = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+        return max(0, (now - entered).days)
+    except ValueError:
+        return 0
+
+
+@api_bp.route("/positions/health", methods=["GET"])
+def get_positions_health():
+    """GET /api/v1/positions/health -- per-position thesis health (PM-HEALTH-03).
+
+    Serves prime_position_health (written by the PositionMonitor), overlaid on
+    the current OPEN positions. When the health table is empty (monitor hasn't
+    run yet) every position comes back thesis_status='UNKNOWN' with red_count=0.
+    current_price/pnl_pct use a best-effort live Schwab quote, falling back to
+    the entry price from prime_trade_log.
+    """
+    from prime_data.prime_db import get_open_positions_with_signal_context
+    from prime_trading.prime_position_monitor import load_position_health
+    try:
+        now = datetime.utcnow()
+        db_positions = get_open_positions_with_signal_context()
+        health_by_log = load_position_health()
+
+        symbols = sorted({(p.get("symbol") or "").upper()
+                          for p in db_positions if p.get("symbol")})
+        current_prices = _health_current_prices(symbols)
+
+        positions = []
+        red_count = amber_count = 0
+        for p in db_positions:
+            log_id = p.get("log_id")
+            symbol = (p.get("symbol") or "").upper()
+            direction = (p.get("direction") or "LONG").upper()
+            entry_price = float(p.get("entry_price") or 0.0)
+            cur_price = current_prices.get(symbol, entry_price)
+            if entry_price:
+                if direction == "SHORT":
+                    pnl_pct = (entry_price - cur_price) / entry_price * 100.0
+                else:
+                    pnl_pct = (cur_price - entry_price) / entry_price * 100.0
+            else:
+                pnl_pct = 0.0
+
+            h = health_by_log.get(str(log_id))
+            if h:
+                thesis = h.get("thesis_status") or "UNKNOWN"
+                dk_status = h.get("dk_status")
+                latest_dir = h.get("latest_signal_direction")
+                latest_ts = h.get("latest_signal_ts")
+                evaluated_at = h.get("evaluated_at")
+            else:
+                thesis = "UNKNOWN"
+                dk_status = p.get("dk_status")
+                latest_dir = latest_ts = evaluated_at = None
+
+            if thesis == "RED":
+                red_count += 1
+            elif thesis == "AMBER":
+                amber_count += 1
+
+            positions.append({
+                "log_id": log_id,
+                "symbol": symbol,
+                "direction": direction,
+                "entry_price": round(entry_price, 4),
+                "current_price": round(cur_price, 4),
+                "pnl_pct": round(pnl_pct, 2),
+                "days_held": _days_held(p.get("entry_time"), now),
+                "dk_status": dk_status,
+                "scanner": p.get("scanner"),
+                "latest_signal_direction": latest_dir,
+                "latest_signal_ts": latest_ts,
+                "thesis_status": thesis,
+                "evaluated_at": evaluated_at,
+            })
+
+        return jsonify({
+            "positions": positions,
+            "red_count": red_count,
+            "amber_count": amber_count,
+            "as_of": now.isoformat(),
+        }), 200
+    except Exception as e:
+        logger.error("positions/health endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/signals", methods=["GET"])
 def get_signals():
     """GET /api/v1/signals -- recent prime_signals (filterable)."""

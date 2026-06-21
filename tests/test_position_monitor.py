@@ -283,4 +283,46 @@ class TestLifecycle:
         mon.stop()
 
 
-# Endpoint (PM-HEALTH-03) tests are added with the endpoint in a later commit.
+# ---------------------------------------------------------------------------
+# Endpoint (PM-HEALTH-03)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def client(db, monkeypatch):
+    # Point the default DB at the temp db for the endpoint's helper calls.
+    cfg = types.SimpleNamespace(db_path=db, api_token="t")
+    monkeypatch.setattr("prime_data.prime_db.get_config", lambda: cfg)
+    from prime_api.prime_api_server import create_app
+    app = create_app()
+    return app.test_client()
+
+
+class TestHealthEndpoint:
+
+    def test_empty_table_returns_unknown(self, db, client):
+        _seed(db)                              # open position, but monitor not run
+        resp = client.get("/api/v1/positions/health")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["red_count"] == 0
+        assert len(body["positions"]) == 1
+        assert body["positions"][0]["thesis_status"] == "UNKNOWN"
+        assert "as_of" in body
+
+    def test_serves_health_after_poll(self, db, client):
+        _seed(db, dk_status="NULLIFYING")      # -> RED after poll
+        PositionMonitor(db_path=db, config=_cfg())._poll()
+        body = client.get("/api/v1/positions/health").get_json()
+        assert body["red_count"] == 1
+        pos = body["positions"][0]
+        assert pos["thesis_status"] == "RED"
+        assert pos["symbol"] == "COST"
+        assert pos["scanner"] == "UOA"
+        assert "pnl_pct" in pos and "current_price" in pos and "days_held" in pos
+
+    def test_amber_count(self, db, client):
+        _insert_open_trade(db, 9, "MSFT", "LONG", None, strategy="UOA")
+        PositionMonitor(db_path=db, config=_cfg())._poll()
+        body = client.get("/api/v1/positions/health").get_json()
+        assert body["amber_count"] == 1
+        assert body["red_count"] == 0
