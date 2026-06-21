@@ -534,6 +534,89 @@ def build_earnings_data(
 
 
 # ---------------------------------------------------------------------------
+# CIL-046/047: Direct signal persistence (bypasses the bridge)
+# ---------------------------------------------------------------------------
+
+# Sprint 25 Item 4 guidance_flag -> tier mapping (mirrors the bridge so the
+# scanner can persist without importing it). None = leave tier unset.
+_PEAD_GUIDANCE_TIER: Dict[str, Dict[str, Optional[str]]] = {
+    "BEAT_RAISE": {"LONG": "STRONG",     "SHORT": "SUPPRESSED"},
+    "BEAT_HOLD":  {"LONG": "STRONG",     "SHORT": "WATCH"},
+    "BEAT_CUT":   {"LONG": "WATCH",      "SHORT": "WATCH"},
+    "MISS_RAISE": {"LONG": "WATCH",      "SHORT": "WATCH"},
+    "MISS_CUT":   {"LONG": "SUPPRESSED", "SHORT": "STRONG"},
+    "UNKNOWN":    {"LONG": None,         "SHORT": None},
+}
+
+
+def _guidance_tier(guidance_flag: str, direction: str) -> Optional[str]:
+    """Resolve the persisted tier from guidance_flag + direction."""
+    direction_key = "SHORT" if (direction or "").upper() == "SHORT" else "LONG"
+    return _PEAD_GUIDANCE_TIER.get(guidance_flag or "UNKNOWN", {}).get(direction_key)
+
+
+def persist_pead_signals(
+    signals: List[Dict[str, Any]],
+    scan_ts: str,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Write APPROVED PEAD signals straight to prime_signals (CIL-046/047).
+
+    Approved = the signal was actionable on its pre-de-rating score (the
+    `approved` flag set in run_pead_scan). The tier comes from the guidance_flag
+    mapping; factors carry eps_surprise/guidance_flag/finnhub_guidance_available/
+    confidence_level. Deduplication via insert_signal_dedup's deterministic
+    signal_id makes re-running a scan idempotent.
+
+    Returns the number of new rows inserted (duplicates skipped).
+    """
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+
+    init_signals_table(db_path)
+    inserted = 0
+    for s in signals:
+        if not s.get("approved", s.get("score", 0) >= MIN_SIGNAL_SCORE):
+            continue
+        symbol = (s.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        direction = (s.get("direction") or "LONG").strip().upper()
+        if direction == "NEUTRAL":
+            continue
+        # Sprint 23 Item 3: LONG = earnings beat, SHORT = earnings miss/cut.
+        trigger_source = "PEAD_BEAT" if direction == "LONG" else "PEAD_MISS"
+        guidance_flag = s.get("guidance_flag") or "UNKNOWN"
+        tier = _guidance_tier(guidance_flag, direction)
+        status = "SUPPRESSED" if tier == "SUPPRESSED" else "APPROVED"
+        finnhub_available = bool(s.get("finnhub_guidance_available", False))
+        factors = json.dumps({
+            "eps_surprise": s.get("surprise_pct"),
+            "guidance_flag": guidance_flag,
+            "finnhub_guidance_available": finnhub_available,
+            "confidence_level": s.get("confidence_level", "HIGH"),
+        })
+        result = insert_signal_dedup(
+            symbol=symbol,
+            strategy="PEAD",
+            scan_ts=scan_ts,
+            entry_price=s.get("price_at_scan") or 0.0,
+            score=s.get("score") or 0.0,
+            tier=tier or "",
+            status=status,
+            direction=direction,
+            factors=factors,
+            instrument_type="EQUITY",
+            trigger_source=trigger_source,
+            guidance_flag=guidance_flag,
+            finnhub_guidance_available=finnhub_available,
+            db_path=db_path,
+        )
+        if result is not None:
+            inserted += 1
+    return inserted
+
+
+# ---------------------------------------------------------------------------
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
@@ -646,6 +729,15 @@ def run_pead_scan(
     # Step 4: rank
     signals.sort(key=lambda s: s["score"], reverse=True)
     actionable = [s for s in signals if s["score"] >= MIN_SIGNAL_SCORE]
+
+    # CIL-046/047: persist approved signals directly to prime_signals (bypass bridge).
+    try:
+        persisted = persist_pead_signals(
+            signals, scan_time.strftime("%Y-%m-%d %H:%M:%S")
+        )
+        logger.info("PEAD: %d signal(s) persisted to prime_signals", persisted)
+    except Exception as e:
+        logger.warning("PEAD: direct signal persistence failed: %s", e)
 
     logger.info(
         "PEAD complete: %d signals, %d actionable (>= %d)",

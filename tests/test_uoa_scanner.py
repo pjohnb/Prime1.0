@@ -282,5 +282,70 @@ class TestLockedThresholds(unittest.TestCase):
         self.assertEqual(_MT_MAX_DTE, 30)
 
 
+# ---------------------------------------------------------------------------
+# CIL-046: Direct signal persistence
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture()
+def _uoa_db(tmp_path):
+    from prime_data.prime_db import init_db
+    from prime_analytics.prime_signals_db import init_signals_table
+    db = tmp_path / "uoa_signals.db"
+    init_db(db_path=db)
+    init_signals_table(db_path=db)
+    return db
+
+
+def _sample_uoa_signals():
+    return [
+        {"symbol": "AAPL", "tier": "STRONG", "sizzle_index": 6.2, "group": "Top50",
+         "direction": "LONG", "call_put_ratio": 3.1, "total_volume": 120000,
+         "price_at_scan": 195.0},
+        {"symbol": "TSLA", "tier": "WATCH", "sizzle_index": 4.5, "group": "Top50",
+         "direction": "SHORT", "call_put_ratio": 0.4, "total_volume": 90000,
+         "price_at_scan": 240.0},
+    ]
+
+
+def test_persist_writes_rows(_uoa_db):
+    from prime_scanners.prime_uoa_scanner import persist_uoa_signals
+    from prime_analytics.prime_signals_db import get_signals
+    n = persist_uoa_signals(_sample_uoa_signals(), "2026-06-20 10:00:00", db_path=_uoa_db)
+    assert n == 2
+    rows = get_signals(strategy="UOA", db_path=_uoa_db)
+    assert len(rows) == 2
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["AAPL"]["trigger_source"] == "UOA_CALL"
+    assert by_sym["TSLA"]["trigger_source"] == "UOA_PUT"
+    assert by_sym["AAPL"]["entry_price"] == 195.0
+    assert by_sym["AAPL"]["score"] == 6.2
+    factors = _json.loads(by_sym["AAPL"]["factors"])
+    assert factors["total_volume"] == 120000
+    assert factors["group"] == "Top50"
+
+
+def test_persist_dedup_on_rerun(_uoa_db):
+    from prime_scanners.prime_uoa_scanner import persist_uoa_signals
+    from prime_analytics.prime_signals_db import get_signals
+    sigs = _sample_uoa_signals()
+    first = persist_uoa_signals(sigs, "2026-06-20 10:00:00", db_path=_uoa_db)
+    second = persist_uoa_signals(sigs, "2026-06-20 10:00:00", db_path=_uoa_db)
+    assert first == 2
+    assert second == 0  # identical scan_ts -> deterministic id -> no duplicates
+    assert len(get_signals(strategy="UOA", db_path=_uoa_db)) == 2
+
+
+def test_persist_skips_unapproved_tier(_uoa_db):
+    from prime_scanners.prime_uoa_scanner import persist_uoa_signals
+    sigs = [{"symbol": "NONE", "tier": "", "sizzle_index": 3.0, "group": "x",
+             "direction": "LONG", "call_put_ratio": 1.0, "total_volume": 1}]
+    assert persist_uoa_signals(sigs, "2026-06-20 10:00:00", db_path=_uoa_db) == 0
+
+
 if __name__ == "__main__":
     unittest.main()

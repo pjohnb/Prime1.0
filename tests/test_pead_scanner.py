@@ -314,5 +314,97 @@ class TestTradeFactorsIntegration(unittest.TestCase):
         self.assertIn("TIME_STOP", trigger_types)
 
 
+# ---------------------------------------------------------------------------
+# CIL-057: Estimate cross-validation
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _recent_date(days_ago=10):
+    return (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+
+
+# ---------------------------------------------------------------------------
+# CIL-046/047: Direct PEAD signal persistence
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def _pead_db(tmp_path):
+    from prime_data.prime_db import init_db
+    from prime_analytics.prime_signals_db import init_signals_table
+    db = tmp_path / "pead_signals.db"
+    init_db(db_path=db)
+    init_signals_table(db_path=db)
+    return db
+
+
+def _sample_pead_signals():
+    return [
+        {"symbol": "AAA", "direction": "LONG", "score": 72.0, "approved": True,
+         "guidance_flag": "BEAT_RAISE", "surprise_pct": 8.0,
+         "finnhub_guidance_available": True, "confidence_level": "HIGH",
+         "price_at_scan": 150.0},
+        {"symbol": "BBB", "direction": "SHORT", "score": 64.0, "approved": True,
+         "guidance_flag": "MISS_CUT", "surprise_pct": -9.0,
+         "finnhub_guidance_available": False, "confidence_level": "LOW_CONFIDENCE",
+         "price_at_scan": 88.0},
+    ]
+
+
+def test_persist_pead_writes_rows(_pead_db):
+    from prime_scanners.prime_pead_scanner import persist_pead_signals
+    from prime_analytics.prime_signals_db import get_signals
+    n = persist_pead_signals(_sample_pead_signals(), "2026-06-20 10:00:00", db_path=_pead_db)
+    assert n == 2
+    rows = {r["symbol"]: r for r in get_signals(strategy="PEAD", db_path=_pead_db)}
+    assert rows["AAA"]["trigger_source"] == "PEAD_BEAT"
+    assert rows["BBB"]["trigger_source"] == "PEAD_MISS"
+    assert rows["AAA"]["guidance_flag"] == "BEAT_RAISE"
+    factors = _json.loads(rows["AAA"]["factors"])
+    assert factors["eps_surprise"] == 8.0
+    assert factors["confidence_level"] == "HIGH"
+
+
+def test_persist_pead_tier_from_guidance(_pead_db):
+    from prime_scanners.prime_pead_scanner import persist_pead_signals
+    from prime_analytics.prime_signals_db import get_signals
+    persist_pead_signals(_sample_pead_signals(), "2026-06-20 10:00:00", db_path=_pead_db)
+    rows = {r["symbol"]: r for r in get_signals(strategy="PEAD", db_path=_pead_db)}
+    # BEAT_RAISE + LONG -> STRONG; MISS_CUT + SHORT -> STRONG short candidate.
+    assert rows["AAA"]["tier"] == "STRONG"
+    assert rows["BBB"]["tier"] == "STRONG"
+
+
+def test_persist_pead_suppressed_status(_pead_db):
+    from prime_scanners.prime_pead_scanner import persist_pead_signals
+    from prime_analytics.prime_signals_db import get_signals
+    # MISS_CUT + LONG -> SUPPRESSED tier + status.
+    sigs = [{"symbol": "CCC", "direction": "LONG", "score": 70.0, "approved": True,
+             "guidance_flag": "MISS_CUT", "surprise_pct": -3.0,
+             "confidence_level": "HIGH", "price_at_scan": 10.0}]
+    persist_pead_signals(sigs, "2026-06-20 10:00:00", db_path=_pead_db)
+    row = get_signals(strategy="PEAD", db_path=_pead_db)[0]
+    assert row["tier"] == "SUPPRESSED"
+    assert row["status"] == "SUPPRESSED"
+
+
+def test_persist_pead_dedup_and_skips_unapproved(_pead_db):
+    from prime_scanners.prime_pead_scanner import persist_pead_signals
+    from prime_analytics.prime_signals_db import get_signals
+    sigs = _sample_pead_signals()
+    assert persist_pead_signals(sigs, "2026-06-20 10:00:00", db_path=_pead_db) == 2
+    assert persist_pead_signals(sigs, "2026-06-20 10:00:00", db_path=_pead_db) == 0
+    # Unapproved (below threshold) is not written.
+    unapproved = [{"symbol": "ZZZ", "direction": "LONG", "score": 30.0,
+                   "approved": False, "guidance_flag": "BEAT_HOLD",
+                   "surprise_pct": 2.0, "price_at_scan": 5.0}]
+    assert persist_pead_signals(unapproved, "2026-06-20 11:00:00", db_path=_pead_db) == 0
+    assert len(get_signals(strategy="PEAD", db_path=_pead_db)) == 2
+
+
 if __name__ == "__main__":
     unittest.main()
