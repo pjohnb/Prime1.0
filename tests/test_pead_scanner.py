@@ -328,6 +328,48 @@ def _recent_date(days_ago=10):
     return (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
 
 
+class TestValidateEstimate(unittest.TestCase):
+
+    def test_null_estimate_invalid(self):
+        from prime_scanners.prime_pead_scanner import _validate_estimate
+        self.assertEqual(
+            _validate_estimate("X", 1.05, None, _recent_date()), "INVALID")
+
+    def test_zero_estimate_invalid(self):
+        from prime_scanners.prime_pead_scanner import _validate_estimate
+        self.assertEqual(
+            _validate_estimate("X", 1.05, 0, _recent_date()), "INVALID")
+
+    def test_surprise_over_200pct_invalid(self):
+        from prime_scanners.prime_pead_scanner import _validate_estimate
+        # actual 4.0 vs estimate 1.0 -> +300% surprise -> data error.
+        self.assertEqual(
+            _validate_estimate("X", 4.0, 1.0, _recent_date()), "INVALID")
+
+    def test_stale_estimate_invalid(self):
+        from prime_scanners.prime_pead_scanner import _validate_estimate
+        self.assertEqual(
+            _validate_estimate("X", 1.05, 1.0, _recent_date(days_ago=200)),
+            "INVALID")
+
+    def test_cross_source_low_confidence(self):
+        from prime_scanners.prime_pead_scanner import _validate_estimate
+        # Finnhub 1.00 vs Polygon 0.40 -> 60% disagreement -> LOW_CONFIDENCE.
+        self.assertEqual(
+            _validate_estimate("X", 1.05, 1.00, _recent_date(), polygon_estimate=0.40),
+            "LOW_CONFIDENCE")
+
+    def test_high_confidence_passes(self):
+        from prime_scanners.prime_pead_scanner import _validate_estimate
+        self.assertEqual(
+            _validate_estimate("X", 1.05, 1.00, _recent_date(), polygon_estimate=0.98),
+            "HIGH")
+
+    def test_low_confidence_multiplier_is_0_7(self):
+        from prime_scanners.prime_pead_scanner import LOW_CONFIDENCE_SCORE_MULTIPLIER
+        self.assertEqual(LOW_CONFIDENCE_SCORE_MULTIPLIER, 0.7)
+
+
 # ---------------------------------------------------------------------------
 # CIL-046/047: Direct PEAD signal persistence
 # ---------------------------------------------------------------------------

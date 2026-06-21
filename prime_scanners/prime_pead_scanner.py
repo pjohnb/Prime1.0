@@ -534,6 +534,60 @@ def build_earnings_data(
 
 
 # ---------------------------------------------------------------------------
+# CIL-057: Estimate cross-validation
+# ---------------------------------------------------------------------------
+
+ESTIMATE_MAX_AGE_DAYS = 90
+CROSS_SOURCE_DISCREPANCY_PCT = 50.0
+LOW_CONFIDENCE_SCORE_MULTIPLIER = 0.7
+
+
+def _validate_estimate(
+    symbol: str,
+    eps_actual: Optional[float],
+    eps_estimate: Optional[float],
+    estimate_date: Optional[str],
+    polygon_estimate: Optional[float] = None,
+) -> str:
+    """Cross-validate an EPS estimate before a PEAD signal is scored (CIL-057).
+
+    Returns one of:
+      INVALID         -- estimate missing/zero, surprise magnitude > 200%, or
+                         estimate older than 90 days. Rejected at Stage 0.
+      LOW_CONFIDENCE  -- a Polygon estimate is available and disagrees with the
+                         Finnhub estimate by more than 50%. Signal is kept but
+                         de-rated (score x0.7).
+      HIGH            -- all checks pass, no cross-source discrepancy.
+    """
+    # INVALID: no usable estimate to compute a surprise from.
+    if eps_estimate is None or eps_estimate == 0:
+        return "INVALID"
+
+    # INVALID: surprise magnitude beyond the data-error cap (likely bad data).
+    if eps_actual is not None:
+        surprise_pct = ((eps_actual - eps_estimate) / abs(eps_estimate)) * 100.0
+        if abs(surprise_pct) > EPS_SURPRISE_CAP_PCT:
+            return "INVALID"
+
+    # INVALID: estimate is stale (older than 90 days).
+    if estimate_date:
+        try:
+            est_dt = datetime.strptime(str(estimate_date)[:10], "%Y-%m-%d")
+            if (datetime.now() - est_dt).days > ESTIMATE_MAX_AGE_DAYS:
+                return "INVALID"
+        except (ValueError, TypeError):
+            pass  # Unparseable date -> skip the staleness check, not fatal.
+
+    # LOW_CONFIDENCE: cross-source EPS estimate disagreement.
+    if polygon_estimate is not None and polygon_estimate != 0:
+        diff_pct = abs(eps_estimate - polygon_estimate) / abs(eps_estimate) * 100.0
+        if diff_pct > CROSS_SOURCE_DISCREPANCY_PCT:
+            return "LOW_CONFIDENCE"
+
+    return "HIGH"
+
+
+# ---------------------------------------------------------------------------
 # CIL-046/047: Direct signal persistence (bypasses the bridge)
 # ---------------------------------------------------------------------------
 
@@ -675,6 +729,21 @@ def run_pead_scan(
         history = fetch_earnings_history(symbol, finnhub_api_key, cache)
         earnings_data = build_earnings_data(entry, history)
 
+        # CIL-057: Stage 0 estimate cross-validation. INVALID is rejected before
+        # scoring (never written to prime_signals); LOW_CONFIDENCE proceeds but
+        # is de-rated after scoring.
+        confidence_level = _validate_estimate(
+            symbol,
+            earnings_data.get("epsActual"),
+            earnings_data.get("epsEstimate"),
+            earnings_data.get("date"),
+            polygon_estimate=None,
+        )
+        if confidence_level == "INVALID":
+            logger.info("%s: skipped -- estimate failed validation (INVALID)", symbol)
+            data_errors.append({"symbol": symbol, "reason": "estimate_invalid"})
+            continue
+
         surprise_pct = earnings_data.get("surprisePercent", 0)
         if surprise_pct is None or surprise_pct == 0:
             logger.debug("%s: skipped -- no surprise data", symbol)
@@ -703,6 +772,14 @@ def run_pead_scan(
             price_data = fetch_price_change(symbol, next_day, today_str, polygon_api_key)
 
         signal = calculate_pead_signal(earnings_data, price_data, analyst_count)
+
+        # CIL-057: record validation confidence; approval is decided on the
+        # pre-de-rating score so a LOW_CONFIDENCE signal stays approved, then
+        # the stored score is de-rated by 0.7x.
+        signal["confidence_level"] = confidence_level
+        signal["approved"] = signal["score"] >= MIN_SIGNAL_SCORE
+        if confidence_level == "LOW_CONFIDENCE":
+            signal["score"] = round(signal["score"] * LOW_CONFIDENCE_SCORE_MULTIPLIER, 1)
 
         # Capture price_at_scan
         if polygon_api_key:
