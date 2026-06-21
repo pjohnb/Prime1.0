@@ -93,6 +93,12 @@ if __name__ == "__main__":
         start_monitor()
     except Exception as e:
         logger.warning("Stop monitor startup failed: %s", e)
+    # Sprint 32 Thread 1 (PM-HEALTH-02): start position monitor background thread.
+    try:
+        from prime_trading.prime_position_monitor import PositionMonitor
+        PositionMonitor().start()
+    except Exception as e:
+        logger.warning("Position monitor startup failed: %s", e)
     # Sprint 25 Item 3: start APScheduler for internal scan schedule.
     try:
         from prime_api.prime_api_routes import init_scheduler

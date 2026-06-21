@@ -150,6 +150,11 @@ class OpsConfig:
     max_position_pct: float = 0.15
     # Sprint 26 Item 8: configurable stop monitor poll interval (seconds).
     stop_monitor_interval_seconds: int = 60
+    # Sprint 32 Thread 1 (PM-HEALTH-02): position monitor poll interval and the
+    # action when a position's thesis turns RED — 'ALERT' (log a warning to
+    # prime_ops_health) or 'AUTO_SELL' (also fire a MATA sell).
+    position_monitor_interval_seconds: int = 300
+    position_monitor_action: str = "ALERT"
     # Sprint 30 PM-04: automated exit parameters (CIL-097).
     # exit_gain_trigger_pct  — % gain above entry that arms the trailing stop.
     # exit_trail_pct         — % below the rolling peak that fires the trail exit.

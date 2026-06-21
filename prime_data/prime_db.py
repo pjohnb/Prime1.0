@@ -100,6 +100,24 @@ CREATE TABLE IF NOT EXISTS prime_ops_health (
 )
 """
 
+# Sprint 32 Thread 1 (PM-HEALTH-02): per-position thesis health, upserted by the
+# PositionMonitor on each poll. log_id is the prime_trade_log PK (one health row
+# per open position) — TEXT to match prime_trade_log.log_id, which holds UUID
+# strings (the work order's "INTEGER PK" predates that real schema). last_alerted_at
+# gates one alert per RED detection.
+_PRIME_POSITION_HEALTH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS prime_position_health (
+    log_id                   TEXT PRIMARY KEY,
+    symbol                   TEXT,
+    thesis_status            TEXT,
+    dk_status                TEXT,
+    latest_signal_direction  TEXT,
+    latest_signal_ts         TEXT,
+    evaluated_at             TEXT,
+    last_alerted_at          TEXT
+)
+"""
+
 
 def _db_path(override: Optional[Path] = None) -> Path:
     if override is not None:
@@ -115,6 +133,7 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     try:
         conn.execute(_PRIME_TRADE_LOG_SCHEMA)
         conn.execute(_PRIME_OPS_HEALTH_SCHEMA)
+        conn.execute(_PRIME_POSITION_HEALTH_SCHEMA)
         conn.execute(_PRIME_ML_DATASET_SCHEMA)
         conn.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_dedup
