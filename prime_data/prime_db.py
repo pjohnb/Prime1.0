@@ -379,7 +379,13 @@ def close_trade(
     hold_minutes: int,
     db_path: Optional[Path] = None,
 ) -> None:
-    """Close a trade record."""
+    """Close a trade record.
+
+    After writing exit fields, mirror the outcome into prime_ml_dataset via
+    update_ml_outcome() when the record carries a signal_id (Sprint 31 /
+    CIL-043). ML outcome capture is best-effort -- any failure is logged and
+    never blocks the trade close.
+    """
     with get_connection(db_path) as conn:
         conn.execute(
             """UPDATE prime_trade_log SET
@@ -391,6 +397,22 @@ def close_trade(
              hold_minutes, log_id),
         )
         conn.commit()
+        row = conn.execute(
+            "SELECT signal_id FROM prime_trade_log WHERE log_id=?", (log_id,)
+        ).fetchone()
+
+    signal_id = row["signal_id"] if row else None
+    if signal_id is not None:
+        try:
+            update_ml_outcome(
+                signal_id, exit_price, pnl_dollars, pnl_pct,
+                hold_minutes, exit_reason, db_path=db_path,
+            )
+        except Exception as e:  # noqa: BLE001 - never block the trade close
+            logger.warning("ML outcome update failed for signal %s: %s",
+                           signal_id, e)
+    else:
+        logger.debug("No signal_id for SCHWAB_IMPORT trade %s", log_id)
 
 
 def close_trade_with_fill(
