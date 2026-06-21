@@ -303,6 +303,7 @@ function _renderSettings() {
         ${_field('exit_trail_pct', 'Trail %', d.exit_trail_pct != null ? d.exit_trail_pct : 1.5, 'number', null, 'Once armed, exit when price falls this % below the rolling peak (e.g. 1.5 = 1.5%)')}
         ${_field('exit_day_count_max', 'Max Days Held', d.exit_day_count_max != null ? d.exit_day_count_max : 3, 'number', null, 'Trigger the day-count exit when a position has been held this many calendar days')}
         ${_field('exit_day_count_action', 'Day-Count Action', d.exit_day_count_action || 'ALERT', 'select', ['ALERT','AUTO_SELL'], 'ALERT: warn on the dashboard; AUTO_SELL: automatically sell at market open on Day N')}
+        ${_actionField('position_monitor_action', 'Position Monitor Action', d.position_monitor_action || 'ALERT_ONLY', [['ALERT_ONLY','Alert Only'],['AUTO_SELL','Auto-Sell']], 'Alert Only = RED positions trigger a banner and ops log entry only. Auto-Sell = RED positions trigger an immediate MATA sell across all accounts.')}
       </div>
       <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">Automated exits (CIL-097) run inside RTH only. Trailing stop is LONG-only.</div>
     </div>
@@ -368,6 +369,19 @@ function _toggleField(id, label, val, tooltip) {
       <option value="true"${val ? ' selected' : ''}>Enabled</option>
       <option value="false"${!val ? ' selected' : ''}>Disabled</option>
     </select>
+  </label>`;
+}
+
+// Sprint 32 Thread 2 (PM-HEALTH-04): select with friendly labels but token
+// values. options is an array of [value, label] pairs.
+function _actionField(id, label, val, options, tooltip) {
+  const tip = _tip(tooltip);
+  const opts = (options || []).map(([v, lbl]) =>
+    `<option value="${v}"${val === v ? ' selected' : ''}>${lbl}</option>`
+  ).join('');
+  return `<label style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}${tip}</span>
+    <select id="sett-${id}" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">${opts}</select>
   </label>`;
 }
 
@@ -530,6 +544,8 @@ async function saveSettings() {
   const dayMax = _n('exit_day_count_max');
   if (dayMax !== null) payload.exit_day_count_max = dayMax;
   payload.exit_day_count_action = _v('exit_day_count_action');
+  // Sprint 32 Thread 2 (PM-HEALTH-04): position monitor action (ALERT_ONLY | AUTO_SELL)
+  payload.position_monitor_action = _v('position_monitor_action');
 
   // Strategy thresholds
   const thresholds = {};

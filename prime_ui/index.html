@@ -160,6 +160,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
   <div class="tab" onclick="showView('scans')">Scans</div>
   <div class="tab" onclick="showView('signals')">Signals</div>
   <div class="tab" onclick="showView('portfolio')">Portfolio</div>
+  <div class="tab" id="health-tab-btn" onclick="showView('health')">Health</div>
   <div class="tab" onclick="showView('history')">History</div>
   <div class="tab" onclick="showView('settings')">Settings</div>
 </div>
@@ -494,6 +495,8 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
   <div id="portfolio-summary" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
   <!-- PORT-03: Sector Exposure breakdown -->
   <div id="portfolio-sector-breakdown" style="display:none;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px"></div>
+  <!-- PM-HEALTH-05: RED position alert banner (populated by portfolio.js) -->
+  <div id="portfolio-health-banner" style="display:none"></div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
     <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Holdings</span>
     <div style="display:flex;gap:8px">
@@ -517,6 +520,31 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
     <tbody id="portfolio-rows"></tbody>
   </table>
   <div id="rebalance-panel" style="display:none;margin-top:16px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px"></div>
+</div>
+
+<!-- Sprint 32 Thread 2 (PM-HEALTH-04): Position Health view -->
+<div class="view" id="view-health">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Position Health</span>
+    <button class="btn-refresh" onclick="loadHealth()" data-tooltip="Re-evaluate thesis status for all open positions now.">Refresh</button>
+  </div>
+  <div id="health-summary" style="display:flex;align-items:center;margin-bottom:16px;font-size:14px"></div>
+  <table id="health-table">
+    <thead><tr>
+      <th>Symbol</th>
+      <th>Dir</th>
+      <th>Entry</th>
+      <th>Current</th>
+      <th>P&amp;L %</th>
+      <th data-tooltip="Calendar days since the position was entered.">Days</th>
+      <th>Scanner</th>
+      <th data-tooltip="Dark Pool status. CONFIRMING = institutional buying. NULLIFYING = institutional selling. NEUTRAL = no significant activity.">DK</th>
+      <th>Latest Signal</th>
+      <th data-tooltip="GREEN = thesis intact (DK confirming/neutral, originating scanner no reversal). AMBER = thesis unconfirmed (no recent scanner signal). RED = reversal detected (DK contrary or scanner contrary signal). UNKNOWN = monitor not yet run.">Thesis</th>
+      <th>Evaluated</th>
+    </tr></thead>
+    <tbody id="health-rows"></tbody>
+  </table>
 </div>
 
 <!-- Sprint 24 Item 3: MATA Sell modal -->
@@ -769,6 +797,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
 <script src="signals.js"></script>
 <script src="settings.js"></script>
 <script src="portfolio.js"></script>
+<script src="health.js"></script>
 <script src="orders.js"></script>
 <script src="history.js"></script>
 <script src="help.js"></script>
@@ -780,6 +809,8 @@ function showView(id) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('view-' + id).classList.add('active');
   event.target.classList.add('active');
+  // PM-HEALTH-04: stop the Health auto-refresh whenever we leave the tab.
+  if (typeof _stopHealthAutoRefresh === 'function') _stopHealthAutoRefresh();
   if (id === 'dashboard') loadDashboard();
   if (id === 'scans') loadScans();
   if (id === 'positions') loadPositions();
@@ -787,6 +818,7 @@ function showView(id) {
   if (id === 'settings') loadSettings();
   if (id === 'portfolio') loadPortfolio();
   if (id === 'history') loadHistory();
+  if (id === 'health') { loadHealth(); _startHealthAutoRefresh(); }
   if (id === 'positions') startPricePoll();
 }
 
