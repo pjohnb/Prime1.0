@@ -745,6 +745,58 @@ def close_trade_reconcile(
         conn.commit()
 
 
+def get_latest_signal_for_symbol(
+    symbol: str,
+    scanner: str,
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Most recent APPROVED prime_signals row for a symbol + scanner.
+
+    Sprint 32 Thread 3 (PM-HEALTH-01). Returns a dict of all columns for the
+    latest (by scan_ts) APPROVED signal where symbol and strategy match, or
+    None when no such signal exists. Lets the position monitor re-evaluate the
+    originating thesis for an open position.
+    """
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM prime_signals"
+            " WHERE symbol=? AND strategy=? AND status='APPROVED'"
+            " ORDER BY scan_ts DESC LIMIT 1",
+            ((symbol or "").upper(), scanner),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_open_positions_with_signal_context(
+    db_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """OPEN positions joined to their originating signal's context.
+
+    Sprint 32 Thread 3 (PM-HEALTH-01). Returns every OPEN prime_trade_log row
+    LEFT JOINed to prime_signals on signal_id, exposing the scanner (strategy),
+    dk_status, score and tier that produced the entry. SCHWAB_IMPORT positions
+    carry no signal_id, so their scanner/dk_status/score/tier come back NULL.
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """SELECT
+                   t.log_id      AS log_id,
+                   t.symbol      AS symbol,
+                   t.direction   AS direction,
+                   t.entry_price AS entry_price,
+                   t.entry_time  AS entry_time,
+                   t.signal_id   AS signal_id,
+                   s.strategy    AS scanner,
+                   s.dk_status   AS dk_status,
+                   s.score       AS score,
+                   s.tier        AS tier
+               FROM prime_trade_log t
+               LEFT JOIN prime_signals s ON t.signal_id = s.signal_id
+               WHERE t.status='OPEN'"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 # Required exit fields every CLOSED prime_trade_log record must carry.
 _CLOSED_REQUIRED_FIELDS = (
     "exit_price", "exit_time", "exit_reason",
