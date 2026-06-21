@@ -72,6 +72,15 @@ class TestApiEndpoints(unittest.TestCase):
         resp = self.client.get("/api/v1/signals?strategy=UOA")
         self.assertEqual(resp.status_code, 200)
 
+    def test_analytics_effectiveness_returns_200(self):
+        # CIL-063: effectiveness endpoint returns grouping structure.
+        resp = self.client.get("/api/v1/analytics/effectiveness")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("by_strategy", data)
+        self.assertIn("overall", data)
+        self.assertIn("as_of", data)
+
     def test_analytics_summary_returns_200(self):
         resp = self.client.get("/api/v1/analytics/summary")
         self.assertEqual(resp.status_code, 200)

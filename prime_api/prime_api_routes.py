@@ -355,6 +355,22 @@ def get_pnl_history():
         return jsonify({"history": [], "error": str(e)}), 200
 
 
+@api_bp.route("/analytics/effectiveness", methods=["GET"])
+def get_analytics_effectiveness():
+    """GET /api/v1/analytics/effectiveness -- strategy performance over CLOSED trades.
+
+    CIL-063 (Sprint 31 Thread 3): groups CLOSED prime_trade_log rows by strategy
+    with win rate, avg P&L %, avg hold, and best/worst trade %. Strategies with
+    fewer than 5 closed trades are flagged insufficient_data with null metrics.
+    """
+    from prime_data.prime_db import _get_effectiveness_stats
+    try:
+        return jsonify(_get_effectiveness_stats()), 200
+    except Exception as e:
+        logger.error("analytics/effectiveness error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/instrument/<string:symbol>", methods=["GET"])
 def get_instrument(symbol):
     """GET /api/v1/instrument/{symbol} -- Instrument detail stub.

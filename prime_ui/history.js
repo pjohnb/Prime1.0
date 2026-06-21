@@ -88,6 +88,66 @@ function _viewSignal(signalId) {
   loadSignals();
 }
 
+// CIL-063: Strategy Effectiveness panel.
+let _effCollapsed = false;
+
+function toggleEffectiveness() {
+  const body = document.getElementById('eff-body');
+  const tog = document.getElementById('eff-toggle');
+  if (!body) return;
+  _effCollapsed = !_effCollapsed;
+  body.style.display = _effCollapsed ? 'none' : 'block';
+  if (tog) tog.textContent = _effCollapsed ? '▶' : '▼';
+}
+
+function _effPct(v) {
+  const n = Number(v);
+  return (n > 0 ? '+' : '') + n.toFixed(1) + '%';
+}
+
+async function loadEffectiveness() {
+  const body = document.getElementById('eff-body');
+  if (!body) return;
+  try {
+    const resp = await fetch(_histApi() + '/analytics/effectiveness');
+    const data = await resp.json();
+    const rows = data.by_strategy || [];
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty-state" style="padding:8px">No closed trades yet</div>';
+      return;
+    }
+    let html = `<table style="width:100%;font-size:13px">
+      <thead><tr>
+        <th style="text-align:left">Scanner</th><th>Trades</th><th>Win Rate</th>
+        <th>Avg P&L%</th><th>Avg Hold</th><th>Best</th><th>Worst</th>
+      </tr></thead><tbody>`;
+    rows.forEach(r => {
+      if (r.insufficient_data) {
+        html += `<tr>
+          <td style="font-weight:600">${r.strategy}</td>
+          <td style="text-align:center;font-family:var(--mono)">${r.trade_count}</td>
+          <td colspan="5" style="color:var(--text3);font-style:italic">Insufficient data (≤ 5 trades)</td>
+        </tr>`;
+      } else {
+        const pnlColor = r.avg_pnl_pct > 0 ? 'var(--green)' : r.avg_pnl_pct < 0 ? 'var(--red)' : 'var(--text2)';
+        html += `<tr>
+          <td style="font-weight:600">${r.strategy}</td>
+          <td style="text-align:center;font-family:var(--mono)">${r.trade_count}</td>
+          <td style="text-align:center;font-family:var(--mono)">${Number(r.win_rate_pct).toFixed(1)}%</td>
+          <td style="text-align:center;font-family:var(--mono);color:${pnlColor}">${_effPct(r.avg_pnl_pct)}</td>
+          <td style="text-align:center;font-family:var(--mono)">${_histHold(r.avg_hold_minutes)}</td>
+          <td style="text-align:center;font-family:var(--mono);color:var(--green)">${_effPct(r.best_trade_pct)}</td>
+          <td style="text-align:center;font-family:var(--mono);color:var(--red)">${_effPct(r.worst_trade_pct)}</td>
+        </tr>`;
+      }
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div class="empty-state" style="padding:8px">Failed to load effectiveness — API offline?</div>';
+  }
+}
+
 async function loadHistory() {
   const tbody = document.getElementById('hist-body');
   const summaryEl = document.getElementById('hist-summary');
@@ -95,6 +155,9 @@ async function loadHistory() {
 
   // H-01: ensure date inputs have defaults on first load.
   _histDefaultDates();
+
+  // CIL-063: refresh effectiveness panel on tab activation and filter changes.
+  loadEffectiveness();
 
   const strategy  = document.getElementById('hist-strategy')?.value || '';
   const direction = document.getElementById('hist-direction')?.value || '';

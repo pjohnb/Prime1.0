@@ -321,5 +321,81 @@ class TestMigrationBackfill(unittest.TestCase):
         self.assertEqual(signals[0]["sector"], "Technology")
 
 
+class TestEffectiveness(unittest.TestCase):
+    """CIL-063: /analytics/effectiveness grouping, metrics, and insufficient_data."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_effectiveness.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _closed(self, strategy, pnl_pct, pnl_dollars=10.0, hold=120, symbol="AAA"):
+        tid = insert_trade(
+            strategy=strategy, symbol=symbol, direction="LONG", mode="PAPER",
+            order_type="MARKET", shares=10, entry_time="2026-05-27T10:00:00",
+            price_at_scan=100.0, entry_price=100.0, db_path=self.db,
+        )
+        close_trade(tid, 100.0 + pnl_pct, "2026-05-27T12:00:00", "MANUAL",
+                    pnl_dollars, pnl_pct, hold, db_path=self.db)
+        return tid
+
+    def test_grouping_and_metrics(self):
+        from prime_data.prime_db import _get_effectiveness_stats
+        # 5 UOA closed trades -> sufficient data. pnls: +4,+6,-2,+8,+2 => 4 wins.
+        for i, p in enumerate([4.0, 6.0, -2.0, 8.0, 2.0]):
+            self._closed("UOA", p, hold=600 + i, symbol=f"U{i}")
+        stats = _get_effectiveness_stats(db_path=self.db)
+        uoa = next(r for r in stats["by_strategy"] if r["strategy"] == "UOA")
+        self.assertEqual(uoa["trade_count"], 5)
+        self.assertFalse(uoa["insufficient_data"])
+        self.assertEqual(uoa["win_rate_pct"], 80.0)   # 4/5
+        self.assertEqual(uoa["avg_pnl_pct"], 3.6)      # (4+6-2+8+2)/5
+        self.assertEqual(uoa["best_trade_pct"], 8.0)
+        self.assertEqual(uoa["worst_trade_pct"], -2.0)
+        self.assertIn("as_of", stats)
+        self.assertEqual(stats["overall"]["trade_count"], 5)
+
+    def test_insufficient_data_flag(self):
+        from prime_data.prime_db import _get_effectiveness_stats
+        # Only 3 PEAD trades -> insufficient_data with null metrics.
+        for i in range(3):
+            self._closed("PEAD", 5.0, symbol=f"P{i}")
+        stats = _get_effectiveness_stats(db_path=self.db)
+        pead = next(r for r in stats["by_strategy"] if r["strategy"] == "PEAD")
+        self.assertEqual(pead["trade_count"], 3)
+        self.assertTrue(pead["insufficient_data"])
+        self.assertIsNone(pead["win_rate_pct"])
+        self.assertIsNone(pead["avg_pnl_pct"])
+        self.assertIsNone(pead["best_trade_pct"])
+
+    def test_endpoint_returns_grouping(self):
+        from unittest.mock import patch, MagicMock
+        for i, p in enumerate([4.0, 6.0, -2.0, 8.0, 2.0]):
+            self._closed("UOA", p, symbol=f"E{i}")
+        with patch("prime_data.prime_db._db_path", return_value=self.db):
+            mock_cfg = MagicMock()
+            mock_cfg.trading_mode = "PAPER"
+            mock_cfg.api_token = "test-token-abc123"
+            with patch("prime_config.prime_config.get_config", return_value=mock_cfg):
+                from prime_api.prime_api_server import create_app
+                app = create_app()
+                app.config["TESTING"] = True
+                client = app.test_client()
+                resp = client.get("/api/v1/analytics/effectiveness")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("by_strategy", data)
+        self.assertIn("overall", data)
+        self.assertIn("as_of", data)
+        uoa = next(r for r in data["by_strategy"] if r["strategy"] == "UOA")
+        self.assertEqual(uoa["trade_count"], 5)
+
+
 if __name__ == "__main__":
     unittest.main()

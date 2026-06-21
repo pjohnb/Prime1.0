@@ -688,6 +688,76 @@ def check_closed_trade_completeness(db_path: Optional[Path] = None) -> List[Dict
     return incomplete
 
 
+# Minimum closed-trade count for a strategy's effectiveness metrics to be valid.
+MIN_EFFECTIVENESS_TRADES = 5
+
+
+def _effectiveness_row(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute effectiveness metrics for a list of CLOSED trade rows.
+
+    Returns insufficient_data=True with null metrics when there are fewer than
+    MIN_EFFECTIVENESS_TRADES records.
+    """
+    n = len(records)
+    if n < MIN_EFFECTIVENESS_TRADES:
+        return {
+            "trade_count": n,
+            "insufficient_data": True,
+            "win_rate_pct": None,
+            "avg_pnl_pct": None,
+            "avg_hold_minutes": None,
+            "best_trade_pct": None,
+            "worst_trade_pct": None,
+        }
+    pnls = [float(r["pnl_pct"]) for r in records if r["pnl_pct"] is not None]
+    holds = [int(r["hold_minutes"]) for r in records if r["hold_minutes"] is not None]
+    wins = sum(1 for p in pnls if p > 0)
+    return {
+        "trade_count": n,
+        "insufficient_data": False,
+        "win_rate_pct": round(wins / len(pnls) * 100, 1) if pnls else 0.0,
+        "avg_pnl_pct": round(sum(pnls) / len(pnls), 1) if pnls else 0.0,
+        "avg_hold_minutes": round(sum(holds) / len(holds)) if holds else 0,
+        "best_trade_pct": round(max(pnls), 1) if pnls else 0.0,
+        "worst_trade_pct": round(min(pnls), 1) if pnls else 0.0,
+    }
+
+
+def _get_effectiveness_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Strategy effectiveness over CLOSED trades. (CIL-063, Sprint 31 Thread 3.)
+
+    Groups CLOSED prime_trade_log records by strategy and computes win rate,
+    average P&L %, average hold, and best/worst trade %. A strategy with fewer
+    than MIN_EFFECTIVENESS_TRADES closed trades is returned with
+    insufficient_data=True and null metric fields. Also returns an 'overall'
+    aggregate across all CLOSED trades and an 'as_of' ISO timestamp.
+    """
+    with get_connection(db_path) as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT strategy, pnl_pct, hold_minutes"
+            " FROM prime_trade_log WHERE status='CLOSED'"
+        ).fetchall()]
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(row.get("strategy") or "UNKNOWN", []).append(row)
+
+    by_strategy = []
+    for strategy in sorted(groups):
+        entry = {"strategy": strategy}
+        entry.update(_effectiveness_row(groups[strategy]))
+        by_strategy.append(entry)
+
+    overall = {"strategy": "ALL"}
+    overall.update(_effectiveness_row(rows))
+
+    return {
+        "by_strategy": by_strategy,
+        "overall": overall,
+        "as_of": datetime.now().isoformat(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Signal deduplication
 # ---------------------------------------------------------------------------
