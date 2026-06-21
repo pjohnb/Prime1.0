@@ -330,6 +330,19 @@ def scan_symbol(
     direction = "LONG" if cp_ratio > DIRECTION_RATIO_THRESHOLD else "SHORT"
     tier = "STRONG" if sizzle >= STRONG_THRESHOLD else "WATCH"
 
+    # CIL-039: D-NOW (Direction Now) numeric score. The signed call/put-side
+    # imbalance normalised to [-1.0, +1.0] -- the continuous momentum value
+    # behind the categorical `direction` label. Exposed for ML training (AE-01)
+    # so D-NOW can be used as a continuous feature, not just LONG/SHORT.
+    # total > 0 is guaranteed above.
+    dnow_score = round((call_vol - put_vol) / total, 4)
+
+    # CIL-040: A-B raw volume. The raw call-minus-put side volume differential
+    # (positive = call/ask-side, negative = put/bid-side institutional
+    # positioning). A directional ML feature (AE-01) that distinguishes
+    # call-side vs put-side flow more precisely than the categorical direction.
+    ab_volume_raw = call_vol - put_vol
+
     legs = opts.get("legs", [])
     dte_result = classify_dte(legs)
 
@@ -345,6 +358,8 @@ def scan_symbol(
         "call_volume": call_vol,
         "put_volume": put_vol,
         "call_put_ratio": round(cp_ratio, 2),
+        "dnow_score": dnow_score,
+        "ab_volume_raw": ab_volume_raw,
         "direction": direction,
         "baseline_volume": int(baseline),
         "score": round(sizzle, 1),

@@ -204,6 +204,11 @@ def get_signals(
     if status:
         clauses.append("status = ?")
         params.append(status)
+    else:
+        # CIL-075: dismissed signals are soft-deleted -- hidden from the Signals
+        # tab queue by default, but still fetchable via an explicit status filter
+        # (e.g. for ML/audit) and preserved in the table.
+        clauses.append("status != 'DISMISSED'")
     if sector:
         clauses.append("sector = ?")
         params.append(sector)
@@ -254,6 +259,31 @@ def link_signal_to_trade(
         conn.commit()
 
 
+def dismiss_signal(signal_id: str, db_path: Optional[Path] = None) -> str:
+    """Soft-delete a signal: set status='DISMISSED' (CIL-075).
+
+    A soft delete (not a hard DELETE) preserves the row as ML training data
+    while removing it from the Signals tab queue and analytics counts. Returns
+    one of: 'DISMISSED' (newly dismissed), 'NOT_FOUND' (no such signal_id), or
+    'ALREADY_DISMISSED' (already in DISMISSED status) -- the endpoint maps these
+    to 200 / 404 / 409 respectively.
+    """
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM prime_signals WHERE signal_id=?", (signal_id,)
+        ).fetchone()
+        if row is None:
+            return "NOT_FOUND"
+        if (row[0] or "").upper() == "DISMISSED":
+            return "ALREADY_DISMISSED"
+        conn.execute(
+            "UPDATE prime_signals SET status='DISMISSED' WHERE signal_id=?",
+            (signal_id,),
+        )
+        conn.commit()
+        return "DISMISSED"
+
+
 def get_analytics_summary(
     strategy: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -278,6 +308,8 @@ def get_analytics_summary(
         LEFT JOIN prime_trade_log t ON s.trade_id = t.log_id
     """
 
+    # CIL-075: dismissed signals are excluded from effectiveness/analytics counts.
+    clauses.append("s.status != 'DISMISSED'")
     if strategy:
         clauses.append("s.strategy = ?")
         params.append(strategy)

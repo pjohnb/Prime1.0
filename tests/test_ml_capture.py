@@ -6,7 +6,7 @@ CIL-043 (unified outcome capture from close_trade).
 """
 import sqlite3
 from dataclasses import fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest import mock
 
 import pytest
@@ -383,3 +383,111 @@ class TestCloseTradeOutcome:
         close_trade(log_id, 160.0, "2026-06-20T11:30:00", "STOP",
                     -500.0, -3.0, 45, db_path=db)
         assert _row(db, "sig_orphan") is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 33 Thread 2 / CIL-039: D-NOW numeric score (dnow_score)
+#
+# The work order names a `prime_parallel_analyzer.py`; the real options
+# analyzer is prime_scanners.prime_uoa_scanner. dnow_score is the signed
+# call/put-side imbalance in [-1, +1] -- the continuous "Direction Now"
+# momentum value behind the categorical LONG/SHORT `direction` label.
+# ---------------------------------------------------------------------------
+
+from prime_scanners.prime_uoa_scanner import scan_symbol
+
+
+class _UOAResp:
+    status_code = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeUOAClient:
+    """Minimal Schwab stand-in: one near-dated call and put strike."""
+
+    def __init__(self, call_vol, put_vol, exp_date):
+        self._call_vol = call_vol
+        self._put_vol = put_vol
+        self._exp_key = f"{exp_date.strftime('%Y-%m-%d')}:3"
+
+    def get_option_chain(self, symbol, include_underlying_quote=True):
+        leg = lambda vol: [{"totalVolume": vol, "openInterest": 1000, "strikePrice": 150.0}]
+        return _UOAResp({
+            "callExpDateMap": {self._exp_key: {"150.0": leg(self._call_vol)}},
+            "putExpDateMap": {self._exp_key: {"150.0": leg(self._put_vol)}},
+        })
+
+    def get_quote(self, symbol):
+        return _UOAResp({symbol: {"quote": {"lastPrice": 150.0}}})
+
+
+def _uoa_scan(call_vol=60_000, put_vol=20_000, baseline=10_000.0):
+    """Run scan_symbol against a fake chain that clears sizzle/volume gates."""
+    today = datetime.now()
+    client = _FakeUOAClient(call_vol, put_vol, today + timedelta(days=3))
+    return scan_symbol("AAPL", baseline, today, "TOP50", client)
+
+
+class TestDnowScore:
+
+    def test_dnow_score_exposed(self):
+        sig = _uoa_scan(call_vol=60_000, put_vol=20_000)
+        assert sig is not None
+        assert "dnow_score" in sig
+        assert isinstance(sig["dnow_score"], float)
+        # (60000 - 20000) / 80000 = 0.5 ; signed [-1, +1] imbalance.
+        assert sig["dnow_score"] == 0.5
+        # Existing categorical label preserved unchanged.
+        assert sig["direction"] == "LONG"
+
+    def test_dnow_score_sign_tracks_direction(self):
+        bear = _uoa_scan(call_vol=20_000, put_vol=60_000)
+        assert bear["dnow_score"] == -0.5
+        assert bear["direction"] == "SHORT"
+
+    def test_dnow_score_captured_in_ml_dataset(self, db):
+        capture_ml_event(_uoa_signal(dnow_score=0.42), db_path=db)
+        row = _row(db, "sig_uoa_1")
+        assert row["dnow_score"] == 0.42
+
+    def test_dnow_score_null_when_absent(self, db):
+        # Signals without dnow_score (e.g. PEAD) leave the column NULL.
+        capture_ml_event(_uoa_signal(), db_path=db)
+        assert _row(db, "sig_uoa_1")["dnow_score"] is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 33 Thread 2 / CIL-040: A-B raw volume (ab_volume_raw)
+#
+# ab_volume_raw is the raw call-minus-put side volume differential exposed by
+# prime_scanners.prime_uoa_scanner.scan_symbol -- a directional ML feature
+# distinguishing call-side vs put-side institutional positioning.
+# ---------------------------------------------------------------------------
+
+class TestAbVolumeRaw:
+
+    def test_ab_volume_raw_exposed(self):
+        sig = _uoa_scan(call_vol=60_000, put_vol=20_000)
+        assert sig is not None
+        assert "ab_volume_raw" in sig
+        assert isinstance(sig["ab_volume_raw"], (int, float))
+        # 60000 - 20000 = 40000 (positive -> call/ask-side dominant).
+        assert sig["ab_volume_raw"] == 40_000
+
+    def test_ab_volume_raw_negative_on_put_side(self):
+        sig = _uoa_scan(call_vol=20_000, put_vol=60_000)
+        assert sig["ab_volume_raw"] == -40_000
+
+    def test_ab_volume_raw_captured_in_ml_dataset(self, db):
+        capture_ml_event(_uoa_signal(ab_volume_raw=40_000), db_path=db)
+        row = _row(db, "sig_uoa_1")
+        assert row["ab_volume_raw"] == 40_000
+
+    def test_ab_volume_raw_null_when_absent(self, db):
+        capture_ml_event(_uoa_signal(), db_path=db)
+        assert _row(db, "sig_uoa_1")["ab_volume_raw"] is None
