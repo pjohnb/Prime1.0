@@ -459,3 +459,35 @@ class TestDnowScore:
         # Signals without dnow_score (e.g. PEAD) leave the column NULL.
         capture_ml_event(_uoa_signal(), db_path=db)
         assert _row(db, "sig_uoa_1")["dnow_score"] is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 33 Thread 2 / CIL-040: A-B raw volume (ab_volume_raw)
+#
+# ab_volume_raw is the raw call-minus-put side volume differential exposed by
+# prime_scanners.prime_uoa_scanner.scan_symbol -- a directional ML feature
+# distinguishing call-side vs put-side institutional positioning.
+# ---------------------------------------------------------------------------
+
+class TestAbVolumeRaw:
+
+    def test_ab_volume_raw_exposed(self):
+        sig = _uoa_scan(call_vol=60_000, put_vol=20_000)
+        assert sig is not None
+        assert "ab_volume_raw" in sig
+        assert isinstance(sig["ab_volume_raw"], (int, float))
+        # 60000 - 20000 = 40000 (positive -> call/ask-side dominant).
+        assert sig["ab_volume_raw"] == 40_000
+
+    def test_ab_volume_raw_negative_on_put_side(self):
+        sig = _uoa_scan(call_vol=20_000, put_vol=60_000)
+        assert sig["ab_volume_raw"] == -40_000
+
+    def test_ab_volume_raw_captured_in_ml_dataset(self, db):
+        capture_ml_event(_uoa_signal(ab_volume_raw=40_000), db_path=db)
+        row = _row(db, "sig_uoa_1")
+        assert row["ab_volume_raw"] == 40_000
+
+    def test_ab_volume_raw_null_when_absent(self, db):
+        capture_ml_event(_uoa_signal(), db_path=db)
+        assert _row(db, "sig_uoa_1")["ab_volume_raw"] is None

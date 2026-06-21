@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS prime_ml_dataset (
     price_at_scan       REAL,
     sizzle_index        REAL,
     dnow_score          REAL,
+    ab_volume_raw       REAL,
     rsi                 REAL,
     pct_from_sma        REAL,
     eps_surprise        REAL,
@@ -173,6 +174,8 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     # Sprint 33 Thread 2 / CIL-039: dnow_score (numeric D-NOW direction) captured
     # from the UOA analyzer as a continuous ML training feature.
     _migrate_add_column_ml_dataset(db_path, "dnow_score", "REAL")
+    # Sprint 33 Thread 2 / CIL-040: ab_volume_raw (call-minus-put side volume).
+    _migrate_add_column_ml_dataset(db_path, "ab_volume_raw", "REAL")
 
     return path
 
