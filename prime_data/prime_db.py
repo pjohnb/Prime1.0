@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS prime_ml_dataset (
     entry_price         REAL,
     price_at_scan       REAL,
     sizzle_index        REAL,
+    dnow_score          REAL,
     rsi                 REAL,
     pct_from_sma        REAL,
     eps_surprise        REAL,
@@ -169,6 +170,10 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_trade_log(db_path, "trailing_stop_active", "INTEGER DEFAULT 0")
     _migrate_add_column_trade_log(db_path, "trailing_stop_peak", "REAL")
 
+    # Sprint 33 Thread 2 / CIL-039: dnow_score (numeric D-NOW direction) captured
+    # from the UOA analyzer as a continuous ML training feature.
+    _migrate_add_column_ml_dataset(db_path, "dnow_score", "REAL")
+
     return path
 
 
@@ -198,6 +203,30 @@ def get_table_columns(table_name: str, db_path: Optional[Path] = None) -> list[s
     with get_connection(db_path) as conn:
         cursor = conn.execute(f"PRAGMA table_info({table_name})")
         return [row[1] for row in cursor.fetchall()]
+
+
+def _migrate_add_column_ml_dataset(
+    db_path: Optional[Path], column: str, col_type: str
+) -> None:
+    """Idempotent ALTER TABLE for prime_ml_dataset.
+
+    Adds new capture columns to a prime_ml_dataset created before the column
+    existed. Fresh DBs already get the column from _PRIME_ML_DATASET_SCHEMA, so
+    the 'column not in existing' guard makes this a no-op there. capture_ml_event
+    writes by column name, so the appended position does not affect inserts.
+    """
+    try:
+        path = _db_path(db_path)
+        conn = sqlite3.connect(str(path))
+        try:
+            existing = [row[1] for row in conn.execute("PRAGMA table_info(prime_ml_dataset)").fetchall()]
+            if column not in existing:
+                conn.execute(f"ALTER TABLE prime_ml_dataset ADD COLUMN {column} {col_type}")
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def _migrate_add_column_trade_log(

@@ -58,6 +58,7 @@ class PrimeMLEvent:
     entry_price: Optional[float] = None
     price_at_scan: Optional[float] = None
     sizzle_index: Optional[float] = None      # UOA
+    dnow_score: Optional[float] = None        # UOA D-NOW numeric direction (CIL-039)
     rsi: Optional[float] = None               # MTS
     pct_from_sma: Optional[float] = None      # MTS
     eps_surprise: Optional[float] = None      # PEAD
@@ -189,6 +190,7 @@ def build_ml_event(signal: Dict[str, Any],
         entry_price=signal.get("entry_price"),
         price_at_scan=signal.get("price_at_scan"),
         sizzle_index=signal.get("sizzle_index"),
+        dnow_score=signal.get("dnow_score"),
         rsi=signal.get("rsi"),
         pct_from_sma=signal.get("pct_from_sma"),
         eps_surprise=signal.get("eps_surprise"),
