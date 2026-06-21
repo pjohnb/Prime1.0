@@ -385,6 +385,68 @@ def load_baselines(db_paths: List[Path]) -> Dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
+# CIL-046: Direct signal persistence (bypasses the bridge)
+# ---------------------------------------------------------------------------
+
+UOA_APPROVED_TIERS = ("STRONG", "WATCH")
+
+
+def persist_uoa_signals(
+    signals: List[Dict[str, Any]],
+    scan_ts: str,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Write APPROVED UOA signals straight to prime_signals (CIL-046).
+
+    Mirrors prime_signal_bridge.bridge_uoa_rows' field mapping but is driven by
+    the scanner's own result dicts, so a scan persists without the CSV->bridge
+    round-trip. Approved = tier in STRONG/WATCH. Deduplication is handled by
+    insert_signal_dedup's deterministic signal_id (strategy|symbol|scan_ts), so
+    re-running a scan with the same scan_ts never creates duplicate rows.
+
+    Returns the number of new rows inserted (duplicates skipped).
+    """
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+
+    init_signals_table(db_path)
+    inserted = 0
+    for s in signals:
+        tier = (s.get("tier") or "").strip().upper()
+        if tier not in UOA_APPROVED_TIERS:
+            continue
+        symbol = (s.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        direction = (s.get("direction") or "LONG").strip().upper()
+        # Sprint 23 Item 3 convention: call dominance -> LONG/UOA_CALL,
+        # put dominance -> SHORT/UOA_PUT.
+        trigger_source = "UOA_PUT" if direction == "SHORT" else "UOA_CALL"
+        factors = json.dumps({
+            "source": "schwab",
+            "group": s.get("group", ""),
+            "call_put_ratio": s.get("call_put_ratio"),
+            "total_volume": s.get("total_volume"),
+        })
+        result = insert_signal_dedup(
+            symbol=symbol,
+            strategy="UOA",
+            scan_ts=scan_ts,
+            entry_price=s.get("price_at_scan") or 0.0,
+            score=s.get("sizzle_index") or 0.0,
+            tier=tier,
+            status="APPROVED",
+            direction=direction,
+            factors=factors,
+            instrument_type="EQUITY",
+            trigger_source=trigger_source,
+            db_path=db_path,
+        )
+        if result is not None:
+            inserted += 1
+    return inserted
+
+
+# ---------------------------------------------------------------------------
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
@@ -450,6 +512,15 @@ def run_uoa_scan(
                 logger.warning("%s: scan error: %s", sym, e)
 
     signals.sort(key=lambda s: s["sizzle_index"], reverse=True)
+
+    # CIL-046: persist approved signals directly to prime_signals (bypass bridge).
+    try:
+        persisted = persist_uoa_signals(
+            signals, scan_time.strftime("%Y-%m-%d %H:%M:%S")
+        )
+        logger.info("UOA: %d signal(s) persisted to prime_signals", persisted)
+    except Exception as e:
+        logger.warning("UOA: direct signal persistence failed: %s", e)
 
     tier1 = [s for s in signals if s["tier"] == "STRONG"]
     tier2 = [s for s in signals if s["tier"] == "WATCH"]
