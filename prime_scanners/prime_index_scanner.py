@@ -5,6 +5,15 @@ Scans SPY, QQQ, IWM for unusual options activity and momentum signals
 on index instruments. Standalone, headless, runnable from command line.
 
 Standalone: python prime_scanners/prime_index_scanner.py
+
+CIL-NEW-02 (Sprint 33): this is the OPTIONS-FLOW / UOA index scanner. It is a
+DISTINCT scanner from prime_intelligence/prime_index_scanner.py (the SMA
+trend/relative-strength ETF *trader*) — they merely share a filename. This one
+writes strategy="UOA_INDEX" and is exercised by test_index_scanner.py /
+test_index_etf.py; the prime_intelligence one writes strategy="IDX", backs the
+APScheduler "idx" job + run_scan.bat, and is imported by prime_short_scanner.py.
+They are NOT duplicates — do not merge or delete either. See the matching note in
+the prime_intelligence module.
 """
 
 import json

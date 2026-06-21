@@ -28,6 +28,14 @@ Design notes (Sprint 16 ambiguity resolution):
     execution/borrow/sizing is Sprint 17. IDX only generates signals.
   * run_index_scan() accepts an optional bars_by_symbol map so the scoring path
     is fully testable without network access.
+
+CIL-NEW-02 (Sprint 33): this is the SMA trend/relative-strength ETF *trader*
+(strategy="IDX", 14-ETF universe, backs the APScheduler "idx" job + run_scan.bat,
+imported by prime_short_scanner.py). It is a DISTINCT scanner from
+prime_scanners/prime_index_scanner.py (the options-flow / UOA scanner that writes
+strategy="UOA_INDEX") — they merely share a filename. They are NOT duplicates;
+do not merge or delete either. (A 2026-06-21 reconciliation review confirmed both
+are active; deletion was rejected because each has its own callers and tests.)
 """
 
 import json
