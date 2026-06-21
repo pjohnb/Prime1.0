@@ -184,6 +184,18 @@ def post_scan_notify(scanner_name: str, scan_data: Dict[str, Any]) -> None:
                 approved, open_positions=open_positions, scanner=scanner_name)
             push_signal_alerts(approved)
 
+            # Sprint 31 / CIL-042: capture one ML training row per APPROVED
+            # signal. Best-effort -- a capture failure must never block or
+            # delay the scan pipeline, so each call is individually guarded.
+            from prime_ml.prime_ml_capture_v2 import capture_ml_event
+            for sig in approved:
+                try:
+                    sig.setdefault("scanner", scanner_name)
+                    capture_ml_event(sig, db_path=None)
+                except Exception as e:
+                    logger.error("ML capture failed for %s: %s",
+                                 sig.get("symbol", "?"), e)
+
         logger.info("Post-scan notifications sent for %s (%d signals)", scanner_name, len(signals))
     except Exception as e:
         logger.error("Post-scan notification failed for %s: %s", scanner_name, e)
