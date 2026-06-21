@@ -339,8 +339,9 @@ def main():
     cfg = get_config()
     api_key = cfg.polygon_api_key
     if not api_key:
-        logger.error("polygon_api_key not found in config.json")
-        sys.exit(1)
+        # CIL-070: graceful degradation — warn and exit 0 (no crash).
+        logger.warning("IDX-UOA: Polygon unavailable — skipping scan")
+        return
 
     scan_data = run_index_scan(api_key)
 

@@ -530,6 +530,25 @@ def run_psa_scan(
 ) -> Dict[str, Any]:
     scan_time = datetime.now()
 
+    # CIL-070: graceful degradation. Without a Polygon key there is no data
+    # source, so log a WARNING and return an empty (but well-formed) result
+    # rather than fetching against an empty key or crashing the caller.
+    if not (api_key or "").strip():
+        logger.warning("PSA: Polygon unavailable — skipping scan")
+        return {
+            "scan_time": scan_time.isoformat(),
+            "scanner": "prime_psa_scanner",
+            "version": "1.0",
+            "polygon_unavailable": True,
+            "analyzed": 0,
+            "signals_found": 0,
+            "stage0_rejected": 0,
+            "stage1_rejected": 0,
+            "fetch_failures": 0,
+            "signals": [],
+            "stage0_rejections": [],
+        }
+
     if universe is None:
         universe = DEFAULT_UNIVERSE
     if thresholds is None:
@@ -669,8 +688,10 @@ def main():
     cfg = get_config()
     api_key = cfg.polygon_api_key
     if not api_key:
-        logger.error("polygon_api_key not found in config.json")
-        sys.exit(1)
+        # CIL-070: graceful degradation — warn and exit 0 (no crash) so the
+        # scheduler/subprocess records a clean skip rather than an error.
+        logger.warning("PSA: Polygon unavailable — skipping scan")
+        return
 
     from prime_data.prime_db import init_db, log_ops_event
 

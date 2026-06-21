@@ -389,8 +389,11 @@ def main():
 
     cfg = get_config()
     if not cfg.polygon_api_key:
-        logger.error("polygon_api_key not found in config.json")
-        sys.exit(1)
+        # CIL-070: graceful degradation — warn and exit 0 (no crash). The SHORT
+        # scanner needs Polygon daily bars for technical confirmation; without a
+        # key it skips cleanly rather than aborting the run.
+        logger.warning("SHORT: Polygon unavailable — skipping scan")
+        return
     init_db()
     log_ops_event("SCAN_START", "short_scanner",
                   detail="signal-led short scan (live UOA-put/PEAD-miss feed)")

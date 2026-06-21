@@ -4,15 +4,20 @@ Single source of truth for all settings — no hardcoded paths, schedules, or cr
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Sprint 33 Thread 1 (CIL-070): polygon_api_key is NO LONGER required. Polygon is
+# a soft dependency — the PSA/SRS/IDX/SHORT scanners degrade gracefully (log a
+# WARNING and return empty results) when it is absent, so the server must still
+# start. load_config() logs a WARNING rather than raising when the key is missing.
 REQUIRED_CONFIG_KEYS = [
-    "polygon_api_key",
     "tradestation",
     "schwab_snapshot",
     "execution",
@@ -268,6 +273,14 @@ def load_config(
 
     _validate_keys(raw, REQUIRED_CONFIG_KEYS, "config.json")
     _validate_keys(ops_raw, REQUIRED_OPS_KEYS, "ops_config.json")
+
+    # CIL-070: Polygon is optional. Warn (do not raise) when the key is absent or
+    # empty — the Polygon-backed scanners log a WARNING and skip rather than crash.
+    if not (raw.get("polygon_api_key") or "").strip():
+        logger.warning(
+            "config.json: polygon_api_key is missing or empty — PSA/SRS/IDX/SHORT "
+            "scans will be skipped (graceful degradation). MTS and PEAD are unaffected."
+        )
 
     cfg = PrimeConfig(
         polygon_api_key=raw.get("polygon_api_key", ""),

@@ -331,6 +331,19 @@ def run_index_scan(
     if scan_ts is None:
         scan_ts = datetime.utcnow().isoformat()
 
+    # CIL-070: graceful degradation. When bars are fetched live (no injected
+    # bars_by_symbol) but there is no Polygon key, return an empty (well-formed)
+    # summary and log a WARNING rather than fetching against an empty key.
+    if bars_by_symbol is None and not (api_key or "").strip():
+        logger.warning("IDX: Polygon unavailable — skipping scan")
+        return {
+            "scan_ts": scan_ts, "account": route_index_account(config_path),
+            "polygon_unavailable": True, "scanned": 0,
+            "written": [], "suppressed": [], "neutral": [], "errors": [],
+            "by_classification": {STRONG_LONG: [], WEAK_LONG: [], NEUTRAL: [],
+                                  WEAK_SHORT: [], STRONG_SHORT: []},
+        }
+
     # DK nullifier integration: a nullified symbol's IDX signal is suppressed.
     try:
         from prime_intelligence.prime_dk_trader import get_active_nullifiers
@@ -424,8 +437,9 @@ def main():
     cfg = get_config()
     api_key = cfg.polygon_api_key
     if not api_key:
-        logger.error("polygon_api_key not found in config.json")
-        sys.exit(1)
+        # CIL-070: graceful degradation — warn and exit 0 (no crash).
+        logger.warning("IDX: Polygon unavailable — skipping scan")
+        return
 
     init_db()
     log_ops_event("SCAN_START", "index_scanner", detail="universe={0}".format(len(INDEX_UNIVERSE)))

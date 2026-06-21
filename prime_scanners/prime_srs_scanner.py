@@ -197,6 +197,21 @@ def run_srs_scan(api_key: str) -> Dict:
     results = {}
     summary = {"DECLINING": [], "BOTTOMING": [], "RECOVERING": [], "STABLE": [], "UNKNOWN": []}
 
+    # CIL-070: graceful degradation — no Polygon key means no data, so return an
+    # empty (well-formed) result with a MIXED regime rather than crashing.
+    if not (api_key or "").strip():
+        logger.warning("SRS: Polygon unavailable — skipping scan")
+        return {
+            "scan_time": scan_time.isoformat(),
+            "scanner": "prime_srs_scanner",
+            "version": "1.0",
+            "polygon_unavailable": True,
+            "regime": "MIXED",
+            "regime_note": "Polygon unavailable — standard rules apply",
+            "summary": {"declining": [], "bottoming": [], "recovering": [], "stable": []},
+            "sectors": {},
+        }
+
     logger.info("SRS SCAN -- %s", scan_time.strftime("%Y-%m-%d %H:%M ET"))
 
     for sector, etf in SECTOR_ETFS.items():
@@ -273,8 +288,9 @@ def main():
     cfg = get_config()
     api_key = cfg.polygon_api_key
     if not api_key:
-        logger.error("polygon_api_key not found in config.json")
-        sys.exit(1)
+        # CIL-070: graceful degradation — warn and exit 0 (no crash).
+        logger.warning("SRS: Polygon unavailable — skipping scan")
+        return
 
     scan_data = run_srs_scan(api_key)
 
