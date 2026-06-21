@@ -208,6 +208,33 @@ def get_signals():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/signals/<string:signal_id>/dismiss", methods=["POST"])
+@require_local_token
+def dismiss_signal_endpoint(signal_id):
+    """POST /api/v1/signals/{signal_id}/dismiss -- soft-delete a pending signal.
+
+    CIL-075. Sets prime_signals.status='DISMISSED' (a soft delete that preserves
+    the row for ML training data). Returns 404 if the signal does not exist, 409
+    if it was already dismissed.
+    """
+    from prime_analytics.prime_signals_db import dismiss_signal
+
+    if not signal_id:
+        return jsonify({"error": "signal_id is required"}), 400
+
+    try:
+        result = dismiss_signal(signal_id)
+    except Exception as e:
+        logger.error("dismiss_signal error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+    if result == "NOT_FOUND":
+        return jsonify({"error": "unknown signal_id"}), 404
+    if result == "ALREADY_DISMISSED":
+        return jsonify({"error": "signal already dismissed"}), 409
+    return jsonify({"signal_id": signal_id, "status": "DISMISSED"}), 200
+
+
 @api_bp.route("/advisory/positions", methods=["GET"])
 def get_position_advisory():
     """GET /api/v1/advisory/positions -- Claude HOLD/TRIM/EXIT per open position.

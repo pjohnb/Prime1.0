@@ -14,6 +14,27 @@ function dkBadgeLabel(dk) {
   return 'NEUTRAL';
 }
 
+// CIL-075: bearer token for the write-side dismiss endpoint (require_local_token).
+function _sigToken() {
+  return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiToken) || '';
+}
+
+// CIL-075: soft-delete a PEAD signal, then reload the table so it drops out of
+// the queue. The row is preserved server-side (status=DISMISSED) for ML training.
+async function dismissSignal(signalId) {
+  if (!signalId) return;
+  try {
+    const resp = await fetch(API + '/signals/' + encodeURIComponent(signalId) + '/dismiss', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + _sigToken() },
+    });
+    await resp.json().catch(() => ({}));
+    loadSignals();
+  } catch (e) {
+    console.error('dismissSignal:', e);
+  }
+}
+
 // Item 3c: populate the strategy filter from the actual strategies in the DB.
 async function populateStrategyFilter() {
   try {
@@ -118,7 +139,7 @@ async function loadSignals() {
     signals = _tierFilter(signals);
 
     if (!signals.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No signals found</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No signals found</td></tr>';
       return;
     }
     signals.forEach(s => {
@@ -200,10 +221,11 @@ async function loadSignals() {
         <td><span class="badge ${dkClass}" title="${dkTooltip}">${dkLabel}</span></td>
         <td style="font-family:var(--mono)" title="Price at time of scan — not a limit order price">$${(s.entry_price || 0).toFixed(2)}</td>
         <td title="${statusTooltip}">${status}</td>
+        <td>${isPead && s.signal_id ? `<button onclick="dismissSignal('${s.signal_id}')" title="Remove this signal from the queue. Signal is preserved for ML training data and will not be re-displayed." style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:2px 8px;border-radius:3px;font-size:11px;cursor:pointer">Dismiss</button>` : ''}</td>
       </tr>`;
     });
   } catch(e) {
     console.error('loadSignals:', e);
-    document.getElementById('sig-body').innerHTML = '<tr><td colspan="9" class="empty-state">Failed to load signals</td></tr>';
+    document.getElementById('sig-body').innerHTML = '<tr><td colspan="10" class="empty-state">Failed to load signals</td></tr>';
   }
 }
