@@ -383,6 +383,143 @@ class TestMATASellAccountHash(unittest.TestCase):
         self.assertEqual(calls, ["HASH_7926"])  # only the resolvable account submitted
         self.assertTrue(any(f["account"] == "0461" for f in d["failures"]))
 
+    # ── CIL-086: LIVE MATA sell wires the fill poller ─────────────────────────
+    def test_mata_sell_wires_fill_poller(self):
+        from unittest.mock import patch, MagicMock
+        from prime_data.prime_db import insert_trade
+
+        # An OPEN record must exist for the sold account so the trade-log close
+        # produces the log_id the fill watcher confirms against.
+        log_id = insert_trade(
+            strategy="TEST", symbol="MSFT", direction="LONG", mode="LIVE",
+            order_type="MARKET", shares=20, entry_time="2026-06-10T10:00:00",
+            price_at_scan=400.0, entry_price=400.0, account="7926",
+            trade_source="LIVE", db_path=self.db,
+        )
+        client = self._mock_client([
+            {"accountNumber": "123457926", "hashValue": "HASH_7926"},
+        ])
+
+        def fake_submit(**kwargs):
+            return {"order_id": "ORD1", "status": "SUBMITTED"}
+
+        mock_fw = MagicMock()
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_schwab_orders.submit_order", side_effect=fake_submit), \
+             patch("prime_trading.prime_fill_poller.start_fill_watcher", mock_fw):
+            payload = {
+                "symbol": "MSFT", "total_qty": 10, "order_type": "MARKET",
+                "price": 415.0,
+                "account_holdings": [{"account": "7926", "shares": 20}],
+                "confirmed": True,
+            }
+            resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                    headers=self._auth, content_type="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        mock_fw.assert_called_once()
+        args, kwargs = mock_fw.call_args
+        self.assertEqual(args[0], "ORD1")          # order_id from submit_order
+        self.assertEqual(args[1], log_id)          # trade_id (log row to confirm)
+        self.assertEqual(kwargs.get("side"), "SELL")
+
+    def test_mata_sell_no_order_no_fill_watcher(self):
+        # If the account has no submitted order id, no watcher is started.
+        from unittest.mock import patch, MagicMock
+        from prime_data.prime_db import insert_trade
+        insert_trade(
+            strategy="TEST", symbol="MSFT", direction="LONG", mode="LIVE",
+            order_type="MARKET", shares=20, entry_time="2026-06-10T10:00:00",
+            price_at_scan=400.0, entry_price=400.0, account="7926",
+            trade_source="LIVE", db_path=self.db,
+        )
+        # No Schwab account resolves -> submit_order never produces an order id.
+        client = self._mock_client([])
+
+        mock_fw = MagicMock()
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_fill_poller.start_fill_watcher", mock_fw):
+            payload = {
+                "symbol": "MSFT", "total_qty": 10, "order_type": "MARKET",
+                "price": 415.0,
+                "account_holdings": [{"account": "7926", "shares": 20}],
+                "confirmed": True,
+            }
+            resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                    headers=self._auth, content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        mock_fw.assert_not_called()
+
+
+class TestMATASellPaperNoFillPoller(unittest.TestCase):
+    """CIL-086: PAPER mode never starts a fill watcher (no broker order)."""
+
+    def setUp(self):
+        from unittest.mock import patch, MagicMock
+        import tempfile, json
+
+        self.db = Path(__file__).parent / "_test_mata_paper_fw.db"
+        if self.db.exists():
+            self.db.unlink()
+        from prime_data.prime_db import init_db
+        from prime_analytics.prime_signals_db import init_signals_table
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self.tmp_dir = tempfile.mkdtemp()
+        self.ops_path = Path(self.tmp_dir) / "ops_config.json"
+        with open(self.ops_path, "w") as f:
+            json.dump({"scan_schedule": {}, "notification_channels": "TBD"}, f)
+
+        mock_cfg = MagicMock()
+        mock_cfg.trading_mode = "PAPER"
+        mock_cfg.api_token = "test-token"
+        mock_cfg.ops.max_order_pct = 0.10
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch("prime_config.prime_config.get_config", return_value=mock_cfg)
+        self._cfg_patcher.start()
+        import prime_api.prime_api_routes as routes
+        self._orig_ops = routes._OPS_CONFIG_PATH
+        routes._OPS_CONFIG_PATH = self.ops_path
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self._auth = {"Authorization": "Bearer test-token"}
+
+    def tearDown(self):
+        import prime_api.prime_api_routes as routes
+        routes._OPS_CONFIG_PATH = self._orig_ops
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_paper_mode_skips_fill_poller(self):
+        from unittest.mock import patch, MagicMock
+        from prime_data.prime_db import insert_trade
+        insert_trade(
+            strategy="TEST", symbol="MSFT", direction="LONG", mode="PAPER",
+            order_type="MARKET", shares=20, entry_time="2026-06-10T10:00:00",
+            price_at_scan=400.0, entry_price=400.0, account="7926",
+            trade_source="PAPER", db_path=self.db,
+        )
+        mock_fw = MagicMock()
+        with patch("prime_trading.prime_fill_poller.start_fill_watcher", mock_fw):
+            payload = {
+                "symbol": "MSFT", "total_qty": 10, "order_type": "MARKET",
+                "price": 415.0,
+                "account_holdings": [{"account": "7926", "shares": 20}],
+                "confirmed": True,
+            }
+            resp = self.client.post("/api/v1/sell/mata", json=payload,
+                                    headers=self._auth, content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        mock_fw.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

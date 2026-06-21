@@ -1417,6 +1417,13 @@ def mata_sell():
             if live_px > 0:
                 exit_price = live_px
 
+        # CIL-086: map each account to its submitted LIVE order id so the fill
+        # watcher can confirm the actual exit fill against the right log row.
+        order_by_account = {
+            o["account"]: o.get("order_id")
+            for o in orders_placed if o.get("order_id")
+        }
+
         if exit_price and exit_price > 0:
             open_recs = get_open_by_symbol(symbol)
             consumed = set()
@@ -1442,6 +1449,23 @@ def mata_sell():
                 )
                 if summary:
                     closed_logs.append(summary)
+
+                # CIL-086: LIVE only — start a SELL fill watcher so the actual
+                # broker fill overwrites the live-quote exit price/P&L when it
+                # lands. PAPER mode has no broker order and skips this entirely.
+                if mode == "LIVE" and schwab_client is not None:
+                    order_id = order_by_account.get(acct)
+                    if order_id:
+                        try:
+                            from prime_trading.prime_fill_poller import start_fill_watcher
+                            start_fill_watcher(
+                                order_id, match["log_id"], schwab_client, side="SELL",
+                            )
+                        except Exception as fw_err:
+                            logger.warning(
+                                "mata_sell: fill watcher start failed for %s: %s",
+                                acct, fw_err,
+                            )
     except Exception as e:
         logger.error("mata_sell trade-log close error: %s", e)
 

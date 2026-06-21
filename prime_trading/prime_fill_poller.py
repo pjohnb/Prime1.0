@@ -108,24 +108,45 @@ def start_fill_watcher(
     trade_id: str,
     client,
     db_path: Optional[Path] = None,
+    side: str = "BUY",
 ) -> None:
-    """Submit fill polling as a background task. Non-blocking."""
+    """Submit fill polling as a background task. Non-blocking.
+
+    side='BUY'  (default) -> on fill, update entry_price/shares (entry
+                 confirmation; existing /trades behaviour, unchanged).
+    side='SELL' -> on fill, overwrite exit_price and realized P&L via
+                 close_trade_with_fill() (exit confirmation, CIL-086). The
+                 record was already closed at the live-quote price; this
+                 replaces it with the actual broker fill.
+    """
+    is_sell = str(side).upper() == "SELL"
 
     def _watch():
         try:
             result = poll_fill(order_id, client)
             if result:
-                update_trade_on_fill(
-                    trade_id,
-                    result["fill_price"],
-                    result["shares_filled"],
-                    db_path=db_path,
-                )
+                if is_sell:
+                    from prime_data.prime_db import close_trade_with_fill
+                    close_trade_with_fill(
+                        trade_id,
+                        result["fill_price"],
+                        result["shares_filled"],
+                        result["fill_time"],
+                        exit_reason="FILL",
+                        db_path=db_path,
+                    )
+                else:
+                    update_trade_on_fill(
+                        trade_id,
+                        result["fill_price"],
+                        result["shares_filled"],
+                        db_path=db_path,
+                    )
             else:
                 log_ops_event(
                     event_type="FILL_TIMEOUT",
                     component="prime_fill_poller",
-                    detail=f"order={order_id} trade={trade_id} -- no fill confirmation",
+                    detail=f"order={order_id} trade={trade_id} side={side} -- no fill confirmation",
                     severity="WARN",
                     db_path=db_path,
                 )
