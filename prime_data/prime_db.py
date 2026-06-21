@@ -658,6 +658,36 @@ def close_trade_reconcile(
         conn.commit()
 
 
+# Required exit fields every CLOSED prime_trade_log record must carry.
+_CLOSED_REQUIRED_FIELDS = (
+    "exit_price", "exit_time", "exit_reason",
+    "pnl_dollars", "pnl_pct", "hold_minutes",
+)
+
+
+def check_closed_trade_completeness(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return CLOSED prime_trade_log records missing any required exit field.
+
+    Sprint 31 Thread 3 (CIL-074). A complete close carries exit_price,
+    exit_time, exit_reason, pnl_dollars, pnl_pct and hold_minutes (with
+    status='CLOSED'). Any record where one of those is NULL is returned,
+    annotated with a 'missing_fields' list so /api/v1/health can surface the
+    count as 'incomplete_exits'. Returns an empty list on a clean database.
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM prime_trade_log WHERE status='CLOSED'"
+        ).fetchall()
+    incomplete: List[Dict[str, Any]] = []
+    for row in rows:
+        rec = dict(row)
+        missing = [f for f in _CLOSED_REQUIRED_FIELDS if rec.get(f) is None]
+        if missing:
+            rec["missing_fields"] = missing
+            incomplete.append(rec)
+    return incomplete
+
+
 # ---------------------------------------------------------------------------
 # Signal deduplication
 # ---------------------------------------------------------------------------

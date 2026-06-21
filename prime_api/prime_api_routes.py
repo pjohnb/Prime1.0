@@ -380,18 +380,25 @@ def get_instrument(symbol):
 @api_bp.route("/health", methods=["GET"])
 def health_check():
     """GET /api/v1/health -- server status, DB connection, last scan, ML row count."""
-    from prime_data.prime_db import get_ops_events, table_exists
+    from prime_data.prime_db import (
+        get_ops_events,
+        table_exists,
+        check_closed_trade_completeness,
+    )
     status: Dict[str, Any] = {
         "status": "ok",
         "db_connected": False,
         "last_scan_event": None,
         "ml_dataset_row_count": 0,
+        "incomplete_exits": 0,
     }
     try:
         status["db_connected"] = table_exists("prime_trade_log")
         events = get_ops_events(limit=1)
         if events:
             status["last_scan_event"] = events[0].get("timestamp")
+        # CIL-074: surface CLOSED trades missing required exit fields.
+        status["incomplete_exits"] = len(check_closed_trade_completeness())
     except Exception as e:
         status["status"] = "degraded"
         status["error"] = str(e)
