@@ -18,10 +18,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Sector overrides for ETF and COLLECTIVE_INVESTMENT symbols.  EQUITY symbols
-# use prime_portfolio_factor.sector_map instead.  Unknown COLLECTIVE_INVESTMENT
-# symbols default to 'ETF' at import time.
+# Sector overrides for ETF / COLLECTIVE_INVESTMENT and common large-cap EQUITY
+# symbols. CIL-077: equities NOT found here fall through to the shared
+# prime_portfolio_factor.sector_map (single source of truth, 100+ symbols), then
+# the Schwab fundamental API, then the 'Unknown' floor — sector is NEVER NULL.
 SYMBOL_SECTOR_MAP: dict = {
+    # ETFs / commodities / broad-market funds (COLLECTIVE_INVESTMENT + ETF).
     "GLD": "Commodities", "SLV": "Commodities", "GDX": "Commodities", "GDXJ": "Commodities",
     "USO": "Energy", "XLE": "Energy",
     "XLF": "Financials", "XLK": "Technology", "XLV": "Healthcare",
@@ -29,7 +31,91 @@ SYMBOL_SECTOR_MAP: dict = {
     "XLI": "Industrials", "XLB": "Materials", "XLU": "Utilities",
     "XLRE": "Real Estate",
     "SPY": "Broad Market", "QQQ": "Broad Market", "IWM": "Broad Market",
+    "DIA": "Broad Market", "VTI": "Broad Market", "VOO": "Broad Market",
+    # Common large-cap equities likely to be held (CIL-077). Explicit so the
+    # named beta-blocker symbols resolve deterministically regardless of the
+    # shared map; equities beyond this set still resolve via sector_map below.
+    "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
+    "AMD": "Technology", "AVGO": "Technology", "GOOGL": "Technology",
+    "META": "Technology", "CRM": "Technology", "ADBE": "Technology",
+    "AMZN": "Consumer Discretionary", "TSLA": "Consumer Discretionary",
+    "HD": "Consumer Discretionary", "TJX": "Consumer Discretionary",
+    "NKE": "Consumer Discretionary",
+    "COST": "Consumer Staples", "WMT": "Consumer Staples", "PG": "Consumer Staples",
+    "KO": "Consumer Staples", "PEP": "Consumer Staples",
+    "UNH": "Health Care", "JNJ": "Health Care", "LLY": "Health Care",
+    "ABBV": "Health Care",
+    "JPM": "Financials", "V": "Financials", "MA": "Financials", "BAC": "Financials",
+    "XOM": "Energy", "CVX": "Energy",
 }
+
+
+def _fetch_schwab_fundamental_sector(symbol: str, schwab_client) -> Optional[str]:
+    """Best-effort sector via the Schwab fundamental data API (CIL-077).
+
+    GET /instruments?symbol=X&projection=fundamental. Returns the sector string
+    or None on any failure (no client, unsupported method, non-200, no sector).
+    Fully defensive so a sync never fails on the fundamental lookup.
+    """
+    if schwab_client is None:
+        return None
+    client = getattr(schwab_client, "client", None)
+    if client is None or not hasattr(client, "get_instruments"):
+        return None
+    try:
+        projection: Any = "fundamental"
+        try:  # schwab-py exposes a Projection enum; fall back to the raw string.
+            projection = client.Instrument.Projection.FUNDAMENTAL
+        except Exception:
+            projection = "fundamental"
+        resp = client.get_instruments([symbol], projection)
+        if getattr(resp, "status_code", 200) != 200:
+            return None
+        data = resp.json()
+        rec: Any = None
+        if isinstance(data, dict):
+            instruments = data.get("instruments")
+            if isinstance(instruments, list) and instruments:
+                rec = instruments[0]
+            else:
+                rec = data.get(symbol) or data.get(symbol.upper())
+        if not isinstance(rec, dict):
+            return None
+        fundamental = rec.get("fundamental") if isinstance(rec.get("fundamental"), dict) else {}
+        sector = (fundamental.get("sector") or rec.get("sector") or "").strip()
+        return sector or None
+    except Exception as e:  # noqa: BLE001 - never let a sector lookup break sync
+        logger.debug("Schwab fundamental sector lookup failed for %s: %s", symbol, e)
+        return None
+
+
+def _resolve_sector(symbol: str, asset_type: str, schwab_client=None) -> str:
+    """Resolve a position's sector. CIL-077: never returns None/NULL.
+
+    Order: explicit local override -> shared prime_portfolio_factor.sector_map
+    (equities) -> COLLECTIVE_INVESTMENT default 'ETF' -> Schwab fundamental API
+    -> 'Unknown' floor.
+    """
+    sector = SYMBOL_SECTOR_MAP.get(symbol)
+    if sector:
+        return sector
+
+    try:
+        from prime_intelligence.prime_portfolio_factor import sector_map
+        mapped = sector_map(symbol)
+        if mapped and mapped != "Unknown":
+            return mapped
+    except Exception:
+        pass
+
+    if asset_type == "COLLECTIVE_INVESTMENT":
+        return "ETF"
+
+    fundamental = _fetch_schwab_fundamental_sector(symbol, schwab_client)
+    if fundamental:
+        return fundamental
+
+    return "Unknown"
 
 # Account suffix labels (last 4 digits) for each Schwab account.
 _ACCOUNT_LABELS = {
@@ -305,10 +391,10 @@ def sync_schwab_positions(
                 result["skipped"] += 1
                 continue
 
-            # Determine sector: explicit map first; COLLECTIVE_INVESTMENT fallback to 'ETF'.
-            sector = SYMBOL_SECTOR_MAP.get(symbol)
-            if sector is None and asset_type == "COLLECTIVE_INVESTMENT":
-                sector = "ETF"
+            # CIL-077: resolve sector for EVERY position (equities included) and
+            # never store NULL — 'Unknown' is the floor. Equities resolve via the
+            # shared sector_map; unknowns fall back to the Schwab fundamental API.
+            sector = _resolve_sector(symbol, asset_type, schwab_client)
 
             try:
                 insert_trade(

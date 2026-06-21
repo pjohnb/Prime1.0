@@ -373,18 +373,59 @@ class TestCollectiveInvestmentSectorMapping(unittest.TestCase):
         self.assertEqual(result["imported"], 1)
         self.assertEqual(self._get_trade_sector("XYZZ"), "ETF")
 
-    def test_equity_symbol_sector_is_none(self):
+    def test_equity_symbol_gets_sector(self):
+        # CIL-077: EQUITY symbols now resolve a real sector (never NULL).
         positions = {"7926": [self._make_position("AAPL", "EQUITY", qty=10, avg_price=180.0)]}
         client = self._make_client(positions)
         sync_schwab_positions(db_path=self.db, schwab_client=client)
-        # EQUITY symbols not in SYMBOL_SECTOR_MAP get None sector (not 'ETF')
-        self.assertIsNone(self._get_trade_sector("AAPL"))
+        self.assertEqual(self._get_trade_sector("AAPL"), "Technology")
 
     def test_etf_asset_type_uses_symbol_map(self):
         positions = {"7926": [self._make_position("GLD", "ETF", qty=5, avg_price=391.0)]}
         client = self._make_client(positions)
         sync_schwab_positions(db_path=self.db, schwab_client=client)
         self.assertEqual(self._get_trade_sector("GLD"), "Commodities")
+
+    def test_equity_sector_assigned_on_sync(self):
+        # CIL-077: common equities get correct sectors on sync.
+        positions = {"7926": [
+            self._make_position("COST", "EQUITY", qty=5, avg_price=895.0),
+            self._make_position("NVDA", "EQUITY", qty=8, avg_price=820.0),
+            self._make_position("TJX", "EQUITY", qty=12, avg_price=118.0),
+            self._make_position("MSFT", "EQUITY", qty=4, avg_price=415.0),
+        ]}
+        client = self._make_client(positions)
+        result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(result["imported"], 4)
+        self.assertEqual(self._get_trade_sector("COST"), "Consumer Staples")
+        self.assertEqual(self._get_trade_sector("NVDA"), "Technology")
+        self.assertEqual(self._get_trade_sector("TJX"), "Consumer Discretionary")
+        self.assertEqual(self._get_trade_sector("MSFT"), "Technology")
+
+    def test_equity_sector_via_shared_sector_map(self):
+        # CIL-077: an equity NOT in the local map but present in the shared
+        # prime_portfolio_factor.sector_map still resolves (e.g. ORCL -> Technology).
+        positions = {"7926": [self._make_position("ORCL", "EQUITY", qty=10, avg_price=120.0)]}
+        client = self._make_client(positions)
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(self._get_trade_sector("ORCL"), "Technology")
+
+    def test_unknown_symbol_sector_fallback(self):
+        # CIL-077: a symbol in neither map, whose Schwab fundamental lookup
+        # returns no sector, is stored as 'Unknown' — never NULL.
+        from unittest.mock import MagicMock
+        positions = {"7926": [self._make_position("ZZZZ", "EQUITY", qty=3, avg_price=42.0)]}
+        client = self._make_client(positions)
+        # Fundamental API responds 200 but with no sector field.
+        fund_resp = MagicMock()
+        fund_resp.status_code = 200
+        fund_resp.json.return_value = {"instruments": [{"symbol": "ZZZZ", "fundamental": {}}]}
+        client.client.get_instruments.return_value = fund_resp
+
+        result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(self._get_trade_sector("ZZZZ"), "Unknown")
+        self.assertIsNotNone(self._get_trade_sector("ZZZZ"))
 
 
 if __name__ == "__main__":
