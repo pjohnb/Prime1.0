@@ -3,6 +3,7 @@ PRIME v1.0 database layer.
 All DB access goes through this module — no other module imports sqlite3 directly.
 """
 
+import logging
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from prime_config.prime_config import get_config
+
+logger = logging.getLogger(__name__)
 
 
 _PRIME_TRADE_LOG_SCHEMA = """
@@ -51,6 +54,39 @@ CREATE TABLE IF NOT EXISTS prime_trade_log (
 )
 """
 
+# Sprint 31 / CIL-041-031: ML training dataset. One row per APPROVED signal;
+# capture fields are written at scan time by prime_ml.prime_ml_capture_v2 and
+# the outcome fields are filled in by update_ml_outcome() on trade close.
+# Column order must match prime_ml.prime_ml_capture_v2.ML_COLUMNS.
+_PRIME_ML_DATASET_SCHEMA = """
+CREATE TABLE IF NOT EXISTS prime_ml_dataset (
+    signal_id           TEXT PRIMARY KEY,
+    scanner             TEXT,
+    symbol              TEXT,
+    direction           TEXT,
+    score               REAL,
+    tier                TEXT,
+    dk_status           TEXT,
+    dk_conviction       REAL,
+    entry_price         REAL,
+    price_at_scan       REAL,
+    sizzle_index        REAL,
+    rsi                 REAL,
+    pct_from_sma        REAL,
+    eps_surprise        REAL,
+    guidance_flag       TEXT,
+    borrow_rate         REAL,
+    market_regime       TEXT,
+    capture_ts          TEXT,
+    exit_price          REAL,
+    pnl_dollars         REAL,
+    pnl_pct             REAL,
+    hold_minutes        INTEGER,
+    exit_reason         TEXT,
+    outcome_captured_at TEXT
+)
+"""
+
 _PRIME_OPS_HEALTH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS prime_ops_health (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +115,7 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     try:
         conn.execute(_PRIME_TRADE_LOG_SCHEMA)
         conn.execute(_PRIME_OPS_HEALTH_SCHEMA)
+        conn.execute(_PRIME_ML_DATASET_SCHEMA)
         conn.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_dedup
                ON prime_trade_log (symbol, strategy, entry_time)
@@ -302,6 +339,34 @@ def update_trade_source(
             (trade_source, log_id),
         )
         conn.commit()
+
+
+def update_ml_outcome(
+    signal_id: str,
+    exit_price: Optional[float],
+    pnl_dollars: Optional[float],
+    pnl_pct: Optional[float],
+    hold_minutes: Optional[int],
+    exit_reason: Optional[str],
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Fill in the outcome fields on a prime_ml_dataset row (Sprint 31 / CIL-043).
+
+    Closes the signal-to-outcome loop: matches the capture row by signal_id and
+    stamps the realized exit. No-op (returns False) if no row matches the
+    signal_id -- e.g. SCHWAB_IMPORT trades that never had a captured signal.
+    """
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """UPDATE prime_ml_dataset SET
+                exit_price=?, pnl_dollars=?, pnl_pct=?,
+                hold_minutes=?, exit_reason=?, outcome_captured_at=?
+            WHERE signal_id=?""",
+            (exit_price, pnl_dollars, pnl_pct, hold_minutes, exit_reason,
+             datetime.utcnow().isoformat(), signal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 def close_trade(
