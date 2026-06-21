@@ -454,6 +454,22 @@ def close_trade_with_fill(
         )
         conn.commit()
 
+    # CIL-099 (Sprint 32 Thread 3): mirror the realized outcome into
+    # prime_ml_dataset, matching close_trade(). Best-effort -- never blocks.
+    signal_id = trade.get("signal_id")
+    if signal_id is not None:
+        hold_minutes = _hold_minutes(trade.get("entry_time"), close_ts)
+        try:
+            update_ml_outcome(
+                signal_id, fill_price, round(realized_pnl, 2),
+                round(pnl_pct, 2), hold_minutes, exit_reason, db_path=db_path,
+            )
+        except Exception as e:  # noqa: BLE001 - never block the trade close
+            logger.warning("ML outcome update failed for signal %s: %s",
+                           signal_id, e)
+    else:
+        logger.debug("No signal_id for trade %s (close_trade_with_fill)", log_id)
+
     return {
         "log_id": log_id,
         "fill_price": fill_price,
@@ -743,6 +759,24 @@ def close_trade_reconcile(
             (close_reason, datetime.utcnow().isoformat(), log_id),
         )
         conn.commit()
+        row = conn.execute(
+            "SELECT signal_id FROM prime_trade_log WHERE log_id=?", (log_id,)
+        ).fetchone()
+
+    # CIL-099 (Sprint 32 Thread 3): record the ML outcome for reconciled closes.
+    # No fill/P&L is computed here, so the metric fields stay NULL; exit_reason
+    # is SCHWAB_RECONCILE so ML training can filter these synthetic closes out.
+    signal_id = row["signal_id"] if row else None
+    if signal_id is not None:
+        try:
+            update_ml_outcome(
+                signal_id, None, None, None, None, close_reason, db_path=db_path,
+            )
+        except Exception as e:  # noqa: BLE001 - never block the reconcile
+            logger.warning("ML outcome update failed for signal %s: %s",
+                           signal_id, e)
+    else:
+        logger.debug("No signal_id for trade %s (close_trade_reconcile)", log_id)
 
 
 def get_latest_signal_for_symbol(

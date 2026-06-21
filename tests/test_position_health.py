@@ -1,26 +1,42 @@
-"""Sprint 32 Thread 3 -- PM-HEALTH-01 signal-to-position linkage helpers.
+"""Sprint 32 Thread 3 -- PM-HEALTH-01 helpers + CIL-099 ML outcome capture.
 
-Covers get_latest_signal_for_symbol and get_open_positions_with_signal_context.
+Covers the two signal-to-position linkage helpers
+(get_latest_signal_for_symbol, get_open_positions_with_signal_context) and the
+CIL-099 fix that extends ML outcome capture to close_trade_with_fill() and
+close_trade_reconcile(), which previously bypassed close_trade() and missed
+update_ml_outcome().
 """
+import sqlite3
+from datetime import datetime
+
 import pytest
 
 from prime_data.prime_db import (
     init_db,
     get_connection,
     insert_trade,
+    close_trade_with_fill,
     close_trade_reconcile,
     get_latest_signal_for_symbol,
     get_open_positions_with_signal_context,
 )
 from prime_analytics.prime_signals_db import insert_signal
+import prime_ml.prime_ml_capture_v2 as cap
+from prime_ml.prime_ml_capture_v2 import capture_ml_event
+
+_TODAY = datetime.now().strftime("%Y-%m-%d")
 
 
 @pytest.fixture()
 def db(tmp_path):
-    """Fresh DB (trade log + signals created by init_db)."""
+    """Fresh DB (trade log + signals + ml_dataset all created by init_db) with
+    the regime cache pre-seeded so capture never reaches for the network."""
     path = tmp_path / "position_health.db"
     init_db(db_path=path)
+    cap._REGIME_CACHE.clear()
+    cap._REGIME_CACHE[_TODAY] = "NEUTRAL"
     yield path
+    cap._REGIME_CACHE.clear()
 
 
 def _open(db, symbol, *, strategy="UOA", signal_id=None, source="PAPER",
@@ -31,6 +47,18 @@ def _open(db, symbol, *, strategy="UOA", signal_id=None, source="PAPER",
         price_at_scan=150.0, entry_price=150.0, trade_source=source,
         signal_id=signal_id, db_path=db,
     )
+
+
+def _ml_row(db, signal_id):
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    try:
+        r = conn.execute(
+            "SELECT * FROM prime_ml_dataset WHERE signal_id=?", (signal_id,)
+        ).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
 
 
 def _set_dk_status(db, signal_id, dk_status):
@@ -117,3 +145,77 @@ class TestOpenPositionsWithSignalContext:
         assert row["dk_status"] is None
         assert row["score"] is None
         assert row["tier"] is None
+
+
+# ---------------------------------------------------------------------------
+# CIL-099: ML outcome capture in close_trade_with_fill / close_trade_reconcile
+# ---------------------------------------------------------------------------
+
+class TestCloseTradeWithFillMLOutcome:
+
+    def test_updates_ml_outcome_when_signal_present(self, db):
+        capture_ml_event(
+            {"signal_id": "sig_fill", "scanner": "uoa", "symbol": "AAPL",
+             "direction": "LONG", "score": 7.5, "price_at_scan": 150.0},
+            db_path=db,
+        )
+        log_id = _open(db, "AAPL", signal_id="sig_fill",
+                       entry_time="2026-06-20T09:30:00")
+        close_trade_with_fill(log_id, fill_price=160.0, fill_qty=100,
+                              close_ts="2026-06-20T11:30:00", exit_reason="FILL",
+                              db_path=db)
+        row = _ml_row(db, "sig_fill")
+        assert row["exit_price"] == 160.0
+        assert row["pnl_dollars"] == 1000.0   # (160-150)*100
+        assert row["hold_minutes"] == 120     # 09:30 -> 11:30
+        assert row["exit_reason"] == "FILL"
+        assert row["outcome_captured_at"] is not None
+
+    def test_null_signal_id_no_error_no_capture(self, db):
+        log_id = _open(db, "GLD", source="SCHWAB_IMPORT", signal_id=None)
+        result = close_trade_with_fill(log_id, fill_price=160.0, fill_qty=100,
+                                       close_ts="2026-06-20T11:30:00", db_path=db)
+        assert result is not None
+        conn = sqlite3.connect(str(db))
+        try:
+            status = conn.execute(
+                "SELECT status FROM prime_trade_log WHERE log_id=?", (log_id,)
+            ).fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM prime_ml_dataset").fetchone()[0]
+        finally:
+            conn.close()
+        assert status == "CLOSED"
+        assert count == 0
+
+
+class TestCloseTradeReconcileMLOutcome:
+
+    def test_updates_ml_outcome_when_signal_present(self, db):
+        capture_ml_event(
+            {"signal_id": "sig_rec", "scanner": "uoa", "symbol": "AAPL",
+             "direction": "LONG", "score": 7.5, "price_at_scan": 150.0},
+            db_path=db,
+        )
+        log_id = _open(db, "AAPL", signal_id="sig_rec")
+        close_trade_reconcile(log_id, db_path=db)
+        row = _ml_row(db, "sig_rec")
+        # Reconcile computes no P&L -> metrics stay NULL, but the outcome is
+        # stamped with the SCHWAB_RECONCILE reason so ML training can filter it.
+        assert row["exit_reason"] == "SCHWAB_RECONCILE"
+        assert row["outcome_captured_at"] is not None
+        assert row["exit_price"] is None
+        assert row["pnl_dollars"] is None
+
+    def test_null_signal_id_no_error(self, db):
+        log_id = _open(db, "GLD", source="SCHWAB_IMPORT", signal_id=None)
+        close_trade_reconcile(log_id, db_path=db)
+        conn = sqlite3.connect(str(db))
+        try:
+            status = conn.execute(
+                "SELECT status FROM prime_trade_log WHERE log_id=?", (log_id,)
+            ).fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM prime_ml_dataset").fetchone()[0]
+        finally:
+            conn.close()
+        assert status == "CLOSED"
+        assert count == 0
