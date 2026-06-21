@@ -1624,6 +1624,12 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
     # find the project packages the same way a direct `python -m` call does.
     _env = dict(_os.environ)
     _env["PYTHONPATH"] = str(_PROJECT_ROOT_PATH)
+    # CIL-049: force UTF-8 for the scanner subprocess's own stdout. On Windows the
+    # child otherwise inherits cp1252 and raises UnicodeEncodeError when a scan
+    # prints non-ASCII (special chars in symbols/notes/API fields), crashing the
+    # runner silently. The parent already reads/writes the scan log as UTF-8 with
+    # errors='replace'; this closes the gap on the producing side.
+    _env["PYTHONIOENCODING"] = "utf-8"
 
     try:
         with open(scan_log, "a", encoding="utf-8") as lf:
