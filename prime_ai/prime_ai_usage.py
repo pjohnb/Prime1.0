@@ -7,7 +7,7 @@ the Settings AI Usage section. Uses Anthropic's exact field names:
 input_tokens, output_tokens (matching the Anthropic Console).
 
 Cost rate: $3.00/1M input tokens, $15.00/1M output tokens
-(claude-sonnet-4-20250514 pricing as of 2026-06-08).
+(claude-sonnet-4-6 pricing as of 2026-06-24).
 """
 
 import sqlite3
