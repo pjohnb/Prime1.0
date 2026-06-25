@@ -9,6 +9,7 @@ function _settApi() {
 }
 
 // Sprint 27 Item 4: update topbar mode pill and order-entry banner.
+// CIL-NEW-03: also update the persistent PAPER mode amber banner on all tabs.
 async function updateModePill() {
   try {
     const resp = await fetch(_settApi() + '/schwab/status');
@@ -30,6 +31,12 @@ async function updateModePill() {
       banner.textContent = isLive
         ? 'LIVE MODE — orders route to your real Schwab account. Real money at risk.'
         : 'PAPER MODE — trades are simulated, no real money at risk';
+    }
+
+    // CIL-NEW-03: persistent amber banner visible on all tabs in PAPER mode.
+    const paperBanner = document.getElementById('paper-mode-banner');
+    if (paperBanner) {
+      paperBanner.style.display = isLive ? 'none' : 'flex';
     }
   } catch (e) { /* API offline — keep defaults */ }
 }
