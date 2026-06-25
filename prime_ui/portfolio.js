@@ -187,7 +187,7 @@ function _renderRows(rows) {
 
   const tbody = document.getElementById('portfolio-rows');
   if (!sorted.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text3);padding:20px">No open positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:20px">No open positions</td></tr>';
     return;
   }
   tbody.innerHTML = sorted.map(row => {
@@ -199,6 +199,8 @@ function _renderRows(rows) {
     const warnIcon = row.position_warning
       ? ' <span data-tooltip="This position exceeds the 15% concentration limit. Consider trimming or using the Rebalance advisor.">⚠</span>'
       : '';
+    const stopStyle = _stopColorStyle(row.stop_price, row.current_price);
+    const stopDisplay = row.stop_price != null ? '$' + _fmt(row.stop_price) : '--';
     return `<tr>
       <td style="font-family:var(--mono);font-weight:700">${row.symbol}${warnIcon}</td>
       <td style="font-family:var(--mono)">${row.total_shares}</td>
@@ -207,6 +209,7 @@ function _renderRows(rows) {
       <td style="font-family:var(--mono)">$${_fmt(row.market_value)}</td>
       <td style="font-family:var(--mono);color:${pnlColor}">$${_fmt(row.unrealized_pnl)}</td>
       <td style="font-family:var(--mono);color:${pnlPctColor}">${row.unrealized_pnl_pct.toFixed(2)}%</td>
+      <td style="font-family:var(--mono);${stopStyle}">${stopDisplay}</td>
       <td style="font-size:12px;color:var(--text3)">${accounts}</td>
       <td><span style="${dkStyle}" data-tooltip="CONFIRMING = institutional dark pool buying detected (bullish). NULLIFYING = institutional selling detected (bearish). NEUTRAL = no significant dark pool activity.">${row.dk_status}</span></td>
       <td><button class="btn-sell" style="padding:3px 10px;font-size:12px"
@@ -214,6 +217,16 @@ function _renderRows(rows) {
            onclick='openSellModal(${JSON.stringify(row)})'>Sell</button></td>
     </tr>`;
   }).join('');
+}
+
+// ── Stop price color coding ──────────────────────────────────────────────────
+
+function _stopColorStyle(stopPrice, currentPrice) {
+  if (stopPrice == null) return 'color:#888888';
+  if (currentPrice <= stopPrice) return 'color:#ef4444';        // breached (red)
+  const pct = (currentPrice - stopPrice) / stopPrice;
+  if (pct <= 0.03) return 'color:#f59e0b';                     // within 3% (amber)
+  return 'color:#888888';                                        // normal (grey)
 }
 
 function _dkStyle(status) {

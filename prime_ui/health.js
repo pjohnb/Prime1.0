@@ -77,7 +77,7 @@ function _renderHealthRows(positions) {
   if (!body) return;
   if (!positions.length) {
     body.innerHTML =
-      `<tr><td colspan="11" class="empty-state" style="color:var(--text3);text-align:center;padding:24px">` +
+      `<tr><td colspan="12" class="empty-state" style="color:var(--text3);text-align:center;padding:24px">` +
       `No open positions to monitor.</td></tr>`;
     return;
   }
@@ -97,11 +97,17 @@ function _renderHealthRows(positions) {
       ? _dkBadge(p.dk_status, p.dk_conviction)
       : (p.dk_status || '--');
     const evaluated = p.evaluated_at ? formatET(p.evaluated_at, true) : '--';
+    const curPrice = p.current_price != null ? Number(p.current_price) : null;
+    const stopStyle = (typeof _stopColorStyle === 'function')
+      ? _stopColorStyle(p.stop_price, curPrice)
+      : 'color:#888888';
+    const stopStr = p.stop_price != null ? `$${Number(p.stop_price).toFixed(2)}` : '--';
     return `<tr>
       <td style="font-weight:600">${p.symbol || '--'}</td>
       <td><span class="badge ${dirCls}">${dir}</span></td>
       <td style="font-family:var(--mono)">${entry}</td>
       <td style="font-family:var(--mono)">${cur}</td>
+      <td style="font-family:var(--mono);${stopStyle}">${stopStr}</td>
       <td style="font-family:var(--mono);color:${pnlColor}">${pnlStr}</td>
       <td style="font-family:var(--mono)">${days}</td>
       <td>${p.scanner || '--'}</td>

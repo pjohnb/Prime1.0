@@ -162,6 +162,7 @@ def get_positions_health():
             elif thesis == "AMBER":
                 amber_count += 1
 
+            raw_stop = p.get("stop_price")
             positions.append({
                 "log_id": log_id,
                 "symbol": symbol,
@@ -176,6 +177,7 @@ def get_positions_health():
                 "latest_signal_ts": latest_ts,
                 "thesis_status": thesis,
                 "evaluated_at": evaluated_at,
+                "stop_price": round(float(raw_stop), 4) if raw_stop is not None else None,
             })
 
         return jsonify({
@@ -1334,6 +1336,7 @@ def get_portfolio():
                     "total_cost":   0.0,
                     "accounts":     [],
                     "log_ids":      [],
+                    "stop_prices":  [],
                     "direction":    (p.get("direction") or "LONG").upper(),
                 }
             ep = float(p.get("entry_price") or p.get("price_at_scan") or 0.0)
@@ -1344,6 +1347,9 @@ def get_portfolio():
             if acc and acc not in groups[sym]["accounts"]:
                 groups[sym]["accounts"].append(acc)
             groups[sym]["log_ids"].append(p.get("log_id"))
+            sp = p.get("stop_price")
+            if sp is not None:
+                groups[sym]["stop_prices"].append(float(sp))
 
         # Fetch current prices from Schwab (best-effort)
         symbols = list(groups.keys())
@@ -1390,6 +1396,9 @@ def get_portfolio():
             except Exception:
                 pass
 
+            stop_prices = g["stop_prices"]
+            stop_price = min(stop_prices) if stop_prices else None
+
             row = {
                 "symbol":            sym,
                 "total_shares":      shares,
@@ -1403,6 +1412,7 @@ def get_portfolio():
                 "direction":         direction,
                 "dk_status":         dk_status,
                 "log_ids":           g["log_ids"],
+                "stop_price":        round(stop_price, 4) if stop_price is not None else None,
             }
             rows.append(row)
             total_market_value += market_val

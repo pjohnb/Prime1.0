@@ -234,5 +234,79 @@ class TestPortfolioRefreshSync(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
 
+class TestStopPriceDisplay(unittest.TestCase):
+    """CIL-NEW-04: /api/v1/portfolio returns stop_price per position."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_stop_display.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch(
+            "prime_config.prime_config.get_config", return_value=_mock_config()
+        )
+        self._cfg_patcher.start()
+        self._schwab_patcher = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation"),
+        )
+        self._schwab_patcher.start()
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self._schwab_patcher.stop()
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    _counter = 0
+
+    def _insert(self, symbol, shares, price, account="7926"):
+        TestStopPriceDisplay._counter += 1
+        ts = f"2026-06-25T10:{TestStopPriceDisplay._counter:02d}:00"
+        return insert_trade(
+            strategy="MANUAL",
+            symbol=symbol,
+            direction="LONG",
+            mode="PAPER",
+            order_type="MARKET",
+            shares=shares,
+            entry_time=ts,
+            price_at_scan=price,
+            entry_price=price,
+            account=account,
+            trade_source="PAPER",
+            db_path=self.db,
+        )
+
+    def test_portfolio_endpoint_includes_stop_price(self):
+        from prime_data.prime_db import set_trade_stop_target
+        log_id = self._insert("NVDA", 10, 150.0)
+        set_trade_stop_target(log_id=log_id, stop_price=140.0, db_path=self.db)
+        resp = self.client.get("/api/v1/portfolio")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        row = next(r for r in d["rows"] if r["symbol"] == "NVDA")
+        self.assertIn("stop_price", row)
+        self.assertAlmostEqual(row["stop_price"], 140.0, places=2)
+
+    def test_portfolio_stop_price_null_when_not_set(self):
+        self._insert("AMZN", 5, 200.0)
+        resp = self.client.get("/api/v1/portfolio")
+        d = resp.get_json()
+        row = next(r for r in d["rows"] if r["symbol"] == "AMZN")
+        self.assertIn("stop_price", row)
+        self.assertIsNone(row["stop_price"])
+
+
 if __name__ == "__main__":
     unittest.main()

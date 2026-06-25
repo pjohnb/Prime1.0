@@ -871,6 +871,7 @@ def get_open_positions_with_signal_context(
                    t.entry_price AS entry_price,
                    t.entry_time  AS entry_time,
                    t.signal_id   AS signal_id,
+                   t.stop_price  AS stop_price,
                    s.strategy    AS scanner,
                    s.dk_status   AS dk_status,
                    s.score       AS score,
