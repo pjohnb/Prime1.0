@@ -284,6 +284,26 @@ def dismiss_signal(signal_id: str, db_path: Optional[Path] = None) -> str:
         return "DISMISSED"
 
 
+def get_signal_by_id(signal_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Return a single signal row as a dict, or None if not found."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM prime_signals WHERE signal_id=?", (signal_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def update_signal_status(signal_id: str, status: str, db_path: Optional[Path] = None) -> bool:
+    """Set signal status (e.g. 'EXECUTED'). Returns True if a row was updated."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE prime_signals SET status=? WHERE signal_id=?",
+            (status, signal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 def get_analytics_summary(
     strategy: Optional[str] = None,
     date_from: Optional[str] = None,

@@ -12,7 +12,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any, Dict
@@ -233,6 +233,243 @@ def dismiss_signal_endpoint(signal_id):
     if result == "ALREADY_DISMISSED":
         return jsonify({"error": "signal already dismissed"}), 409
     return jsonify({"signal_id": signal_id, "status": "DISMISSED"}), 200
+
+
+def _is_rth() -> bool:
+    """True if the current ET wall-clock time falls within RTH (09:30–16:00 Mon–Fri)."""
+    import zoneinfo
+    from datetime import timezone as _tz
+    try:
+        et = datetime.now(zoneinfo.ZoneInfo("America/New_York"))
+    except Exception:
+        # Fallback: UTC-4 (EDT) if zoneinfo unavailable
+        et = datetime.now(_tz(timedelta(hours=-4)))
+    if et.weekday() >= 5:
+        return False
+    mins = et.hour * 60 + et.minute
+    return 9 * 60 + 30 <= mins <= 16 * 60
+
+
+@api_bp.route("/signals/<string:signal_id>/execute", methods=["POST"])
+@require_local_token
+def execute_signal_endpoint(signal_id):
+    """POST /api/v1/signals/{signal_id}/execute -- buy an APPROVED signal via MATA.
+
+    CIL-NEW-06. Body: {order_type, limit_price (optional), confirmed: true}.
+    Returns: {orders_placed, allocated_total, signal_id}.
+    Writes each filled trade to prime_trade_log with signal_id linkage.
+    Updates signal status to EXECUTED on success.
+    PAPER mode: routes through PAPER path (no Schwab call).
+    After-hours: MARKET orders outside RTH are rejected with a 400 so the UI
+    can prompt for a limit price.
+    """
+    from prime_analytics.prime_signals_db import get_signal_by_id, update_signal_status
+    from prime_config.prime_config import get_config
+    from prime_data.prime_db import insert_trade, TradeRecordError
+
+    if not signal_id:
+        return jsonify({"error": "signal_id is required"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    order_type = str(payload.get("order_type", "MARKET")).strip().upper()
+    if order_type not in ("MARKET", "LIMIT"):
+        order_type = "MARKET"
+    confirmed = bool(payload.get("confirmed", False))
+    limit_price_raw = payload.get("limit_price")
+
+    if not confirmed:
+        return jsonify({"error": "confirmed is required to execute a signal"}), 400
+
+    sig = get_signal_by_id(signal_id)
+    if sig is None:
+        return jsonify({"error": "unknown signal_id"}), 404
+    if (sig.get("status") or "").upper() not in ("APPROVED", "STRONG", "WATCH"):
+        return jsonify({"error": f"signal status is '{sig.get('status')}' — only APPROVED signals can be executed"}), 409
+
+    symbol = (sig.get("symbol") or "").upper()
+    strategy = sig.get("strategy") or "SIGNAL"
+    entry_price_scan = float(sig.get("entry_price") or 0.0)
+
+    # After-hours guard: MARKET orders require RTH.
+    if order_type == "MARKET" and not _is_rth():
+        return jsonify({
+            "error": "after_hours",
+            "message": "After-hours session — LIMIT order required. Enter a limit price.",
+        }), 400
+
+    # Resolve limit price.
+    limit_price_val: float | None = None
+    if order_type == "LIMIT":
+        try:
+            limit_price_val = float(limit_price_raw) if limit_price_raw is not None else None
+        except (TypeError, ValueError):
+            limit_price_val = None
+        if not limit_price_val or limit_price_val <= 0:
+            return jsonify({"error": "limit_price is required for LIMIT orders"}), 400
+
+    cfg = get_config()
+    mode_cfg = (cfg.trading_mode or "PAPER").upper()
+    now = datetime.now()
+
+    # ── Fetch live quote ───────────────────────────────────────────────────────
+    live_price = 0.0
+    schwab_client = None
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        schwab_client = SchwabClient()
+        schwab_client.connect()
+        quotes = schwab_client.get_quotes([symbol])
+        data = quotes.get(symbol) or quotes.get(symbol.upper()) or {}
+        price = (
+            data.get("quote", {}).get("lastPrice")
+            or data.get("quote", {}).get("mark")
+            or 0.0
+        )
+        live_price = float(price) if price else 0.0
+    except Exception as e:
+        logger.debug("execute_signal: live quote failed for %s: %s", symbol, e)
+
+    execution_price = limit_price_val if order_type == "LIMIT" and limit_price_val else live_price
+    if execution_price <= 0:
+        execution_price = entry_price_scan
+    if execution_price <= 0:
+        return jsonify({"error": "could not determine a valid execution price — Schwab may be offline"}), 400
+
+    # ── Load MATA accounts and compute per-account allocation ─────────────────
+    max_order_pct = float(getattr(cfg.ops, "max_order_pct", 0.1))
+    orders_placed = []
+    total_allocated = 0
+
+    try:
+        from prime_trading.prime_mata import load_accounts
+        mata_accounts = load_accounts()
+    except Exception:
+        mata_accounts = []
+
+    if mode_cfg == "LIVE" and schwab_client is not None:
+        # Fetch live buying power per account.
+        try:
+            acct_numbers_resp = schwab_client.client.get_account_numbers()
+            if acct_numbers_resp.status_code == 200:
+                for acct in acct_numbers_resp.json():
+                    suffix = (acct.get("accountNumber") or "")[-4:]
+                    hash_val = acct.get("hashValue", "")
+                    # Check if this account is in MATA profile; default weight=1.
+                    mata_entry = next(
+                        (a for a in mata_accounts if str(a.get("name", "")).endswith(suffix)), None
+                    )
+                    if mata_accounts and mata_entry is None:
+                        continue  # account not in MATA profile — skip
+                    try:
+                        bp_resp = schwab_client.client.get_account(hash_val)
+                        if bp_resp.status_code == 200:
+                            cb = bp_resp.json().get("securitiesAccount", {}).get("currentBalances", {})
+                            buying_power = float(cb.get("buyingPower") or cb.get("availableFunds") or 0.0)
+                        else:
+                            buying_power = 0.0
+                    except Exception:
+                        buying_power = 0.0
+                    shares = int(buying_power * max_order_pct / execution_price)
+                    if shares <= 0:
+                        continue
+                    try:
+                        from prime_trading.prime_schwab_orders import submit_order, OrderGateError
+                        result = submit_order(
+                            symbol=symbol,
+                            qty=shares,
+                            side="BUY",
+                            order_type=order_type,
+                            price=execution_price,
+                            account_hash=hash_val,
+                            confirmed=True,
+                            schwab_client=schwab_client,
+                        )
+                        log_id = insert_trade(
+                            strategy=strategy,
+                            symbol=symbol,
+                            direction="LONG",
+                            mode="LIVE",
+                            order_type=order_type,
+                            shares=shares,
+                            entry_time=now.isoformat(),
+                            price_at_scan=entry_price_scan or execution_price,
+                            entry_price=execution_price,
+                            account=suffix,
+                            order_id=result.get("order_id"),
+                            signal_source="SIGNAL_EXECUTE",
+                            trade_source="LIVE",
+                            limit_price=limit_price_val,
+                            signal_id=signal_id,
+                        )
+                        orders_placed.append({
+                            "account": suffix,
+                            "shares": shares,
+                            "order_id": result.get("order_id"),
+                            "log_id": log_id,
+                            "status": "SUBMITTED",
+                        })
+                        total_allocated += shares
+                    except Exception as order_err:
+                        logger.error("execute_signal LIVE order failed for %s: %s", suffix, order_err)
+                        orders_placed.append({
+                            "account": suffix,
+                            "shares": shares,
+                            "status": "FAILED",
+                            "error": str(order_err),
+                        })
+        except Exception as e:
+            logger.error("execute_signal: account iteration error: %s", e)
+
+    else:
+        # PAPER mode: simulate across MATA accounts (or one synthetic account).
+        paper_accounts = mata_accounts if mata_accounts else [{"name": "PAPER", "buying_power": 100000}]
+        for acct in paper_accounts:
+            bp = float(acct.get("buying_power", 100000) or 100000)
+            shares = int(bp * max_order_pct / execution_price)
+            if shares <= 0:
+                continue
+            acct_name = str(acct.get("name", "PAPER"))
+            try:
+                log_id = insert_trade(
+                    strategy=strategy,
+                    symbol=symbol,
+                    direction="LONG",
+                    mode="PAPER",
+                    order_type=order_type,
+                    shares=shares,
+                    entry_time=now.isoformat(),
+                    price_at_scan=entry_price_scan or execution_price,
+                    entry_price=execution_price,
+                    account=acct_name,
+                    signal_source="SIGNAL_EXECUTE",
+                    trade_source="PAPER",
+                    limit_price=limit_price_val,
+                    signal_id=signal_id,
+                )
+                orders_placed.append({
+                    "account": acct_name,
+                    "shares": shares,
+                    "log_id": log_id,
+                    "status": "PAPER_SIMULATED",
+                })
+                total_allocated += shares
+            except TradeRecordError as e:
+                orders_placed.append({"account": acct_name, "shares": shares, "status": "FAILED", "error": str(e)})
+
+    if total_allocated > 0:
+        try:
+            update_signal_status(signal_id, "EXECUTED")
+        except Exception as e:
+            logger.warning("execute_signal: could not update signal status: %s", e)
+
+    return jsonify({
+        "signal_id": signal_id,
+        "symbol": symbol,
+        "orders_placed": orders_placed,
+        "allocated_total": total_allocated,
+        "execution_price": execution_price,
+        "mode": mode_cfg,
+    }), 200 if orders_placed else 400
 
 
 @api_bp.route("/advisory/positions", methods=["GET"])

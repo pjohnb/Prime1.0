@@ -14,9 +14,109 @@ function dkBadgeLabel(dk) {
   return 'NEUTRAL';
 }
 
-// CIL-075: bearer token for the write-side dismiss endpoint (require_local_token).
+// CIL-075 / CIL-NEW-06: bearer token for write-side endpoints (require_local_token).
 function _sigToken() {
   return (window.PRIME_CONFIG && window.PRIME_CONFIG.apiToken) || '';
+}
+
+// CIL-NEW-06: after-hours detection (09:30–16:00 ET Mon–Fri).
+function _isRTH() {
+  const etStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const et = new Date(etStr);
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return mins >= 9 * 60 + 30 && mins <= 16 * 60;
+}
+
+// CIL-NEW-06: pending buy-signal state.
+let _pendingBuySignal = null;
+
+function openBuySignalConfirm(signalId, symbol, tier, price) {
+  const rth = _isRTH();
+  _pendingBuySignal = { signalId, symbol, tier, price, orderType: rth ? 'MARKET' : 'LIMIT' };
+
+  const detailEl = document.getElementById('buy-signal-details');
+  const limitRow = document.getElementById('buy-signal-limit-row');
+  const warnEl   = document.getElementById('buy-signal-ah-warn');
+
+  if (detailEl) {
+    detailEl.innerHTML =
+      `<div>Symbol: <b>${symbol}</b></div>` +
+      `<div>Tier: <b>${tier || '--'}</b></div>` +
+      `<div>Scan Price: <b>$${Number(price || 0).toFixed(2)}</b></div>` +
+      `<div>Execution: <b>MATA across all configured accounts</b></div>` +
+      `<div>Order Type: <b>${rth ? 'MARKET' : 'LIMIT (after-hours)'}</b></div>`;
+  }
+  if (warnEl)   warnEl.style.display = rth ? 'none' : 'block';
+  if (limitRow) limitRow.style.display = rth ? 'none' : 'block';
+
+  const modal = document.getElementById('buy-signal-modal');
+  if (modal) modal.classList.add('open');
+}
+
+function closeBuySignalModal() {
+  _pendingBuySignal = null;
+  const modal = document.getElementById('buy-signal-modal');
+  if (modal) modal.classList.remove('open');
+  const limitInput = document.getElementById('buy-signal-limit-price');
+  if (limitInput) limitInput.value = '';
+  const msgEl = document.getElementById('buy-signal-msg');
+  if (msgEl) msgEl.textContent = '';
+}
+
+async function submitBuySignal() {
+  if (!_pendingBuySignal) return;
+  const { signalId, symbol, orderType } = _pendingBuySignal;
+
+  const limitPriceEl = document.getElementById('buy-signal-limit-price');
+  const limitPrice   = limitPriceEl ? parseFloat(limitPriceEl.value) : null;
+  const msgEl        = document.getElementById('buy-signal-msg');
+  const confirmBtn   = document.getElementById('buy-signal-confirm-btn');
+
+  if (orderType === 'LIMIT' && (!limitPrice || limitPrice <= 0)) {
+    if (msgEl) { msgEl.textContent = 'Limit price is required for after-hours orders.'; msgEl.style.color = 'var(--red)'; }
+    return;
+  }
+
+  if (confirmBtn) confirmBtn.disabled = true;
+
+  const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
+  const payload = {
+    order_type: orderType,
+    confirmed: true,
+  };
+  if (orderType === 'LIMIT' && limitPrice > 0) payload.limit_price = limitPrice;
+
+  try {
+    const resp = await fetch(API + '/signals/' + encodeURIComponent(signalId) + '/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _sigToken() },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.ok) {
+      const total = data.allocated_total || 0;
+      const mode  = data.mode || 'PAPER';
+      if (msgEl) { msgEl.textContent = `${mode}: ${total} shares of ${symbol} ordered. Signal marked EXECUTED.`; msgEl.style.color = 'var(--green)'; }
+      setTimeout(() => { closeBuySignalModal(); loadSignals(); }, 1800);
+    } else if (data.error === 'after_hours') {
+      // Server confirmed after-hours — switch to LIMIT mode without closing.
+      _pendingBuySignal.orderType = 'LIMIT';
+      const warnEl   = document.getElementById('buy-signal-ah-warn');
+      const limitRow = document.getElementById('buy-signal-limit-row');
+      if (warnEl)   warnEl.style.display = 'block';
+      if (limitRow) limitRow.style.display = 'block';
+      if (msgEl) { msgEl.textContent = data.message || 'After-hours: LIMIT order required.'; msgEl.style.color = 'var(--amber)'; }
+    } else {
+      if (msgEl) { msgEl.textContent = `Error: ${data.error || resp.status}`; msgEl.style.color = 'var(--red)'; }
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = 'Network error: ' + e.message; msgEl.style.color = 'var(--red)'; }
+  } finally {
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
 }
 
 // CIL-075: soft-delete a PEAD signal, then reload the table so it drops out of
@@ -221,7 +321,10 @@ async function loadSignals() {
         <td><span class="badge ${dkClass}" title="${dkTooltip}">${dkLabel}</span></td>
         <td style="font-family:var(--mono)" title="Price at time of scan — not a limit order price">$${(s.entry_price || 0).toFixed(2)}</td>
         <td title="${statusTooltip}">${status}</td>
-        <td>${isPead && s.signal_id ? `<button onclick="dismissSignal('${s.signal_id}')" title="Remove this signal from the queue. Signal is preserved for ML training data and will not be re-displayed." style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:2px 8px;border-radius:3px;font-size:11px;cursor:pointer">Dismiss</button>` : ''}</td>
+        <td style="display:flex;gap:4px;align-items:center">
+          ${status === 'APPROVED' && s.signal_id ? `<button onclick="openBuySignalConfirm('${s.signal_id}','${s.symbol || ''}','${s.tier || ''}',${s.entry_price || 0})" title="Execute a MATA buy order for this signal across all configured accounts." style="background:#14532d;border:1px solid #16a34a;color:#86efac;padding:2px 10px;border-radius:3px;font-size:11px;font-weight:700;cursor:pointer">Buy</button>` : ''}
+          ${isPead && s.signal_id ? `<button onclick="dismissSignal('${s.signal_id}')" title="Remove this signal from the queue. Signal is preserved for ML training data and will not be re-displayed." style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:2px 8px;border-radius:3px;font-size:11px;cursor:pointer">Dismiss</button>` : ''}
+        </td>
       </tr>`;
     });
   } catch(e) {

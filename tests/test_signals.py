@@ -52,12 +52,12 @@ class _SignalsBase(unittest.TestCase):
         if self.db.exists():
             self.db.unlink()
 
-    def _insert(self, symbol="AAPL", strategy="PEAD", status="APPROVED"):
+    def _insert(self, symbol="AAPL", strategy="PEAD", status="APPROVED", entry_price=150.0):
         _SignalsBase._counter += 1
         ts = f"2026-06-20T10:{_SignalsBase._counter:02d}:00"
         return insert_signal(
             symbol=symbol, strategy=strategy, scan_ts=ts, score=80.0,
-            tier="STRONG", status=status, db_path=self.db,
+            tier="STRONG", status=status, entry_price=entry_price, db_path=self.db,
         )
 
 
@@ -150,6 +150,88 @@ class TestDismissEndpoint(_SignalsBase):
     def test_dismiss_requires_token(self):
         sid = self._insert()
         resp = self.client.post(f"/api/v1/signals/{sid}/dismiss")  # no Authorization
+        self.assertEqual(resp.status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+# CIL-NEW-06: POST /api/v1/signals/{signal_id}/execute
+# ---------------------------------------------------------------------------
+
+class TestExecuteSignalEndpoint(_SignalsBase):
+    """Tests for the Buy Signal Execution endpoint."""
+
+    def setUp(self):
+        super().setUp()
+        self._cfg_patcher = patch(
+            "prime_config.prime_config.get_config", return_value=_mock_config()
+        )
+        self._cfg_patcher.start()
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self._cfg_patcher.stop()
+        super().tearDown()
+
+    def _post_execute(self, signal_id, payload=None):
+        body = payload or {"order_type": "MARKET", "confirmed": True}
+        return self.client.post(
+            f"/api/v1/signals/{signal_id}/execute",
+            json=body,
+            headers={"Authorization": f"Bearer {_TOKEN}"},
+        )
+
+    def test_execute_signal_endpoint(self):
+        """Execute returns 200 and orders_placed list for an APPROVED signal."""
+        sid = self._insert(symbol="MU", strategy="PEAD", status="APPROVED", entry_price=200.0)
+        # Patch RTH to True and Schwab to raise so we fall back to entry_price_scan.
+        with patch("prime_api.prime_api_routes._is_rth", return_value=True), \
+             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")):
+            resp = self._post_execute(sid)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("orders_placed", data)
+        self.assertIn("allocated_total", data)
+        self.assertEqual(data["signal_id"], sid)
+
+    def test_execute_signal_paper_mode(self):
+        """PAPER mode: execute simulates order without calling Schwab."""
+        sid = self._insert(symbol="NVDA", strategy="PEAD", status="APPROVED", entry_price=900.0)
+        with patch("prime_api.prime_api_routes._is_rth", return_value=True), \
+             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")):
+            resp = self._post_execute(sid)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["mode"], "PAPER")
+        statuses = [o.get("status") for o in data.get("orders_placed", [])]
+        self.assertTrue(any("PAPER" in (s or "") for s in statuses))
+
+    def test_execute_signal_after_hours_forces_limit(self):
+        """Outside RTH: MARKET order returns 400 with after_hours error."""
+        sid = self._insert(symbol="AAPL", strategy="PEAD", status="APPROVED")
+        with patch("prime_api.prime_api_routes._is_rth", return_value=False):
+            resp = self._post_execute(sid, {"order_type": "MARKET", "confirmed": True})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertEqual(data.get("error"), "after_hours")
+
+    def test_execute_unknown_signal_returns_404(self):
+        resp = self._post_execute("does-not-exist")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_execute_requires_confirmed(self):
+        sid = self._insert(status="APPROVED")
+        resp = self._post_execute(sid, {"order_type": "MARKET", "confirmed": False})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_execute_requires_token(self):
+        sid = self._insert(status="APPROVED")
+        resp = self.client.post(
+            f"/api/v1/signals/{sid}/execute",
+            json={"order_type": "MARKET", "confirmed": True},
+        )
         self.assertEqual(resp.status_code, 401)
 
 
