@@ -308,5 +308,106 @@ class TestStopPriceDisplay(unittest.TestCase):
         self.assertIsNone(row["stop_price"])
 
 
+class TestStopPriceUpdate(unittest.TestCase):
+    """CIL-NEW-05: PUT /api/v1/positions/{log_id}/stop updates DB and logs to ops_health."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_stop_update.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch(
+            "prime_config.prime_config.get_config", return_value=_mock_config()
+        )
+        self._cfg_patcher.start()
+        self._schwab_patcher = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation"),
+        )
+        self._schwab_patcher.start()
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self._schwab_patcher.stop()
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    _counter = 0
+
+    def _insert(self, symbol, shares, price):
+        TestStopPriceUpdate._counter += 1
+        ts = f"2026-06-25T11:{TestStopPriceUpdate._counter:02d}:00"
+        return insert_trade(
+            strategy="MANUAL",
+            symbol=symbol,
+            direction="LONG",
+            mode="PAPER",
+            order_type="MARKET",
+            shares=shares,
+            entry_time=ts,
+            price_at_scan=price,
+            entry_price=price,
+            account="7926",
+            trade_source="PAPER",
+            db_path=self.db,
+        )
+
+    def test_stop_price_update_endpoint(self):
+        log_id = self._insert("TSLA", 10, 250.0)
+        resp = self.client.put(
+            f"/api/v1/positions/{log_id}/stop",
+            json={"stop_price": 230.0},
+            headers={"Authorization": "Bearer test-token-abc123"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertAlmostEqual(d["stop_price"], 230.0, places=2)
+        # Verify DB was updated
+        from prime_data.prime_db import get_open_trades
+        trades = get_open_trades(db_path=self.db)
+        trade = next(t for t in trades if str(t["log_id"]) == str(log_id))
+        self.assertAlmostEqual(float(trade["stop_price"]), 230.0, places=2)
+
+    def test_stop_price_logged_to_ops_health(self):
+        log_id = self._insert("AAPL", 5, 200.0)
+        self.client.put(
+            f"/api/v1/positions/{log_id}/stop",
+            json={"stop_price": 185.0},
+            headers={"Authorization": "Bearer test-token-abc123"},
+        )
+        from prime_data.prime_db import get_ops_events
+        events = get_ops_events(db_path=self.db)
+        stop_events = [e for e in events if e.get("event_type") == "STOP_PRICE_UPDATED"]
+        self.assertTrue(len(stop_events) >= 1)
+        self.assertIn("AAPL", stop_events[0].get("detail", ""))
+
+    def test_stop_price_update_rejects_negative(self):
+        log_id = self._insert("GOOG", 2, 180.0)
+        resp = self.client.put(
+            f"/api/v1/positions/{log_id}/stop",
+            json={"stop_price": -10.0},
+            headers={"Authorization": "Bearer test-token-abc123"},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_stop_price_update_404_for_unknown(self):
+        resp = self.client.put(
+            "/api/v1/positions/nonexistent-log-id/stop",
+            json={"stop_price": 100.0},
+            headers={"Authorization": "Bearer test-token-abc123"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

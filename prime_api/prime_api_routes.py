@@ -1784,6 +1784,67 @@ def clear_stop_alert(log_id):
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/positions/<string:log_id>/stop", methods=["PUT"])
+@require_local_token
+def update_position_stop(log_id):
+    """PUT /api/v1/positions/{log_id}/stop -- update stop_price on an OPEN trade.
+
+    CIL-NEW-05. Validates that stop_price is a positive number.
+    Warns (but does not block) if stop is above current price for LONG positions
+    or below current price for SHORT positions.
+    Logs the change to prime_ops_health.
+    """
+    from prime_data.prime_db import update_stop_price, _STOP_NOT_FOUND, log_ops_event, get_open_trades
+    try:
+        data = request.get_json(silent=True) or {}
+        raw = data.get("stop_price")
+        if raw is None:
+            return jsonify({"error": "stop_price is required"}), 400
+        try:
+            new_stop = float(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "stop_price must be a number"}), 400
+        if new_stop <= 0:
+            return jsonify({"error": "stop_price must be positive"}), 400
+
+        old_stop = update_stop_price(log_id, new_stop)
+        if old_stop is _STOP_NOT_FOUND:
+            return jsonify({"error": "position not found or not OPEN"}), 404
+
+        # Determine symbol and direction for warning + logging
+        symbol = log_id
+        warning = None
+        try:
+            trades = get_open_trades()
+            trade = next((t for t in trades if str(t.get("log_id")) == str(log_id)), None)
+            if trade:
+                symbol = trade.get("symbol", log_id)
+                direction = (trade.get("direction") or "LONG").upper()
+                cur_price = float(trade.get("current_price") or trade.get("entry_price") or 0.0)
+                if direction == "LONG" and cur_price > 0 and new_stop > cur_price:
+                    warning = f"Stop ${new_stop:.2f} is above current price ${cur_price:.2f} for LONG position"
+                elif direction == "SHORT" and cur_price > 0 and new_stop < cur_price:
+                    warning = f"Stop ${new_stop:.2f} is below current price ${cur_price:.2f} for SHORT position"
+        except Exception:
+            pass
+
+        old_str = f"{old_stop:.2f}" if old_stop is not None else "none"
+        log_ops_event(
+            event_type="STOP_PRICE_UPDATED",
+            component="portfolio_ui",
+            symbol=symbol,
+            detail=f"{symbol} stop updated from {old_str} to {new_stop:.2f}",
+        )
+
+        result = {"log_id": log_id, "symbol": symbol, "stop_price": new_stop, "old_stop": old_stop}
+        if warning:
+            result["warning"] = warning
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error("update_position_stop error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/portfolio/rebalance", methods=["POST"])
 def portfolio_rebalance():
     """POST /api/v1/portfolio/rebalance -- ML-17 AI rebalance suggestions.

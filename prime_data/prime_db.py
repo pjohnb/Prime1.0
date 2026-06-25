@@ -706,6 +706,35 @@ def set_trade_stop_target(
         return cursor.rowcount > 0
 
 
+_STOP_NOT_FOUND = object()  # sentinel: distinguishes "not found" from "found with NULL stop"
+
+
+def update_stop_price(
+    log_id: str,
+    new_stop: float,
+    db_path: Optional[Path] = None,
+):
+    """Update stop_price on an OPEN trade.
+
+    Returns old stop_price (may be None if unset) on success.
+    Returns _STOP_NOT_FOUND sentinel if the log_id doesn't exist or is not OPEN.
+    """
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT stop_price FROM prime_trade_log WHERE log_id=? AND status='OPEN'",
+            (log_id,),
+        ).fetchone()
+        if row is None:
+            return _STOP_NOT_FOUND
+        old_stop = row["stop_price"]
+        conn.execute(
+            "UPDATE prime_trade_log SET stop_price=? WHERE log_id=? AND status='OPEN'",
+            (new_stop, log_id),
+        )
+        conn.commit()
+        return old_stop
+
+
 def get_closed_trades(
     limit: int = 500,
     db_path: Optional[Path] = None,

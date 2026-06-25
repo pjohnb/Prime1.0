@@ -13,6 +13,7 @@ let _portRows      = [];
 let _portSortKey   = 'market_value';
 let _portSortAsc   = false;
 let _pendingSell   = null;
+let _stopEditActive = false;
 
 // ── Load ────────────────────────────────────────────────────────────────────
 
@@ -201,6 +202,7 @@ function _renderRows(rows) {
       : '';
     const stopStyle = _stopColorStyle(row.stop_price, row.current_price);
     const stopDisplay = row.stop_price != null ? '$' + _fmt(row.stop_price) : '--';
+    const logIdsJson = JSON.stringify(row.log_ids || []).replace(/'/g, '&#39;');
     return `<tr>
       <td style="font-family:var(--mono);font-weight:700">${row.symbol}${warnIcon}</td>
       <td style="font-family:var(--mono)">${row.total_shares}</td>
@@ -209,7 +211,9 @@ function _renderRows(rows) {
       <td style="font-family:var(--mono)">$${_fmt(row.market_value)}</td>
       <td style="font-family:var(--mono);color:${pnlColor}">$${_fmt(row.unrealized_pnl)}</td>
       <td style="font-family:var(--mono);color:${pnlPctColor}">${row.unrealized_pnl_pct.toFixed(2)}%</td>
-      <td style="font-family:var(--mono);${stopStyle}">${stopDisplay}</td>
+      <td id="stop-cell-${row.symbol}" style="font-family:var(--mono);${stopStyle};cursor:pointer"
+          title="Click to edit stop price"
+          onclick="_openStopEdit('${row.symbol}', ${row.stop_price != null ? row.stop_price : 'null'}, ${row.current_price}, '${logIdsJson}', '${(row.direction||'LONG').toUpperCase()}')">${stopDisplay}</td>
       <td style="font-size:12px;color:var(--text3)">${accounts}</td>
       <td><span style="${dkStyle}" data-tooltip="CONFIRMING = institutional dark pool buying detected (bullish). NULLIFYING = institutional selling detected (bearish). NEUTRAL = no significant dark pool activity.">${row.dk_status}</span></td>
       <td><button class="btn-sell" style="padding:3px 10px;font-size:12px"
@@ -227,6 +231,80 @@ function _stopColorStyle(stopPrice, currentPrice) {
   const pct = (currentPrice - stopPrice) / stopPrice;
   if (pct <= 0.03) return 'color:#f59e0b';                     // within 3% (amber)
   return 'color:#888888';                                        // normal (grey)
+}
+
+// ── Stop price inline editing (CIL-NEW-05) ──────────────────────────────────
+
+function _openStopEdit(symbol, currentStop, currentPrice, logIdsJson, direction) {
+  if (_stopEditActive) return;
+  const cell = document.getElementById('stop-cell-' + symbol);
+  if (!cell) return;
+  let logIds;
+  try { logIds = JSON.parse(logIdsJson); } catch(e) { logIds = []; }
+  const val = currentStop != null ? currentStop : '';
+  cell.onclick = null;
+  cell.innerHTML =
+    `<input type="number" step="0.01" min="0.01" value="${val}" ` +
+    `id="stop-input-${symbol}" ` +
+    `style="width:80px;background:var(--bg4);border:1px solid var(--blue);color:var(--text);` +
+    `padding:2px 6px;font-family:var(--mono);font-size:12px;border-radius:3px" />`;
+  const input = document.getElementById('stop-input-' + symbol);
+  if (!input) return;
+  input.focus();
+  input.select();
+  const doConfirm = () => _confirmStopUpdate(symbol, currentStop, currentPrice, logIds, direction);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); doConfirm(); }
+    if (e.key === 'Escape') { _renderRows(_portRows); }
+  });
+  input.addEventListener('blur', () => {
+    if (!_stopEditActive) setTimeout(doConfirm, 50);
+  });
+}
+
+async function _confirmStopUpdate(symbol, oldStop, currentPrice, logIds, direction) {
+  if (_stopEditActive) return;
+  _stopEditActive = true;
+  try {
+    const input = document.getElementById('stop-input-' + symbol);
+    if (!input) { _renderRows(_portRows); return; }
+    const newVal = parseFloat(input.value);
+    if (isNaN(newVal) || newVal <= 0) { _renderRows(_portRows); return; }
+    if (oldStop != null && Math.abs(newVal - oldStop) < 0.001) { _renderRows(_portRows); return; }
+
+    const dir = (direction || 'LONG').toUpperCase();
+    let msg = `Set ${symbol} stop to $${newVal.toFixed(2)} — confirm?`;
+    if (dir === 'LONG' && newVal > currentPrice) {
+      msg += `\n\nWarning: stop $${newVal.toFixed(2)} is above current price $${currentPrice.toFixed(2)} for a LONG position.`;
+    } else if (dir === 'SHORT' && newVal < currentPrice) {
+      msg += `\n\nWarning: stop $${newVal.toFixed(2)} is below current price $${currentPrice.toFixed(2)} for a SHORT position.`;
+    }
+    if (!window.confirm(msg)) { _renderRows(_portRows); return; }
+
+    let lastError = null;
+    for (const logId of logIds) {
+      try {
+        const r = await fetch(_portApi() + '/positions/' + logId + '/stop', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _portToken() },
+          body: JSON.stringify({ stop_price: newVal }),
+        });
+        const d = await r.json();
+        if (!r.ok) lastError = d.error || String(r.status);
+      } catch(e) {
+        lastError = e.message;
+      }
+    }
+    if (lastError) {
+      _showPortToast('Stop update failed: ' + lastError, 'amber');
+      _renderRows(_portRows);
+    } else {
+      _showPortToast(`${symbol} stop set to $${newVal.toFixed(2)}`, 'green');
+      loadPortfolio();
+    }
+  } finally {
+    _stopEditActive = false;
+  }
 }
 
 function _dkStyle(status) {
