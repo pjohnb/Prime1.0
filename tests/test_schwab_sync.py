@@ -7,6 +7,7 @@ negative qty -> SHORT direction; sync endpoint returns correct counts.
 
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -426,6 +427,102 @@ class TestCollectiveInvestmentSectorMapping(unittest.TestCase):
         self.assertEqual(result["imported"], 1)
         self.assertEqual(self._get_trade_sector("ZZZZ"), "Unknown")
         self.assertIsNotNone(self._get_trade_sector("ZZZZ"))
+
+
+class TestSchwabSyncReimportGuard(unittest.TestCase):
+    """CIL-NEW-07: re-import guard for recently closed positions."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_reimport_guard.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self._patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def _close_symbol(self, symbol, hours_ago=1.0):
+        """Insert a CLOSED trade record as if it was closed hours_ago hours in the past."""
+        from prime_data.prime_db import insert_trade, get_connection
+        from datetime import timedelta
+        exit_time = (datetime.utcnow() - timedelta(hours=hours_ago)).isoformat()
+        # Insert as OPEN then manually close it with an exit_time in the past.
+        log_id = insert_trade(
+            strategy="SCHWAB_IMPORT", symbol=symbol, direction="LONG",
+            mode="PAPER", order_type="MARKET", shares=10,
+            entry_time=(datetime.utcnow() - timedelta(hours=hours_ago + 1)).isoformat(),
+            price_at_scan=100.0, entry_price=100.0, account="7926",
+            trade_source="SCHWAB_IMPORT", db_path=self.db,
+        )
+        with get_connection(self.db) as conn:
+            conn.execute(
+                "UPDATE prime_trade_log SET status='CLOSED', exit_time=? WHERE log_id=?",
+                (exit_time, log_id),
+            )
+            conn.commit()
+        return log_id
+
+    def test_schwab_sync_skips_recently_closed(self):
+        """A position closed within the grace period must not be re-imported."""
+        self._close_symbol("NVDA", hours_ago=2.0)  # closed 2h ago, within 24h grace
+
+        positions = {"7926": [_mock_position("NVDA", 100, 0, 820.0)]}
+        client = _make_mock_client(positions)
+
+        # Patch grace hours to 24 so the 2h-old close is within the window.
+        import json
+        from unittest.mock import mock_open
+        ops = json.dumps({"schwab_reimport_grace_hours": 24})
+        with patch("builtins.open", mock_open(read_data=ops)):
+            result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        self.assertEqual(result["imported"], 0, "NVDA should be skipped (recently closed)")
+        self.assertGreaterEqual(result["skipped"], 1)
+
+        from prime_data.prime_db import get_open_trades
+        open_syms = {t["symbol"] for t in get_open_trades(db_path=self.db)}
+        self.assertNotIn("NVDA", open_syms)
+
+    def test_schwab_sync_reimports_after_grace_period(self):
+        """A position closed beyond the grace period can be re-imported."""
+        self._close_symbol("TSLA", hours_ago=30.0)  # closed 30h ago, beyond 24h grace
+
+        positions = {"7926": [_mock_position("TSLA", 50, 0, 250.0)]}
+        client = _make_mock_client(positions)
+
+        import json
+        from unittest.mock import mock_open
+        ops = json.dumps({"schwab_reimport_grace_hours": 24})
+        with patch("builtins.open", mock_open(read_data=ops)):
+            result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        self.assertEqual(result["imported"], 1, "TSLA should be re-imported after grace period")
+
+        from prime_data.prime_db import get_open_trades
+        open_syms = {t["symbol"] for t in get_open_trades(db_path=self.db)}
+        self.assertIn("TSLA", open_syms)
+
+    def test_grace_period_configurable(self):
+        """schwab_reimport_grace_hours in ops_config controls the window."""
+        self._close_symbol("AAPL", hours_ago=5.0)  # closed 5h ago
+
+        positions = {"7926": [_mock_position("AAPL", 10, 0, 180.0)]}
+        client = _make_mock_client(positions)
+
+        import json
+        from unittest.mock import mock_open
+
+        # Grace = 3h: 5h-old close is OUTSIDE the window — should import.
+        ops_short = json.dumps({"schwab_reimport_grace_hours": 3})
+        with patch("builtins.open", mock_open(read_data=ops_short)):
+            result_short = sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        self.assertEqual(result_short["imported"], 1, "Should import with 3h grace (close was 5h ago)")
 
 
 if __name__ == "__main__":

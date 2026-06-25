@@ -307,6 +307,30 @@ def get_schwab_cash_total(schwab_client=None) -> Optional[float]:
     return round(total_cash, 2)
 
 
+def _recently_closed_symbols(grace_hours: float, db_path: Optional[Path] = None) -> Dict[str, str]:
+    """Return {symbol_upper: exit_time} for positions closed within the last grace_hours.
+
+    Queries prime_trade_log for CLOSED records whose exit_time is within the
+    grace period. Used by CIL-NEW-07 to prevent re-importing freshly-closed
+    positions that Schwab may still show briefly after the close.
+    """
+    from prime_data.prime_db import get_connection
+    from datetime import timedelta
+
+    cutoff = (datetime.utcnow() - timedelta(hours=grace_hours)).isoformat()
+    try:
+        with get_connection(db_path) as conn:
+            rows = conn.execute(
+                "SELECT symbol, exit_time FROM prime_trade_log "
+                "WHERE status='CLOSED' AND exit_time >= ?",
+                (cutoff,),
+            ).fetchall()
+        return {row[0].upper(): row[1] for row in rows}
+    except Exception as e:
+        logger.warning("_recently_closed_symbols query failed: %s", e)
+        return {}
+
+
 def sync_schwab_positions(
     db_path: Optional[Path] = None,
     schwab_client=None,
@@ -325,6 +349,17 @@ def sync_schwab_positions(
     from prime_data.prime_db import insert_trade, TradeRecordError
 
     result: Dict[str, Any] = {"imported": 0, "skipped": 0, "reconciled": 0, "errors": []}
+
+    # CIL-NEW-07: load re-import grace period from ops_config.json.
+    grace_hours = 24.0
+    try:
+        ops_path = Path(__file__).resolve().parent.parent / "ops_config.json"
+        import json as _json
+        with open(ops_path) as _f:
+            grace_hours = float(_json.load(_f).get("schwab_reimport_grace_hours", 24.0))
+    except Exception:
+        pass
+    recently_closed = _recently_closed_symbols(grace_hours, db_path)
 
     if schwab_client is None:
         try:
@@ -382,6 +417,16 @@ def sync_schwab_positions(
 
             if avg_price <= 0:
                 logger.warning("Skipping %s ...%s: zero/missing average price", symbol, suffix)
+                result["skipped"] += 1
+                continue
+
+            # CIL-NEW-07: skip symbols closed within the grace period.
+            if symbol in recently_closed:
+                exit_time = recently_closed[symbol]
+                logger.debug(
+                    "Skipping re-import of recently closed position: %s closed at %s",
+                    symbol, exit_time,
+                )
                 result["skipped"] += 1
                 continue
 
