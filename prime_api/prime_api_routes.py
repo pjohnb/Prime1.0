@@ -715,8 +715,13 @@ def get_tiers():
 def get_analytics_summary():
     """GET /api/v1/analytics/summary -- Overview tab data."""
     from prime_analytics.prime_signals_db import get_analytics_summary as fetch_summary
+    from prime_analytics.prime_signals_db import get_strategy_approval_rates
     try:
         summary = fetch_summary()
+        # CIL-NEW-09: merge approval_rate into each strategy entry.
+        rate_map = {r["strategy"]: r["approval_rate"] for r in get_strategy_approval_rates(days=7)}
+        for s in summary.get("strategies", []):
+            s["approval_rate"] = rate_map.get(s["strategy"], 0.0)
         return jsonify(summary), 200
     except Exception as e:
         logger.error("analytics summary error: %s", e)

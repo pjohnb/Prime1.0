@@ -101,12 +101,20 @@ function renderStrategyChart(strategies) {
   </div>`;
   const rows = strategies.map(s => {
     const pct = Math.round(((s.signal_count || 0) / maxCount) * 100);
+    const approvalRate = Math.min(100, Math.max(0, s.approval_rate || 0));
     const pnlColor = (s.total_pnl || 0) >= 0 ? '#22c55e' : '#ef4444';
     const pnlStr = (s.total_pnl || 0) >= 0 ? '+$' + s.total_pnl.toLocaleString() : '-$' + Math.abs(s.total_pnl).toLocaleString();
     return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
       <span style="font-family:var(--mono);font-size:12px;min-width:52px;color:var(--text2)">${s.strategy}</span>
-      <div style="flex:1;background:var(--bg4);border-radius:2px;height:12px;overflow:hidden">
-        <div style="width:${pct}%;height:100%;background:var(--amber);opacity:0.7;border-radius:2px"></div>
+      <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+        <div style="background:var(--bg4);border-radius:2px;height:6px;overflow:hidden"
+             title="${s.signal_count} signals (7-day volume)">
+          <div style="width:${pct}%;height:100%;background:var(--amber);opacity:0.7;border-radius:2px"></div>
+        </div>
+        <div style="background:var(--bg4);border-radius:2px;height:6px;overflow:hidden"
+             title="Approval Rate — % of signals passing Stage 0 screening. Higher = more discriminating scanner. ${approvalRate.toFixed(1)}%">
+          <div style="width:${approvalRate}%;height:100%;background:#3b82f6;opacity:0.8;border-radius:2px"></div>
+        </div>
       </div>
       <span style="font-family:var(--mono);font-size:11px;min-width:52px;text-align:right;color:${pnlColor}">${pnlStr}</span>
       <span style="font-family:var(--mono);font-size:11px;min-width:30px;text-align:right;color:var(--text3)">${s.win_rate}%</span>
