@@ -518,5 +518,30 @@ class TestDayCountExit(_PM04Base):
         self.assertEqual(row["exit_reason"], "DAY_COUNT_AUTO")
 
 
+class TestShortStopWithStoredStopPrice(unittest.TestCase):
+    """CIL-NEW-10: SHORT stop fires when price rises above stored stop_price."""
+
+    def test_stop_monitor_fires_when_short_price_rises(self):
+        """SHORT: BREACH when current_price >= stored stop_price."""
+        pos = _pos("TSLA", direction="SHORT", entry=100.0)
+        pos["stop_price"] = 105.0
+        breach = _check_position(pos, 106.0, {})
+        self.assertEqual(breach, "BREACH")
+
+    def test_stop_monitor_no_breach_when_short_price_below_stop(self):
+        """SHORT: no breach when current_price < stop_price."""
+        pos = _pos("TSLA", direction="SHORT", entry=100.0)
+        pos["stop_price"] = 105.0
+        breach = _check_position(pos, 103.0, {})
+        self.assertIsNone(breach)
+
+    def test_stop_monitor_fires_at_exactly_stop_price(self):
+        """SHORT: breach fires when price equals the stop_price (>= boundary)."""
+        pos = _pos("XLC", direction="SHORT", entry=80.0)
+        pos["stop_price"] = 84.0
+        breach = _check_position(pos, 84.0, {})
+        self.assertEqual(breach, "BREACH")
+
+
 if __name__ == "__main__":
     unittest.main()

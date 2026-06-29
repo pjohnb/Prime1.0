@@ -1644,6 +1644,8 @@ def mata_sell():
     order_type = str(payload.get("order_type", "MARKET")).upper()
     confirmed  = bool(payload.get("confirmed", False))
     holdings   = payload.get("account_holdings", [])
+    direction  = str(payload.get("direction", "LONG")).strip().upper()
+    is_cover   = direction == "SHORT"  # covering a short = BUY order
 
     try:
         price = float(payload.get("price", 0))
@@ -1714,7 +1716,7 @@ def mata_sell():
                 result = submit_order(
                     symbol=symbol,
                     qty=sell_qty,
-                    side="SELL",
+                    side="BUY" if is_cover else "SELL",
                     order_type=order_type,
                     price=price or 0.0,
                     account_hash=account_hash,
@@ -2522,6 +2524,60 @@ def post_scan_schedule():
         return jsonify({"error": str(e)}), 500
 
 
+def _eod_snapshot_job() -> None:
+    """Capture per-account balances at 16:05 ET weekdays (CIL-NEW-11)."""
+    from datetime import date as _date
+    today = _date.today()
+    if today.weekday() >= 5:
+        logger.debug("EOD snapshot skipped: weekend")
+        return
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        from prime_data.prime_db import insert_account_snapshot
+        client = SchwabClient()
+        client.connect()
+        resp = client.client.get_account_numbers()
+        if resp.status_code != 200:
+            logger.warning("EOD snapshot: get_account_numbers HTTP %d", resp.status_code)
+            return
+        accounts = resp.json()
+        balances: Dict[str, float] = {}
+        for acct in accounts:
+            suffix = (acct.get("accountNumber") or "")[-4:]
+            hash_val = acct.get("hashValue", "")
+            try:
+                r2 = client.client.get_account(hash_val)
+                if r2.status_code != 200:
+                    continue
+                b = r2.json().get("securitiesAccount", {}).get("currentBalances", {})
+                liq = float(
+                    b.get("liquidationValue")
+                    or b.get("totalEquity")
+                    or b.get("cashBalance")
+                    or 0
+                )
+                balances[suffix] = liq
+            except Exception:
+                pass
+        joint = balances.get("7926")
+        custodial = balances.get("0461")
+        ira = balances.get("8779")
+        total = round(sum(v for v in [joint, custodial, ira] if v is not None), 2)
+        insert_account_snapshot(
+            snapshot_date=str(today),
+            joint_balance=joint,
+            custodial_balance=custodial,
+            ira_balance=ira,
+            total_balance=total,
+        )
+        logger.info(
+            "EOD snapshot: joint=%s custodial=%s ira=%s total=%s",
+            joint, custodial, ira, total,
+        )
+    except Exception as e:
+        logger.warning("EOD snapshot job failed: %s", e)
+
+
 def init_scheduler() -> Any:
     """Create and start the APScheduler BackgroundScheduler.
 
@@ -2532,9 +2588,16 @@ def init_scheduler() -> Any:
     global _SCHEDULER
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
         scheduler = BackgroundScheduler(timezone="America/New_York")
         schedule = _read_schedule()
         _reschedule_all(scheduler, schedule)
+        scheduler.add_job(
+            _eod_snapshot_job,
+            trigger=CronTrigger(hour=16, minute=5, timezone="America/New_York"),
+            id="eod_snapshot",
+            replace_existing=True,
+        )
         scheduler.start()
         _SCHEDULER = scheduler
         logger.info("APScheduler started — %d scan jobs scheduled", len(scheduler.get_jobs()))
@@ -2542,6 +2605,18 @@ def init_scheduler() -> Any:
     except Exception as e:
         logger.warning("APScheduler init failed: %s", e)
         return None
+
+
+@api_bp.route("/account/snapshots", methods=["GET"])
+def get_account_snapshots_endpoint():
+    """GET /api/v1/account/snapshots -- last 30 EOD account balance snapshots (CIL-NEW-11)."""
+    from prime_data.prime_db import get_account_snapshots
+    try:
+        snaps = get_account_snapshots(limit=30)
+        return jsonify({"snapshots": snaps}), 200
+    except Exception as e:
+        logger.error("account/snapshots error: %s", e)
+        return jsonify({"snapshots": [], "error": str(e)}), 200
 
 
 @api_bp.route("/scans/log/files", methods=["GET"])

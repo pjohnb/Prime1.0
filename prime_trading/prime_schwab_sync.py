@@ -413,7 +413,10 @@ def sync_schwab_positions(
 
             direction = "SHORT" if net_qty < 0 else "LONG"
             shares = int(abs(net_qty))
-            avg_price = float(pos.get("averagePrice") or pos.get("averageLongPrice") or 0)
+            if direction == "SHORT":
+                avg_price = float(pos.get("averageShortPrice") or pos.get("averagePrice") or 0)
+            else:
+                avg_price = float(pos.get("averagePrice") or pos.get("averageLongPrice") or 0)
 
             if avg_price <= 0:
                 logger.warning("Skipping %s ...%s: zero/missing average price", symbol, suffix)
@@ -457,6 +460,7 @@ def sync_schwab_positions(
                     trade_source="SCHWAB_IMPORT",
                     notes=f"Imported from Schwab account ...{suffix}",
                     sector=sector,
+                    short_position=(direction == "SHORT"),
                     db_path=db_path,
                 )
                 existing.add(dedup_key)

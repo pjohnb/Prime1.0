@@ -241,6 +241,11 @@ function _renderRows(rows) {
     const perAcct = row.per_account_rows || [];
     const hasMultiAcct = isGrouped && perAcct.length > 1;
     const expanded = _portExpanded[row.symbol] !== false; // default expanded
+    const isShortRow = (row.direction || 'LONG').toUpperCase() === 'SHORT';
+    const shortBadge = isShortRow
+      ? ' <span style="background:#7f1d1d;color:#fca5a5;font-size:10px;font-family:var(--mono);padding:1px 4px;border-radius:3px;font-weight:700">SHORT</span>'
+      : '';
+    const btnLabel = hasMultiAcct ? (isShortRow ? 'Cover All' : 'Sell All') : (isShortRow ? 'Cover' : 'Sell');
 
     // Subtotal row (bold + lightly shaded when multi-account grouped)
     const subtotalBg = hasMultiAcct ? 'background:var(--bg4);font-weight:700;' : '';
@@ -250,7 +255,7 @@ function _renderRows(rows) {
       : '';
 
     htmlParts.push(`<tr style="${subtotalBg}">
-      <td style="font-family:var(--mono);font-weight:700">${expandToggle}${row.symbol}${warnIcon}</td>
+      <td style="font-family:var(--mono);font-weight:700">${expandToggle}${row.symbol}${shortBadge}${warnIcon}</td>
       <td style="font-family:var(--mono)">${row.total_shares}</td>
       <td style="font-family:var(--mono)">$${_fmt(row.avg_entry_price)}</td>
       <td style="font-family:var(--mono)">$${_fmt(row.current_price)}</td>
@@ -264,8 +269,8 @@ function _renderRows(rows) {
       <td><span style="${dkStyle}" data-tooltip="CONFIRMING = institutional dark pool buying detected (bullish). NULLIFYING = institutional selling detected (bearish). NEUTRAL = no significant dark pool activity.">${row.dk_status}</span></td>
       <td>
         <button class="btn-sell" style="padding:3px 10px;font-size:12px"
-          data-tooltip="${hasMultiAcct ? 'Sell All: close this position across all accounts via MATA.' : 'Close this position. A confirmation dialog will appear.'}"
-          onclick='openSellModal(${JSON.stringify(row)})'>${hasMultiAcct ? 'Sell All' : 'Sell'}</button>
+          data-tooltip="${hasMultiAcct ? (isShortRow ? 'Cover All: buy to close this short across all accounts via MATA.' : 'Sell All: close this position across all accounts via MATA.') : (isShortRow ? 'Cover: buy to close this short position.' : 'Close this position. A confirmation dialog will appear.')}"
+          onclick='openSellModal(${JSON.stringify(row)})'>${btnLabel}</button>
       </td>
     </tr>`);
 
@@ -292,8 +297,8 @@ function _renderRows(rows) {
           <td style="font-size:12px;color:var(--text3)">${ar.account}</td>
           <td></td>
           <td><button class="btn-sell" style="padding:2px 8px;font-size:11px"
-                data-tooltip="Sell this account's position only."
-                onclick='openSellModal(${JSON.stringify(aRowData)})'>Sell</button></td>
+                data-tooltip="${isShortRow ? 'Cover this account\'s short position only.' : 'Sell this account\'s position only.'}"
+                onclick='openSellModal(${JSON.stringify(aRowData)})'>${isShortRow ? 'Cover' : 'Sell'}</button></td>
         </tr>`);
       });
     }
@@ -504,6 +509,7 @@ async function submitSell() {
         price:            price,
         account_holdings: holdings,
         confirmed:        true,
+        direction:        row.direction || 'LONG',
       }),
     });
     const d = await resp.json();

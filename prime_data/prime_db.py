@@ -120,6 +120,19 @@ CREATE TABLE IF NOT EXISTS prime_position_health (
 )
 """
 
+# Sprint 35 CIL-NEW-11: daily EOD account balance snapshots.
+_PRIME_ACCOUNT_SNAPSHOTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS prime_account_snapshots (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date          TEXT NOT NULL UNIQUE,
+    joint_7926_balance     REAL,
+    custodial_0461_balance REAL,
+    ira_8779_balance       REAL,
+    total_balance          REAL,
+    created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 
 def _db_path(override: Optional[Path] = None) -> Path:
     if override is not None:
@@ -176,6 +189,11 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_ml_dataset(db_path, "dnow_score", "REAL")
     # Sprint 33 Thread 2 / CIL-040: ab_volume_raw (call-minus-put side volume).
     _migrate_add_column_ml_dataset(db_path, "ab_volume_raw", "REAL")
+
+    # Sprint 35 CIL-NEW-10: explicit short position flag for portfolio display.
+    _migrate_add_column_trade_log(db_path, "short_position", "INTEGER DEFAULT 0")
+    # Sprint 35 CIL-NEW-11: EOD account balance snapshots table.
+    _ensure_account_snapshots_table(db_path)
 
     return path
 
@@ -250,6 +268,20 @@ def _migrate_add_column_trade_log(
         pass
 
 
+def _ensure_account_snapshots_table(db_path: Optional[Path] = None) -> None:
+    """Idempotent creation of prime_account_snapshots (CIL-NEW-11)."""
+    try:
+        path = _db_path(db_path)
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute(_PRIME_ACCOUNT_SNAPSHOTS_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Trade log CRUD
 # ---------------------------------------------------------------------------
@@ -289,6 +321,7 @@ def insert_trade(
     limit_price: Optional[float] = None,
     sector: Optional[str] = None,
     signal_id: Optional[str] = None,
+    short_position: Optional[bool] = None,
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -320,8 +353,8 @@ def insert_trade(
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type, limit_price, sector,
-                signal_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                signal_id, short_position
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
@@ -329,7 +362,7 @@ def insert_trade(
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type or "FIXED",
-                limit_price, sector, signal_id,
+                limit_price, sector, signal_id, 1 if short_position else 0,
             ),
         )
         conn.commit()
@@ -353,6 +386,46 @@ def get_open_positions(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
             "SELECT * FROM prime_trade_log WHERE status = 'OPEN'"
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def insert_account_snapshot(
+    snapshot_date: str,
+    joint_balance: Optional[float] = None,
+    custodial_balance: Optional[float] = None,
+    ira_balance: Optional[float] = None,
+    total_balance: Optional[float] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Upsert an EOD account balance snapshot (CIL-NEW-11)."""
+    _ensure_account_snapshots_table(db_path)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """INSERT INTO prime_account_snapshots
+               (snapshot_date, joint_7926_balance, custodial_0461_balance,
+                ira_8779_balance, total_balance)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(snapshot_date) DO UPDATE SET
+                 joint_7926_balance=excluded.joint_7926_balance,
+                 custodial_0461_balance=excluded.custodial_0461_balance,
+                 ira_8779_balance=excluded.ira_8779_balance,
+                 total_balance=excluded.total_balance""",
+            (snapshot_date, joint_balance, custodial_balance, ira_balance, total_balance),
+        )
+        conn.commit()
+
+
+def get_account_snapshots(limit: int = 30, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return last `limit` EOD snapshots ordered DESC by date (CIL-NEW-11)."""
+    try:
+        _ensure_account_snapshots_table(db_path)
+        with get_connection(db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM prime_account_snapshots ORDER BY snapshot_date DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+    except Exception:
+        return []
 
 
 def get_pnl_history(days: int = 7, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:

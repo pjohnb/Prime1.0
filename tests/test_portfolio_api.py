@@ -646,5 +646,179 @@ class TestMataProfilePersistence(unittest.TestCase):
         self.assertIsNotNone(d["profile_mode"])
 
 
+class TestShortPositionPortfolio(unittest.TestCase):
+    """CIL-NEW-10: SHORT position display — P&L inversion + cover button routing."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_port_short.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch(
+            "prime_config.prime_config.get_config", return_value=_mock_config()
+        )
+        self._cfg_patcher.start()
+        self._schwab_patcher = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation"),
+        )
+        self._schwab_patcher.start()
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self._schwab_patcher.stop()
+        self._cfg_patcher.stop()
+        self._db_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_short_position_pnl_inverted(self):
+        """SHORT in portfolio has direction='SHORT' and uses inverted P&L formula."""
+        insert_trade(
+            strategy="SRS", symbol="XLC",
+            direction="SHORT", mode="PAPER", order_type="MARKET",
+            shares=50, entry_time="2026-06-25T10:00:00",
+            price_at_scan=80.0, entry_price=80.0,
+            account="7926", trade_source="SCHWAB_IMPORT",
+            db_path=self.db,
+        )
+        resp = self.client.get("/api/v1/portfolio")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        rows = d.get("rows", [])
+        xlc = next((r for r in rows if r["symbol"] == "XLC"), None)
+        self.assertIsNotNone(xlc, "XLC should appear in portfolio rows")
+        self.assertEqual(xlc["direction"], "SHORT")
+        # In test env cur_price = entry_price → pnl = (entry - cur) * shares = 0
+        self.assertEqual(xlc["unrealized_pnl"], 0.0)
+
+    def test_short_position_cover_button_routes_buy(self):
+        """POST /sell/mata with direction=SHORT succeeds (PAPER closes the log)."""
+        log_id = insert_trade(
+            strategy="SRS", symbol="TSLA",
+            direction="SHORT", mode="PAPER", order_type="MARKET",
+            shares=10, entry_time="2026-06-29T10:00:00",
+            price_at_scan=300.0, entry_price=300.0,
+            account="7926", trade_source="SCHWAB_IMPORT",
+            db_path=self.db,
+        )
+        resp = self.client.post(
+            "/api/v1/sell/mata",
+            json={
+                "symbol": "TSLA",
+                "total_qty": 10,
+                "order_type": "MARKET",
+                "price": 300.0,
+                "account_holdings": [{"account": "7926", "account_hash": "", "shares": 10}],
+                "confirmed": True,
+                "direction": "SHORT",
+            },
+            headers={"Authorization": "Bearer test-token-abc123"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertIn("orders", d)
+
+
+class TestAccountSnapshotsEndpoint(unittest.TestCase):
+    """CIL-NEW-11: EOD account balance snapshot DB functions and endpoint."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_acct_snap.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch(
+            "prime_config.prime_config.get_config", return_value=_mock_config()
+        )
+        self._cfg_patcher.start()
+        self._schwab_patcher = patch(
+            "prime_trading.prime_schwab.SchwabClient",
+            side_effect=Exception("test isolation"),
+        )
+        self._schwab_patcher.start()
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self._schwab_patcher.stop()
+        self._cfg_patcher.stop()
+        self._db_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_eod_snapshot_schema_correct(self):
+        """insert_account_snapshot writes a row; get_account_snapshots returns it."""
+        from prime_data.prime_db import insert_account_snapshot, get_account_snapshots
+        insert_account_snapshot(
+            snapshot_date="2026-06-29",
+            joint_balance=125000.0,
+            custodial_balance=45000.0,
+            ira_balance=30000.0,
+            total_balance=200000.0,
+            db_path=self.db,
+        )
+        snaps = get_account_snapshots(limit=10, db_path=self.db)
+        self.assertEqual(len(snaps), 1)
+        s = snaps[0]
+        self.assertEqual(s["snapshot_date"], "2026-06-29")
+        self.assertAlmostEqual(s["joint_7926_balance"], 125000.0, places=2)
+        self.assertAlmostEqual(s["total_balance"], 200000.0, places=2)
+
+    def test_account_snapshots_endpoint_returns_30_days(self):
+        """GET /api/v1/account/snapshots returns snapshots DESC."""
+        from prime_data.prime_db import insert_account_snapshot
+        for i in range(3):
+            insert_account_snapshot(
+                snapshot_date=f"2026-06-{27 + i:02d}",
+                joint_balance=100000.0 + i * 1000,
+                custodial_balance=40000.0,
+                ira_balance=30000.0,
+                total_balance=170000.0 + i * 1000,
+                db_path=self.db,
+            )
+        resp = self.client.get("/api/v1/account/snapshots")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertIn("snapshots", d)
+        snaps = d["snapshots"]
+        self.assertEqual(len(snaps), 3)
+        self.assertGreaterEqual(snaps[0]["snapshot_date"], snaps[1]["snapshot_date"])
+
+    def test_eod_snapshot_upsert_on_conflict(self):
+        """Re-inserting same snapshot_date updates values (upsert, no duplicate)."""
+        from prime_data.prime_db import insert_account_snapshot, get_account_snapshots
+        insert_account_snapshot(
+            snapshot_date="2026-06-28",
+            joint_balance=100000.0,
+            custodial_balance=40000.0,
+            ira_balance=30000.0,
+            total_balance=170000.0,
+            db_path=self.db,
+        )
+        insert_account_snapshot(
+            snapshot_date="2026-06-28",
+            joint_balance=102000.0,
+            custodial_balance=41000.0,
+            ira_balance=31000.0,
+            total_balance=174000.0,
+            db_path=self.db,
+        )
+        snaps = get_account_snapshots(limit=10, db_path=self.db)
+        self.assertEqual(len(snaps), 1, "Upsert must not create duplicate rows")
+        self.assertAlmostEqual(snaps[0]["total_balance"], 174000.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

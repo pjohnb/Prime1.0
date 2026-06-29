@@ -158,6 +158,8 @@ async function loadHistory() {
 
   // CIL-063: refresh effectiveness panel on tab activation and filter changes.
   loadEffectiveness();
+  // CIL-NEW-11: refresh EOD account balance snapshots.
+  loadAccountSnapshots();
 
   const strategy  = document.getElementById('hist-strategy')?.value || '';
   const direction = document.getElementById('hist-direction')?.value || '';
@@ -248,6 +250,55 @@ async function loadHistory() {
   } catch (e) {
     console.error('loadHistory:', e);
     tbody.innerHTML = '<tr><td colspan="13" class="empty-state">Failed to load history — API offline?</td></tr>';
+  }
+}
+
+// CIL-NEW-11: Account Balance History collapsible section.
+let _acctSnapCollapsed = false;
+
+function toggleAcctSnapSection() {
+  const body = document.getElementById('acct-snap-body');
+  const tog  = document.getElementById('acct-snap-toggle');
+  if (!body) return;
+  _acctSnapCollapsed = !_acctSnapCollapsed;
+  body.style.display = _acctSnapCollapsed ? 'none' : 'block';
+  if (tog) tog.textContent = _acctSnapCollapsed ? '▶' : '▼';
+}
+
+async function loadAccountSnapshots() {
+  const body = document.getElementById('acct-snap-body');
+  if (!body) return;
+  try {
+    const resp = await fetch(_histApi() + '/account/snapshots');
+    if (!resp.ok) throw new Error(resp.status);
+    const data = await resp.json();
+    const snaps = data.snapshots || [];
+    if (!snaps.length) {
+      body.innerHTML = '<div class="empty-state" style="padding:8px;color:var(--text3)">No snapshots yet — recorded at 16:05 ET on trading days.</div>';
+      return;
+    }
+    const fmtBal = v => v != null ? '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '--';
+    let html = `<table style="width:100%;font-size:13px">
+      <thead><tr>
+        <th style="text-align:left">Date</th>
+        <th style="text-align:right">Joint</th>
+        <th style="text-align:right">Custodial</th>
+        <th style="text-align:right">IRA</th>
+        <th style="text-align:right;font-weight:700">Total</th>
+      </tr></thead><tbody>`;
+    snaps.forEach(s => {
+      html += `<tr>
+        <td style="font-family:var(--mono)">${s.snapshot_date || '--'}</td>
+        <td style="font-family:var(--mono);text-align:right">${fmtBal(s.joint_7926_balance)}</td>
+        <td style="font-family:var(--mono);text-align:right">${fmtBal(s.custodial_0461_balance)}</td>
+        <td style="font-family:var(--mono);text-align:right">${fmtBal(s.ira_8779_balance)}</td>
+        <td style="font-family:var(--mono);text-align:right;font-weight:700">${fmtBal(s.total_balance)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div class="empty-state" style="padding:8px;color:var(--text3)">Account snapshot data unavailable.</div>';
   }
 }
 

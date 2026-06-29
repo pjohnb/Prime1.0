@@ -525,5 +525,50 @@ class TestSchwabSyncReimportGuard(unittest.TestCase):
         self.assertEqual(result_short["imported"], 1, "Should import with 3h grace (close was 5h ago)")
 
 
+class TestShortPositionSync(unittest.TestCase):
+    """CIL-NEW-10: SHORT imports use averageShortPrice and set short_position=1."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_sync_short.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self._patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_schwab_sync_imports_short_position_with_negative_qty(self):
+        """Short position uses averageShortPrice and stores short_position=1."""
+        pos = {
+            "instrument": {"assetType": "EQUITY", "symbol": "XLC"},
+            "longQuantity": 0,
+            "shortQuantity": 50,
+            "averageShortPrice": 95.50,
+        }
+        client = _make_mock_client({"7926": [pos]})
+        result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+        self.assertEqual(result["imported"], 1, f"Expected 1 import: {result}")
+        trades = get_open_trades(db_path=self.db)
+        self.assertEqual(len(trades), 1)
+        trade = trades[0]
+        self.assertEqual(trade["direction"], "SHORT")
+        self.assertEqual(int(trade.get("short_position", 0)), 1)
+        self.assertAlmostEqual(float(trade["price_at_scan"]), 95.50, places=2)
+
+    def test_long_position_short_position_flag_is_zero(self):
+        """LONG position has short_position=0."""
+        pos = _mock_position("COST", 10, 0, 890.0)
+        client = _make_mock_client({"7926": [pos]})
+        sync_schwab_positions(db_path=self.db, schwab_client=client)
+        trades = get_open_trades(db_path=self.db)
+        cost = next(t for t in trades if t["symbol"] == "COST")
+        self.assertEqual(int(cost.get("short_position", 0)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

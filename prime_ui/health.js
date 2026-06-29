@@ -93,8 +93,16 @@ function _renderHealthRows(positions) {
     const days  = p.days_held != null ? p.days_held
       : (p.hold_minutes != null ? Math.floor(Number(p.hold_minutes) / 1440) : '--');
     // _dkBadge is a shared global defined in positions.js.
+    // CIL-NEW-10: for SHORT positions, invert DK signal meaning:
+    // CONFIRMING (buying) is adverse for short → show as NULLIFYING (red).
+    // NULLIFYING (selling) is favorable for short → show as CONFIRMING (green).
+    const effectiveDkStatus = dir === 'SHORT' && p.dk_status
+      ? (p.dk_status === 'CONFIRMING' ? 'NULLIFYING'
+        : p.dk_status === 'NULLIFYING' ? 'CONFIRMING'
+        : p.dk_status)
+      : p.dk_status;
     const dkBadge = (typeof _dkBadge === 'function')
-      ? _dkBadge(p.dk_status, p.dk_conviction)
+      ? _dkBadge(effectiveDkStatus, p.dk_conviction)
       : (p.dk_status || '--');
     const evaluated = p.evaluated_at ? formatET(p.evaluated_at, true) : '--';
     const curPrice = p.current_price != null ? Number(p.current_price) : null;
