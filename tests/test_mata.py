@@ -90,5 +90,47 @@ class TestShortStoredInTradeLog(unittest.TestCase):
         self.assertEqual(trade["direction"], "SHORT")
 
 
+THREE_ACCOUNTS = [
+    {"name": "Joint Brokerage", "type": "BROKERAGE", "buying_power": 100_000, "margin_available": 40_000, "weight": 60},
+    {"name": "Custodial",       "type": "BROKERAGE", "buying_power":  40_000, "margin_available": 0,      "weight": 30},
+    {"name": "Rollover IRA",    "type": "ROLLOVER_IRA", "buying_power": 30_000, "margin_available": 0,   "weight": 10},
+]
+
+
+class TestMataAllAccountsProfile(unittest.TestCase):
+    """CIL-NEW-13: All Accounts profile routes LONG trades to all three accounts."""
+
+    def test_mata_all_accounts_routes_to_all_three(self):
+        """When profile='all', proportional weight allocation spreads to all three accounts."""
+        out = mata.allocate_trade("COST", "LONG", base_shares=100, price=100.0,
+                                  accounts=THREE_ACCOUNTS, use_weights=True)
+        names = {a["account"] for a in out["allocations"]}
+        self.assertIn("Joint Brokerage", names)
+        self.assertIn("Custodial", names)
+        self.assertIn("Rollover IRA", names)
+        self.assertEqual(len(names), 3)
+        # Shares should sum to target (100)
+        self.assertEqual(out["allocated_shares"], 100)
+
+    def test_mata_single_account_routes_to_one(self):
+        """When profile filters to a single account, only that account receives the trade."""
+        # Simulate the profile filter: pass only the target account to allocate_trade.
+        single = [a for a in THREE_ACCOUNTS if a["name"] == "Joint Brokerage"]
+        out = mata.allocate_trade("COST", "LONG", base_shares=10, price=100.0,
+                                  accounts=single)
+        names = {a["account"] for a in out["allocations"]}
+        self.assertEqual(names, {"Joint Brokerage"})
+        self.assertNotIn("Custodial", names)
+        self.assertNotIn("Rollover IRA", names)
+
+    def test_mata_all_accounts_short_still_excludes_ira(self):
+        """Even with all accounts, SHORT must exclude IRA accounts (Design Principle 4)."""
+        out = mata.allocate_trade("TSLA", "SHORT", base_shares=100, price=100.0,
+                                  accounts=THREE_ACCOUNTS, short_size_multiplier=0.5)
+        names = {a["account"] for a in out["allocations"]}
+        self.assertNotIn("Rollover IRA", names)
+        self.assertIn("Rollover IRA", out["excluded_ira"])
+
+
 if __name__ == "__main__":
     unittest.main()

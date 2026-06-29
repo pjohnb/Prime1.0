@@ -14,10 +14,17 @@ let _portSortKey   = 'market_value';
 let _portSortAsc   = false;
 let _pendingSell   = null;
 let _stopEditActive = false;
+let _portProfileMode = 'all';   // CIL-NEW-13: 'all' or specific account name
+// CIL-NEW-13: track which subtotal rows are expanded (keyed by symbol).
+let _portExpanded  = {};
 
 // ── Load ────────────────────────────────────────────────────────────────────
 
 async function loadPortfolio() {
+  // CIL-NEW-14: read active MATA profile from localStorage on every tab load.
+  const storedProfile = localStorage.getItem('prime_mata_profile') || 'all';
+  _portProfileMode = storedProfile;
+
   document.getElementById('portfolio-rows').innerHTML =
     '<tr><td colspan="10" style="text-align:center;color:var(--text3);padding:20px">Loading…</td></tr>';
   try {
@@ -25,6 +32,8 @@ async function loadPortfolio() {
     const d   = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
     _portRows = d.rows || [];
+    // CIL-NEW-13: use backend-resolved profile_mode (reflects server config).
+    if (d.profile_mode) _portProfileMode = d.profile_mode;
     _renderPortfolio(d);
   } catch(e) {
     document.getElementById('portfolio-rows').innerHTML =
@@ -68,7 +77,30 @@ function _dismissHealthBanner() {
   if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
 
-// PORT-01: Refresh button triggers /sync/schwab before reloading portfolio
+// CIL-NEW-15: Sync Now — forces a Schwab API pull, shows spinner + toast, then reloads.
+// Distinct from Refresh (which reads local DB only after sync).
+async function syncNowPortfolio() {
+  const btn = document.getElementById('portfolio-sync-now-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 20000);
+    const r = await fetch(_portApi() + '/sync/schwab', { method: 'POST', signal: ctrl.signal });
+    clearTimeout(timeout);
+    const d = await r.json();
+    const now = new Date();
+    const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+    const acctCount = (d.accounts_synced != null) ? d.accounts_synced : 3;
+    _showPortToast(`Synced — ${acctCount} accounts updated ${etStr} ET`, 'green');
+  } catch (e) {
+    _showPortToast(e.name === 'AbortError' ? 'Schwab sync timed out.' : 'Schwab sync failed.', 'amber');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sync Now'; }
+  }
+  loadPortfolio();
+}
+
+// PORT-01: Refresh button reads from local DB (no forced Schwab pull).
 async function refreshPortfolio() {
   const btn = document.getElementById('portfolio-refresh-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
@@ -191,20 +223,34 @@ function _renderRows(rows) {
     tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:20px">No open positions</td></tr>';
     return;
   }
-  tbody.innerHTML = sorted.map(row => {
+
+  const isGrouped = _portProfileMode === 'all';
+  const htmlParts = [];
+
+  sorted.forEach(row => {
     const pnlColor = row.unrealized_pnl >= 0 ? '#22c55e' : '#ef4444';
     const pnlPctColor = row.unrealized_pnl_pct >= 0 ? '#22c55e' : '#ef4444';
     const dkStyle = _dkStyle(row.dk_status);
     const accounts = (row.accounts || []).join(' · ') || '--';
-    // TT-01: warning triangle carries a concentration-limit tooltip.
     const warnIcon = row.position_warning
       ? ' <span data-tooltip="This position exceeds the 15% concentration limit. Consider trimming or using the Rebalance advisor.">⚠</span>'
       : '';
     const stopStyle = _stopColorStyle(row.stop_price, row.current_price);
     const stopDisplay = row.stop_price != null ? '$' + _fmt(row.stop_price) : '--';
     const logIdsJson = JSON.stringify(row.log_ids || []).replace(/'/g, '&#39;');
-    return `<tr>
-      <td style="font-family:var(--mono);font-weight:700">${row.symbol}${warnIcon}</td>
+    const perAcct = row.per_account_rows || [];
+    const hasMultiAcct = isGrouped && perAcct.length > 1;
+    const expanded = _portExpanded[row.symbol] !== false; // default expanded
+
+    // Subtotal row (bold + lightly shaded when multi-account grouped)
+    const subtotalBg = hasMultiAcct ? 'background:var(--bg4);font-weight:700;' : '';
+    const expandToggle = hasMultiAcct
+      ? `<span style="cursor:pointer;font-size:10px;margin-right:4px;color:var(--text3)"
+             onclick="_toggleExpand('${row.symbol}')" id="expand-toggle-${row.symbol}">${expanded ? '▼' : '▶'}</span>`
+      : '';
+
+    htmlParts.push(`<tr style="${subtotalBg}">
+      <td style="font-family:var(--mono);font-weight:700">${expandToggle}${row.symbol}${warnIcon}</td>
       <td style="font-family:var(--mono)">${row.total_shares}</td>
       <td style="font-family:var(--mono)">$${_fmt(row.avg_entry_price)}</td>
       <td style="font-family:var(--mono)">$${_fmt(row.current_price)}</td>
@@ -216,11 +262,54 @@ function _renderRows(rows) {
           onclick="_openStopEdit('${row.symbol}', ${row.stop_price != null ? row.stop_price : 'null'}, ${row.current_price}, '${logIdsJson}', '${(row.direction||'LONG').toUpperCase()}')">${stopDisplay}</td>
       <td style="font-size:12px;color:var(--text3)">${accounts}</td>
       <td><span style="${dkStyle}" data-tooltip="CONFIRMING = institutional dark pool buying detected (bullish). NULLIFYING = institutional selling detected (bearish). NEUTRAL = no significant dark pool activity.">${row.dk_status}</span></td>
-      <td><button class="btn-sell" style="padding:3px 10px;font-size:12px"
-           data-tooltip="Close this position via proportional sell across all accounts. A confirmation dialog will appear before any order is placed."
-           onclick='openSellModal(${JSON.stringify(row)})'>Sell</button></td>
-    </tr>`;
-  }).join('');
+      <td>
+        <button class="btn-sell" style="padding:3px 10px;font-size:12px"
+          data-tooltip="${hasMultiAcct ? 'Sell All: close this position across all accounts via MATA.' : 'Close this position. A confirmation dialog will appear.'}"
+          onclick='openSellModal(${JSON.stringify(row)})'>${hasMultiAcct ? 'Sell All' : 'Sell'}</button>
+      </td>
+    </tr>`);
+
+    // Per-account sub-rows (only in 'all' grouped mode with multiple accounts)
+    if (hasMultiAcct) {
+      const displayStyle = expanded ? '' : 'display:none;';
+      perAcct.forEach(ar => {
+        const aPnlColor = ar.unrealized_pnl >= 0 ? '#22c55e' : '#ef4444';
+        const aStopStyle = _stopColorStyle(ar.stop_price, ar.current_price);
+        const aStopDisplay = ar.stop_price != null ? '$' + _fmt(ar.stop_price) : '--';
+        const aLogIdsJson = JSON.stringify(ar.log_ids || []).replace(/'/g, '&#39;');
+        const aRowData = { ...row, total_shares: ar.shares, accounts: [ar.account],
+          log_ids: ar.log_ids, unrealized_pnl: ar.unrealized_pnl,
+          unrealized_pnl_pct: ar.unrealized_pnl_pct, stop_price: ar.stop_price };
+        htmlParts.push(`<tr class="per-acct-row-${row.symbol}" style="${displayStyle}background:var(--bg2);">
+          <td style="font-family:var(--mono);font-style:italic;padding-left:24px;font-size:13px;color:var(--text2)">&nbsp;&nbsp;${ar.account}</td>
+          <td style="font-family:var(--mono);font-size:13px">${ar.shares}</td>
+          <td style="font-family:var(--mono);font-size:13px">$${_fmt(ar.avg_entry_price)}</td>
+          <td style="font-family:var(--mono);font-size:13px">$${_fmt(ar.current_price)}</td>
+          <td style="font-family:var(--mono);font-size:13px">$${_fmt(ar.market_value)}</td>
+          <td style="font-family:var(--mono);font-size:13px;color:${aPnlColor}">$${_fmt(ar.unrealized_pnl)}</td>
+          <td style="font-family:var(--mono);font-size:13px;color:${aPnlColor}">${ar.unrealized_pnl_pct.toFixed(2)}%</td>
+          <td style="font-family:var(--mono);font-size:13px;${aStopStyle}">${aStopDisplay}</td>
+          <td style="font-size:12px;color:var(--text3)">${ar.account}</td>
+          <td></td>
+          <td><button class="btn-sell" style="padding:2px 8px;font-size:11px"
+                data-tooltip="Sell this account's position only."
+                onclick='openSellModal(${JSON.stringify(aRowData)})'>Sell</button></td>
+        </tr>`);
+      });
+    }
+  });
+
+  tbody.innerHTML = htmlParts.join('');
+}
+
+// CIL-NEW-13: toggle expand/collapse for a symbol's per-account sub-rows.
+function _toggleExpand(symbol) {
+  _portExpanded[symbol] = !(_portExpanded[symbol] !== false);
+  const isExpanded = _portExpanded[symbol];
+  const rows = document.querySelectorAll('.per-acct-row-' + symbol);
+  rows.forEach(r => { r.style.display = isExpanded ? '' : 'none'; });
+  const toggle = document.getElementById('expand-toggle-' + symbol);
+  if (toggle) toggle.textContent = isExpanded ? '▼' : '▶';
 }
 
 // ── Stop price color coding ──────────────────────────────────────────────────

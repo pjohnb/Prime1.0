@@ -69,11 +69,17 @@ def allocate_trade(
     accounts: List[Dict[str, Any]],
     short_size_multiplier: Optional[float] = None,
     config_path: Optional[Path] = None,
+    use_weights: bool = False,
 ) -> Dict[str, Any]:
     """Allocate a trade across accounts, direction-aware.
 
     base_shares is the long-equivalent share count. For SHORT, IRAs are excluded,
     capacity is margin_available, and base_shares is scaled by short_size_multiplier.
+
+    use_weights=True (CIL-NEW-13: All Accounts profile): distributes proportionally
+    by each account's 'weight' field rather than greedy largest-capacity-first fill.
+    Residual shares (from capacity clips) are redistributed to remaining accounts.
+
     Returns {symbol, direction, target_shares, capacity_field, allocations,
     allocated_shares, excluded_ira}.
     """
@@ -105,25 +111,55 @@ def allocate_trade(
     if target_shares <= 0 or price <= 0 or not eligible:
         return result
 
-    # Capacity (in shares) per eligible account from the direction-appropriate field.
-    remaining = target_shares
-    # Largest capacity first so the trade fills predictably.
-    ranked = sorted(eligible, key=lambda a: float(a.get(capacity_field, 0) or 0), reverse=True)
-    for a in ranked:
-        if remaining <= 0:
-            break
-        cap_dollars = float(a.get(capacity_field, 0) or 0)
-        cap_shares = int(cap_dollars // price)
-        if cap_shares <= 0:
-            continue
-        take = min(cap_shares, remaining)
-        result["allocations"].append({
-            "account": a.get("name"),
-            "type": a.get("type"),
-            "shares": take,
-            "notional": round(take * price, 2),
-        })
-        remaining -= take
+    if use_weights:
+        # CIL-NEW-13: proportional by weight — used by the All Accounts profile.
+        total_weight = sum(float(a.get("weight", 1) or 1) for a in eligible)
+        if total_weight <= 0:
+            total_weight = len(eligible)
+        allocs: List[Dict[str, Any]] = []
+        remaining = target_shares
+        for a in eligible:
+            w = float(a.get("weight", 1) or 1)
+            raw = int(target_shares * w / total_weight)
+            cap_dollars = float(a.get(capacity_field, 0) or 0)
+            cap_shares = int(cap_dollars // price) if price > 0 else raw
+            take = min(raw, cap_shares, remaining) if cap_shares > 0 else 0
+            allocs.append({"account": a.get("name"), "type": a.get("type"),
+                           "_take": take, "_cap": cap_shares, "_acct": a})
+            remaining -= take
+        # Redistribute residual to any account still below its cap.
+        if remaining > 0:
+            for slot in allocs:
+                if remaining <= 0:
+                    break
+                extra = min(remaining, slot["_cap"] - slot["_take"])
+                if extra > 0:
+                    slot["_take"] += extra
+                    remaining -= extra
+        result["allocations"] = [
+            {"account": s["account"], "type": s["type"],
+             "shares": s["_take"], "notional": round(s["_take"] * price, 2)}
+            for s in allocs if s["_take"] > 0
+        ]
+    else:
+        # Legacy greedy fill: largest capacity first.
+        remaining = target_shares
+        ranked = sorted(eligible, key=lambda a: float(a.get(capacity_field, 0) or 0), reverse=True)
+        for a in ranked:
+            if remaining <= 0:
+                break
+            cap_dollars = float(a.get(capacity_field, 0) or 0)
+            cap_shares = int(cap_dollars // price)
+            if cap_shares <= 0:
+                continue
+            take = min(cap_shares, remaining)
+            result["allocations"].append({
+                "account": a.get("name"),
+                "type": a.get("type"),
+                "shares": take,
+                "notional": round(take * price, 2),
+            })
+            remaining -= take
 
     result["allocated_shares"] = sum(x["shares"] for x in result["allocations"])
     return result

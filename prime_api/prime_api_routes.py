@@ -348,6 +348,10 @@ def execute_signal_endpoint(signal_id):
     except Exception:
         mata_accounts = []
 
+    # CIL-NEW-13: resolve which accounts to route to based on active mata_profile.
+    _live_profile = (getattr(cfg.ops, "mata_profile", "") or "").strip().lower()
+    _live_profile_all = not _live_profile or _live_profile == "all"
+
     if mode_cfg == "LIVE" and schwab_client is not None:
         # Fetch live buying power per account.
         try:
@@ -362,6 +366,10 @@ def execute_signal_endpoint(signal_id):
                     )
                     if mata_accounts and mata_entry is None:
                         continue  # account not in MATA profile — skip
+                    # CIL-NEW-13: single-account profile — skip non-matching accounts.
+                    if not _live_profile_all and mata_entry:
+                        if mata_entry.get("name", "").strip().lower() != _live_profile:
+                            continue
                     try:
                         bp_resp = schwab_client.client.get_account(hash_val)
                         if bp_resp.status_code == 200:
@@ -424,7 +432,13 @@ def execute_signal_endpoint(signal_id):
 
     else:
         # PAPER mode: simulate across MATA accounts (or one synthetic account).
-        paper_accounts = mata_accounts if mata_accounts else [{"name": "PAPER", "buying_power": 100000}]
+        # CIL-NEW-13: filter by active mata_profile when not 'all'.
+        _exec_profile = (getattr(cfg.ops, "mata_profile", "") or "").strip().lower()
+        if mata_accounts and _exec_profile and _exec_profile != "all":
+            _filtered = [a for a in mata_accounts if a.get("name", "").strip().lower() == _exec_profile]
+            paper_accounts = _filtered if _filtered else mata_accounts
+        else:
+            paper_accounts = mata_accounts if mata_accounts else [{"name": "PAPER", "buying_power": 100000}]
         for acct in paper_accounts:
             bp = float(acct.get("buying_power", 100000) or 100000)
             shares = int(bp * max_order_pct / execution_price)
@@ -1055,13 +1069,15 @@ def create_trade():
     }), 201
 
 
-@api_bp.route("/sync/schwab", methods=["GET"])
+@api_bp.route("/sync/schwab", methods=["GET", "POST"])
 def sync_schwab():
-    """GET /api/v1/sync/schwab -- import current Schwab holdings into prime_trade_log.
+    """GET|POST /api/v1/sync/schwab -- import current Schwab holdings into prime_trade_log.
 
     Sprint 23 Item 1. Triggers a live Schwab position sync and returns a count
     summary. Safe to call multiple times -- deduplication is enforced in the sync
     module. Degrades gracefully when Schwab is not connected.
+    CIL-NEW-15: POST variant added so the Sync Now button can call it without
+    ambiguity (GET is kept for backwards compatibility with refreshPortfolio).
     """
     try:
         from prime_trading.prime_schwab_sync import sync_schwab_positions
@@ -1075,6 +1091,7 @@ def sync_schwab():
 _OPS_CONFIG_PATH = Path(__file__).resolve().parent.parent / "ops_config.json"
 
 _SETTINGS_FIELDS = [
+    # CIL-NEW-13/14: mata_profile now accepts 'all' as a valid value.
     "max_trades", "mata_profile", "analysis_mode", "use_ai_ranker",
     "long_stop_loss_pct", "short_stop_loss_pct", "short_size_multiplier",
     "time_stop_minutes", "short_time_stop_minutes", "use_signal_led_psa",
@@ -1321,7 +1338,19 @@ def get_portfolio():
         cfg = get_config()
         ops_cfg = cfg.ops
 
+        # CIL-NEW-13: read active MATA profile to drive flat vs. grouped view.
+        _raw_profile = getattr(ops_cfg, "mata_profile", None)
+        mata_profile = (str(_raw_profile) if _raw_profile and not callable(_raw_profile) else "").strip().lower()
+        profile_all = not mata_profile or mata_profile == "all"
+
         positions = get_open_trades()
+
+        # CIL-NEW-13: single-account profile — filter to positions for that account.
+        if not profile_all and mata_profile:
+            positions = [
+                p for p in positions
+                if str(p.get("account") or "").strip().lower() == mata_profile
+            ]
 
         # Group by symbol
         groups: Dict[str, Any] = {}
@@ -1338,6 +1367,7 @@ def get_portfolio():
                     "log_ids":      [],
                     "stop_prices":  [],
                     "direction":    (p.get("direction") or "LONG").upper(),
+                    "per_account":  {},
                 }
             ep = float(p.get("entry_price") or p.get("price_at_scan") or 0.0)
             sh = int(p.get("shares") or 0)
@@ -1350,6 +1380,17 @@ def get_portfolio():
             sp = p.get("stop_price")
             if sp is not None:
                 groups[sym]["stop_prices"].append(float(sp))
+            # CIL-NEW-13: track per-account breakdown for grouped view.
+            acct_key = acc or "_unknown"
+            if acct_key not in groups[sym]["per_account"]:
+                groups[sym]["per_account"][acct_key] = {
+                    "shares": 0, "cost": 0.0, "log_ids": [], "stop_prices": [],
+                }
+            groups[sym]["per_account"][acct_key]["shares"] += sh
+            groups[sym]["per_account"][acct_key]["cost"]   += ep * sh
+            groups[sym]["per_account"][acct_key]["log_ids"].append(p.get("log_id"))
+            if sp is not None:
+                groups[sym]["per_account"][acct_key]["stop_prices"].append(float(sp))
 
         # Fetch current prices from Schwab (best-effort)
         symbols = list(groups.keys())
@@ -1399,6 +1440,32 @@ def get_portfolio():
             stop_prices = g["stop_prices"]
             stop_price = min(stop_prices) if stop_prices else None
 
+            # CIL-NEW-13: per-account breakdown for grouped view.
+            per_account_rows = []
+            if profile_all:
+                for acct_name, acct_data in g["per_account"].items():
+                    acct_shares = acct_data["shares"]
+                    acct_cost   = acct_data["cost"]
+                    acct_avg    = acct_cost / acct_shares if acct_shares else 0.0
+                    acct_mval   = cur_price * acct_shares
+                    if direction == "SHORT":
+                        acct_pnl = (acct_avg - cur_price) * acct_shares
+                    else:
+                        acct_pnl = (cur_price - acct_avg) * acct_shares
+                    acct_pnl_pct = (acct_pnl / acct_cost * 100.0) if acct_cost else 0.0
+                    acct_stops = acct_data["stop_prices"]
+                    per_account_rows.append({
+                        "account":           acct_name,
+                        "shares":            acct_shares,
+                        "avg_entry_price":   round(acct_avg, 4),
+                        "current_price":     round(cur_price, 4),
+                        "market_value":      round(acct_mval, 2),
+                        "unrealized_pnl":    round(acct_pnl, 2),
+                        "unrealized_pnl_pct": round(acct_pnl_pct, 2),
+                        "log_ids":           acct_data["log_ids"],
+                        "stop_price":        round(min(acct_stops), 4) if acct_stops else None,
+                    })
+
             row = {
                 "symbol":            sym,
                 "total_shares":      shares,
@@ -1413,6 +1480,7 @@ def get_portfolio():
                 "dk_status":         dk_status,
                 "log_ids":           g["log_ids"],
                 "stop_price":        round(stop_price, 4) if stop_price is not None else None,
+                "per_account_rows":  per_account_rows,
             }
             rows.append(row)
             total_market_value += market_val
@@ -1484,10 +1552,11 @@ def get_portfolio():
         }
 
         return jsonify({
-            "rows":     rows,
-            "count":    len(rows),
-            "summary":  summary,
-            "warnings": warnings,
+            "rows":         rows,
+            "count":        len(rows),
+            "summary":      summary,
+            "warnings":     warnings,
+            "profile_mode": "all" if profile_all else mata_profile,
         }), 200
     except Exception as e:
         logger.error("portfolio endpoint error: %s", e)

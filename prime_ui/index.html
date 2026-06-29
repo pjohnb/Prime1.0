@@ -189,6 +189,11 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
       <div id="d-ai-cost-alert" style="font-size:11px;font-family:var(--mono);margin-top:4px;display:none"></div>
     </div>
   </div>
+  <!-- CIL-NEW-15: Sync Now button in Dashboard header -->
+  <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-bottom:8px">
+    <span id="dashboard-sync-msg" style="display:none;font-family:var(--mono);font-size:12px"></span>
+    <button id="dashboard-sync-now-btn" class="btn-confirm" onclick="syncNowDashboard()" style="font-size:12px;padding:5px 14px" data-tooltip="Force a live Schwab API pull to import latest positions.">Sync Now</button>
+  </div>
   <!-- Sprint 22 Item 3: DK activity chips -->
   <div class="dk-chips" id="dk-activity-chips"></div>
   <!-- Sprint 21 Item 1: Start of Day checklist panel (collapsed by default) -->
@@ -506,7 +511,8 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
     <span style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)">Holdings</span>
     <div style="display:flex;gap:8px">
-      <button id="portfolio-refresh-btn" class="btn-refresh" onclick="refreshPortfolio()" data-tooltip="Sync latest Schwab holdings then reload portfolio.">Refresh</button>
+      <button id="portfolio-refresh-btn" class="btn-refresh" onclick="refreshPortfolio()" data-tooltip="Reload portfolio from local database (no Schwab API call).">Refresh</button>
+      <button id="portfolio-sync-now-btn" class="btn-confirm" onclick="syncNowPortfolio()" style="font-size:12px;padding:5px 14px" data-tooltip="Force a live Schwab API pull to import latest positions, then reload. Use after placing or closing trades outside PRIME.">Sync Now</button>
       <button class="btn-refresh" onclick="requestRebalance()" data-tooltip="Request AI-generated trim suggestions based on current concentration and P&amp;L. Advisory only — no orders placed automatically.">Rebalance</button>
     </div>
   </div>

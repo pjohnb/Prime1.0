@@ -256,10 +256,38 @@ async function exportAiUsageCsv() {
   } catch (e) { console.error('exportAiUsageCsv:', e); }
 }
 
+// CIL-NEW-13/14: MATA profile select with 'All Accounts' as default and
+// localStorage persistence. Rendered separately so the onchange hook can be wired.
+function _mataProfileField(serverVal) {
+  // Priority: localStorage value > server value > 'all'
+  const stored = localStorage.getItem('prime_mata_profile');
+  const val = stored || serverVal || 'all';
+  const opts = ['all', 'Joint Brokerage', 'Custodial', 'Rollover IRA'];
+  const labels = { all: 'All Accounts' };
+  const optsHtml = opts.map(o =>
+    `<option value="${o}"${val === o ? ' selected' : ''}>${labels[o] || o}</option>`
+  ).join('');
+  const tip = _tip('All Accounts routes trades to all three Schwab accounts proportionally. Single-account profile routes to that account only.');
+  return `<label style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">MATA Profile${tip}</span>
+    <select id="sett-mata_profile"
+      style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px"
+      onchange="_onMataProfileChange(this.value)">${optsHtml}</select>
+  </label>`;
+}
+
+function _onMataProfileChange(val) {
+  localStorage.setItem('prime_mata_profile', val);
+}
+
 async function loadSettings() {
   try {
     const resp = await fetch(_settApi() + '/settings');
     _settingsData = await resp.json();
+    // CIL-NEW-14: merge localStorage profile into server data so the dropdown
+    // always reflects the persisted value on re-render.
+    const stored = localStorage.getItem('prime_mata_profile');
+    if (stored) _settingsData.mata_profile = stored;
     _renderSettings();
     loadSchwabStatus();
     loadAiUsageTable();
@@ -287,7 +315,7 @@ function _renderSettings() {
       <div class="panel-title">GLOBAL SETTINGS</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
         ${_field('max_trades', 'Max Trades', d.max_trades, 'number', null, 'Maximum simultaneous open positions across all strategies')}
-        ${_field('mata_profile', 'MATA Profile', d.mata_profile, 'select', ['Joint Brokerage','Custodial','Rollover IRA'], 'Active multi-account profile — sets which accounts receive trade allocations')}
+        ${_mataProfileField(d.mata_profile)}
         ${_field('analysis_mode', 'Analysis Mode', d.analysis_mode, 'select', ['Universe','Manual'], 'Universe: scan full S&P 500; Manual: scan specified symbols only')}
         ${_toggleField('use_ai_ranker', 'AI Ranker', d.use_ai_ranker, 'Enable Claude AI for PSA scanner signal scoring and ranking')}
         ${_field('long_stop_loss_pct', 'Long Stop Loss %', _pct(d.long_stop_loss_pct), 'number', null, 'Default stop loss % for LONG positions (e.g. 5 = 5% below entry price)')}
@@ -528,6 +556,8 @@ async function saveSettings() {
 
   payload.max_trades = _n('max_trades');
   payload.mata_profile = _v('mata_profile');
+  // CIL-NEW-14: persist to localStorage on every save so tab switches don't reset it.
+  if (payload.mata_profile) localStorage.setItem('prime_mata_profile', payload.mata_profile);
   payload.analysis_mode = _v('analysis_mode');
   payload.use_ai_ranker = _v('use_ai_ranker') === 'true';
   // Stop loss stored as decimal (5 -> 0.05)
