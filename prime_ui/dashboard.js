@@ -266,6 +266,40 @@ async function loadAiCostCard() {
   }
 }
 
+// CIL-NEW-15: Sync Now from Dashboard header.
+async function syncNowDashboard() {
+  const btn = document.getElementById('dashboard-sync-now-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 20000);
+    const r = await fetch(API + '/sync/schwab', { method: 'POST', signal: ctrl.signal });
+    clearTimeout(timeout);
+    const d = await r.json();
+    const now = new Date();
+    const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+    const accts = (d.accounts_synced != null) ? d.accounts_synced : 3;
+    // Show a brief banner-style message in the topbar area or as a toast-like div.
+    const msgEl = document.getElementById('dashboard-sync-msg');
+    if (msgEl) {
+      msgEl.textContent = `Synced — ${accts} accounts updated ${etStr} ET`;
+      msgEl.style.color = 'var(--green)';
+      msgEl.style.display = 'block';
+      setTimeout(() => { msgEl.style.display = 'none'; }, 5000);
+    }
+  } catch (e) {
+    const msgEl = document.getElementById('dashboard-sync-msg');
+    if (msgEl) {
+      msgEl.textContent = e.name === 'AbortError' ? 'Sync timed out.' : 'Sync failed.';
+      msgEl.style.color = 'var(--amber)';
+      msgEl.style.display = 'block';
+      setTimeout(() => { msgEl.style.display = 'none'; }, 4000);
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sync Now'; }
+  }
+}
+
 function advisoryBadgeClass(rec) {
   if (rec === 'HOLD') return 'confirming';
   if (rec === 'TRIM') return 'unavailable';
