@@ -521,5 +521,163 @@ class TestMATASellPaperNoFillPoller(unittest.TestCase):
         mock_fw.assert_not_called()
 
 
+class TestMATASellShortCover(unittest.TestCase):
+    """BUG-PRIME-SELL-NO-COVER-CLOSED-NULL-ORDER-01: SHORT position cover safety."""
+
+    def setUp(self):
+        from unittest.mock import patch, MagicMock
+        import tempfile, json
+
+        self.db = Path(__file__).parent / "_test_mata_short.db"
+        if self.db.exists():
+            self.db.unlink()
+        from prime_data.prime_db import init_db
+        from prime_analytics.prime_signals_db import init_signals_table
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self.tmp_dir = tempfile.mkdtemp()
+        self.ops_path = Path(self.tmp_dir) / "ops_config.json"
+        with open(self.ops_path, "w") as f:
+            json.dump({"scan_schedule": {}, "notification_channels": "TBD"}, f)
+
+        self.mock_cfg = MagicMock()
+        self.mock_cfg.trading_mode = "LIVE"
+        self.mock_cfg.api_token = "test-token"
+        self.mock_cfg.ops.max_order_pct = 0.10
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch("prime_config.prime_config.get_config", return_value=self.mock_cfg)
+        self._cfg_patcher.start()
+        import prime_api.prime_api_routes as routes
+        self._orig_ops = routes._OPS_CONFIG_PATH
+        routes._OPS_CONFIG_PATH = self.ops_path
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self._auth = {"Authorization": "Bearer test-token"}
+
+    def tearDown(self):
+        import prime_api.prime_api_routes as routes
+        routes._OPS_CONFIG_PATH = self._orig_ops
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def _mock_schwab_client(self, accounts=None):
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client.connect.return_value = True
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = accounts if accounts is not None else [
+            {"accountNumber": "123457926", "hashValue": "HASH_7926"}
+        ]
+        client.client.get_account_numbers.return_value = resp
+        client.get_quotes.return_value = {}
+        return client
+
+    def test_short_cover_uses_buy_side_and_closes_on_success(self):
+        """Cover on a confirmed SHORT uses side=BUY and writes CLOSED in DB."""
+        from unittest.mock import patch, MagicMock
+        from prime_data.prime_db import insert_trade, get_trade
+
+        log_id = insert_trade(
+            strategy="TEST", symbol="XLC", direction="SHORT", mode="LIVE",
+            order_type="MARKET", shares=100, entry_time="2026-06-26T10:00:00",
+            price_at_scan=105.54, entry_price=105.54, account="7926",
+            trade_source="LIVE", db_path=self.db,
+        )
+        client = self._mock_schwab_client()
+        captured = {}
+
+        def fake_submit(**kwargs):
+            captured["side"] = kwargs.get("side")
+            return {"order_id": "ORD-COVER-XLC", "status": "SUBMITTED"}
+
+        mock_fw = MagicMock()
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_schwab_orders.submit_order", side_effect=fake_submit), \
+             patch("prime_trading.prime_fill_poller.start_fill_watcher", mock_fw):
+            resp = self.client.post("/api/v1/sell/mata", json={
+                "symbol": "XLC", "direction": "SHORT", "total_qty": 100,
+                "order_type": "MARKET", "price": 106.675,
+                "account_holdings": [{"account": "7926", "shares": 100}],
+                "confirmed": True,
+            }, headers=self._auth, content_type="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(captured.get("side"), "BUY")
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "CLOSED")
+        mock_fw.assert_called_once()
+        self.assertEqual(mock_fw.call_args[1].get("side"), "BUY")
+
+    def test_live_failed_order_leaves_position_open(self):
+        """Broker rejection must NOT write CLOSED — position stays OPEN."""
+        from unittest.mock import patch
+        from prime_trading.prime_schwab_orders import OrderGateError
+        from prime_data.prime_db import insert_trade, get_trade
+
+        log_id = insert_trade(
+            strategy="TEST", symbol="TSLA", direction="SHORT", mode="LIVE",
+            order_type="MARKET", shares=15, entry_time="2026-06-26T10:00:00",
+            price_at_scan=405.02, entry_price=405.02, account="7926",
+            trade_source="LIVE", db_path=self.db,
+        )
+        client = self._mock_schwab_client()
+
+        def fail_submit(**kwargs):
+            raise OrderGateError("Order rejected by risk gate", gate="RISK")
+
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_schwab_orders.submit_order", side_effect=fail_submit):
+            resp = self.client.post("/api/v1/sell/mata", json={
+                "symbol": "TSLA", "direction": "SHORT", "total_qty": 15,
+                "order_type": "MARKET", "price": 414.73,
+                "account_holdings": [{"account": "7926", "shares": 15}],
+                "confirmed": True,
+            }, headers=self._auth, content_type="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertTrue(any(f["account"] == "7926" for f in d["failures"]))
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "OPEN")
+        self.assertEqual(d["closed_logs"], [])
+
+    def test_live_unresolvable_hash_leaves_position_open(self):
+        """Unresolvable account hash in LIVE mode must also leave position OPEN."""
+        from unittest.mock import patch
+        from prime_data.prime_db import insert_trade, get_trade
+
+        log_id = insert_trade(
+            strategy="TEST", symbol="SPY", direction="LONG", mode="LIVE",
+            order_type="MARKET", shares=10, entry_time="2026-06-26T10:00:00",
+            price_at_scan=530.0, entry_price=530.0, account="7926",
+            trade_source="LIVE", db_path=self.db,
+        )
+        client = self._mock_schwab_client(accounts=[])  # no matching accounts
+
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client):
+            resp = self.client.post("/api/v1/sell/mata", json={
+                "symbol": "SPY", "direction": "LONG", "total_qty": 10,
+                "order_type": "MARKET", "price": 535.0,
+                "account_holdings": [{"account": "7926", "shares": 10}],
+                "confirmed": True,
+            }, headers=self._auth, content_type="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertTrue(any(f["account"] == "7926" for f in d["failures"]))
+        row = get_trade(log_id, db_path=self.db)
+        self.assertEqual(row["status"], "OPEN")
+        self.assertEqual(d["closed_logs"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -322,7 +322,7 @@ def _recently_closed_symbols(grace_hours: float, db_path: Optional[Path] = None)
         with get_connection(db_path) as conn:
             rows = conn.execute(
                 "SELECT symbol, exit_time FROM prime_trade_log "
-                "WHERE status='CLOSED' AND exit_time >= ?",
+                "WHERE status='CLOSED' AND exit_time >= ? AND order_id IS NOT NULL",
                 (cutoff,),
             ).fetchall()
         return {row[0].upper(): row[1] for row in rows}

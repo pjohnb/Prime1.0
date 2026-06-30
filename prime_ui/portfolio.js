@@ -241,6 +241,7 @@ function _renderRows(rows) {
     const perAcct = row.per_account_rows || [];
     const hasMultiAcct = isGrouped && perAcct.length > 1;
     const expanded = _portExpanded[row.symbol] !== false; // default expanded
+    const isShort = (row.direction || 'LONG').toUpperCase() === 'SHORT';
 
     // Subtotal row (bold + lightly shaded when multi-account grouped)
     const subtotalBg = hasMultiAcct ? 'background:var(--bg4);font-weight:700;' : '';
@@ -269,8 +270,8 @@ function _renderRows(rows) {
       <td><span style="${dkStyle}" data-tooltip="CONFIRMING = institutional dark pool buying detected (bullish). NULLIFYING = institutional selling detected (bearish). NEUTRAL = no significant dark pool activity.">${row.dk_status}</span></td>
       <td>
         <button class="btn-sell" style="padding:3px 10px;font-size:12px"
-          data-tooltip="${hasMultiAcct ? 'Sell All: close this position across all accounts via MATA.' : 'Close this position. A confirmation dialog will appear.'}"
-          onclick='openSellModal(${JSON.stringify(row)})'>${hasMultiAcct ? 'Sell All' : 'Sell'}</button>
+          data-tooltip="${isShort ? (hasMultiAcct ? 'Cover All: buy to cover this short across all accounts.' : 'Cover: buy to cover this short position.') : (hasMultiAcct ? 'Sell All: close this position across all accounts via MATA.' : 'Close this position. A confirmation dialog will appear.')}"
+          onclick='openSellModal(${JSON.stringify(row)})'>${isShort ? (hasMultiAcct ? 'Cover All' : 'Cover') : (hasMultiAcct ? 'Sell All' : 'Sell')}</button>
       </td>
     </tr>`);
 
@@ -297,8 +298,8 @@ function _renderRows(rows) {
           <td style="font-size:12px;color:var(--text3)">${ar.account}</td>
           <td></td>
           <td><button class="btn-sell" style="padding:2px 8px;font-size:11px"
-                data-tooltip="Sell this account's position only."
-                onclick='openSellModal(${JSON.stringify(aRowData)})'>Sell</button></td>
+                data-tooltip="${isShort ? 'Cover: buy to cover this account\'s short position.' : 'Sell this account\'s position only.'}"
+                onclick='openSellModal(${JSON.stringify(aRowData)})'>${isShort ? 'Cover' : 'Sell'}</button></td>
         </tr>`);
       });
     }
@@ -504,6 +505,7 @@ async function submitSell() {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _portToken() },
       body: JSON.stringify({
         symbol:           row.symbol,
+        direction:        row.direction || 'LONG',
         total_qty:        qtyRaw,
         order_type:       orderType,
         price:            price,

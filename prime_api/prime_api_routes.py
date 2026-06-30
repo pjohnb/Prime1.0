@@ -1758,10 +1758,13 @@ def mata_sell():
     mode  = (cfg.trading_mode or "PAPER").upper()
     payload = request.get_json(silent=True) or {}
 
-    symbol    = str(payload.get("symbol", "")).strip().upper()
+    symbol     = str(payload.get("symbol", "")).strip().upper()
+    direction  = (payload.get("direction") or "LONG").strip().upper()
     order_type = str(payload.get("order_type", "MARKET")).upper()
     confirmed  = bool(payload.get("confirmed", False))
     holdings   = payload.get("account_holdings", [])
+    # SHORT positions are covered with a BUY order; LONG positions use SELL.
+    broker_side = "BUY" if direction == "SHORT" else "SELL"
 
     try:
         price = float(payload.get("price", 0))
@@ -1832,7 +1835,7 @@ def mata_sell():
                 result = submit_order(
                     symbol=symbol,
                     qty=sell_qty,
-                    side="SELL",
+                    side=broker_side,
                     order_type=order_type,
                     price=price or 0.0,
                     account_hash=account_hash,
@@ -1893,6 +1896,16 @@ def mata_sell():
                 a["account"] for a in allocation["allocations"] if a["sell_qty"] > 0
             ]
             for acct in sold_accounts:
+                # Safety invariant: in LIVE mode, never write CLOSED without a
+                # confirmed broker order_id. If the broker call failed/was rejected
+                # for this account, leave the local record OPEN and report the
+                # failure via the `failures` list already populated above.
+                if mode == "LIVE" and acct not in order_by_account:
+                    logger.warning(
+                        "mata_sell: skipping DB close for %s acct=%s — no confirmed order_id",
+                        symbol, acct,
+                    )
+                    continue
                 match = _match_open_record(open_recs, acct, consumed)
                 if match is None:
                     log_ops_event(
@@ -1911,16 +1924,16 @@ def mata_sell():
                 if summary:
                     closed_logs.append(summary)
 
-                # CIL-086: LIVE only — start a SELL fill watcher so the actual
-                # broker fill overwrites the live-quote exit price/P&L when it
-                # lands. PAPER mode has no broker order and skips this entirely.
+                # CIL-086: LIVE only — start a fill watcher so the actual broker
+                # fill overwrites the live-quote exit price/P&L when it lands.
+                # PAPER mode has no broker order and skips this entirely.
                 if mode == "LIVE" and schwab_client is not None:
                     order_id = order_by_account.get(acct)
                     if order_id:
                         try:
                             from prime_trading.prime_fill_poller import start_fill_watcher
                             start_fill_watcher(
-                                order_id, match["log_id"], schwab_client, side="SELL",
+                                order_id, match["log_id"], schwab_client, side=broker_side,
                             )
                         except Exception as fw_err:
                             logger.warning(
