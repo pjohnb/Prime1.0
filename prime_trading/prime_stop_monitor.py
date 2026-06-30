@@ -408,7 +408,16 @@ def _check_day_count(
         return False
 
     hold_days = (now.date() - entry_dt.date()).days
-    max_days  = int(ops.get("exit_day_count_max", 3))
+    symbol_check = (position.get("symbol") or "").upper()
+    # CIL-NEW: per-symbol day-count override (documented exception to global cap)
+    overrides = ops.get("exit_day_count_overrides", {}) or {}
+    override = overrides.get(symbol_check)
+    if override:
+        max_days = int(override.get("max_days", ops.get("exit_day_count_max", 3)))
+        override_reason = override.get("reason", "")
+    else:
+        max_days = int(ops.get("exit_day_count_max", 3))
+        override_reason = None
     if hold_days < max_days:
         return False
 
@@ -433,7 +442,8 @@ def _check_day_count(
         event_type="DAY_COUNT_ALERT",
         component="prime_stop_monitor",
         symbol=symbol,
-        detail=f"log_id={log_id} hold_days={hold_days} max={max_days}",
+        detail=f"log_id={log_id} hold_days={hold_days} max={max_days}"
+        + (f" override_reason={override_reason}" if override_reason else ""),
         severity="WARN",
         db_path=db_path,
     )
