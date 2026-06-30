@@ -514,8 +514,23 @@ async function submitSell() {
       }),
     });
     const d = await resp.json();
-    if (!resp.ok) throw new Error(d.error || resp.status);
-    msgEl.textContent = `Submitted: ${d.allocated_total} shares across ${(d.orders || []).length} account(s)`;
+    if (!resp.ok) {
+      throw new Error(d.error || 'Cover order failed — no broker confirmation received. Position remains open.');
+    }
+    const fails  = d.failures || [];
+    const placed = d.orders   || [];
+    if (fails.length && !placed.length) {
+      // All live orders failed but server somehow returned 2xx — surface as error.
+      throw new Error('Cover order failed — no broker confirmation received. Position remains open.');
+    }
+    if (fails.length) {
+      // Partial failure: some accounts succeeded, some didn't.
+      msgEl.textContent = `Partial: ${d.allocated_total} shares — ${fails.length} account(s) failed`;
+      msgEl.className = 'order-msg err';
+      setTimeout(() => { closeSellModal(); loadPortfolio(); }, 2500);
+      return;
+    }
+    msgEl.textContent = `Submitted: ${d.allocated_total} shares across ${placed.length} account(s)`;
     msgEl.className = 'order-msg ok';
     setTimeout(() => { closeSellModal(); loadPortfolio(); }, 1500);
   } catch(e) {

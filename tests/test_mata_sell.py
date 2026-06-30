@@ -425,6 +425,7 @@ class TestMATASellAccountHash(unittest.TestCase):
 
     def test_mata_sell_no_order_no_fill_watcher(self):
         # If the account has no submitted order id, no watcher is started.
+        # BUG-PRIME-MATA-SELL-SILENT-NOOP-01: all-fail LIVE returns 422, not 200.
         from unittest.mock import patch, MagicMock
         from prime_data.prime_db import insert_trade
         insert_trade(
@@ -447,7 +448,7 @@ class TestMATASellAccountHash(unittest.TestCase):
             }
             resp = self.client.post("/api/v1/sell/mata", json=payload,
                                     headers=self._auth, content_type="application/json")
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 422)
         mock_fw.assert_not_called()
 
 
@@ -618,7 +619,8 @@ class TestMATASellShortCover(unittest.TestCase):
         self.assertEqual(mock_fw.call_args[1].get("side"), "BUY")
 
     def test_live_failed_order_leaves_position_open(self):
-        """Broker rejection must NOT write CLOSED — position stays OPEN."""
+        """Broker rejection must NOT write CLOSED — position stays OPEN.
+        BUG-PRIME-MATA-SELL-SILENT-NOOP-01: all-fail returns 422, not 200."""
         from unittest.mock import patch
         from prime_trading.prime_schwab_orders import OrderGateError
         from prime_data.prime_db import insert_trade, get_trade
@@ -643,7 +645,7 @@ class TestMATASellShortCover(unittest.TestCase):
                 "confirmed": True,
             }, headers=self._auth, content_type="application/json")
 
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 422)
         d = resp.get_json()
         self.assertTrue(any(f["account"] == "7926" for f in d["failures"]))
         row = get_trade(log_id, db_path=self.db)
@@ -651,7 +653,8 @@ class TestMATASellShortCover(unittest.TestCase):
         self.assertEqual(d["closed_logs"], [])
 
     def test_live_unresolvable_hash_leaves_position_open(self):
-        """Unresolvable account hash in LIVE mode must also leave position OPEN."""
+        """Unresolvable account hash in LIVE mode must also leave position OPEN.
+        BUG-PRIME-MATA-SELL-SILENT-NOOP-01: all-fail returns 422, not 200."""
         from unittest.mock import patch
         from prime_data.prime_db import insert_trade, get_trade
 
@@ -671,12 +674,125 @@ class TestMATASellShortCover(unittest.TestCase):
                 "confirmed": True,
             }, headers=self._auth, content_type="application/json")
 
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 422)
         d = resp.get_json()
         self.assertTrue(any(f["account"] == "7926" for f in d["failures"]))
         row = get_trade(log_id, db_path=self.db)
         self.assertEqual(row["status"], "OPEN")
         self.assertEqual(d["closed_logs"], [])
+
+
+class TestMATASellSilentNoopFix(unittest.TestCase):
+    """BUG-PRIME-MATA-SELL-SILENT-NOOP-01: response contract for failed LIVE orders."""
+
+    def setUp(self):
+        from unittest.mock import patch, MagicMock
+        import tempfile, json
+
+        self.db = Path(__file__).parent / "_test_mata_noop.db"
+        if self.db.exists():
+            self.db.unlink()
+        from prime_data.prime_db import init_db
+        from prime_analytics.prime_signals_db import init_signals_table
+        init_db(self.db)
+        init_signals_table(self.db)
+
+        self.tmp_dir = tempfile.mkdtemp()
+        self.ops_path = Path(self.tmp_dir) / "ops_config.json"
+        with open(self.ops_path, "w") as f:
+            json.dump({"scan_schedule": {}, "notification_channels": "TBD"}, f)
+
+        self.mock_cfg = MagicMock()
+        self.mock_cfg.trading_mode = "LIVE"
+        self.mock_cfg.api_token = "test-token"
+        self.mock_cfg.ops.max_order_pct = 0.10
+
+        self._db_patcher = patch("prime_data.prime_db._db_path", return_value=self.db)
+        self._db_patcher.start()
+        self._cfg_patcher = patch("prime_config.prime_config.get_config", return_value=self.mock_cfg)
+        self._cfg_patcher.start()
+        import prime_api.prime_api_routes as routes
+        self._orig_ops = routes._OPS_CONFIG_PATH
+        routes._OPS_CONFIG_PATH = self.ops_path
+
+        from prime_api.prime_api_server import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self._auth = {"Authorization": "Bearer test-token"}
+
+    def tearDown(self):
+        import prime_api.prime_api_routes as routes
+        routes._OPS_CONFIG_PATH = self._orig_ops
+        self._db_patcher.stop()
+        self._cfg_patcher.stop()
+        if self.db.exists():
+            self.db.unlink()
+
+    def _mock_client(self, accounts):
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client.connect.return_value = True
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = accounts
+        client.client.get_account_numbers.return_value = resp
+        client.get_quotes.return_value = {}
+        return client
+
+    def test_live_all_orders_failed_returns_422_with_error_field(self):
+        """When every allocation fails in LIVE mode, mata_sell must return 422
+        with an 'error' field — not a bare 200 that the frontend mistakes for success."""
+        from unittest.mock import patch
+        # No Schwab accounts resolve → account_hash resolution fails for all.
+        client = self._mock_client([])
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client):
+            resp = self.client.post("/api/v1/sell/mata", json={
+                "symbol": "TSLA", "direction": "SHORT", "total_qty": 8,
+                "order_type": "MARKET", "price": 350.0,
+                "account_holdings": [{"account": "7926", "shares": 8}],
+                "confirmed": True,
+            }, headers=self._auth, content_type="application/json")
+
+        self.assertEqual(resp.status_code, 422)
+        d = resp.get_json()
+        self.assertIn("error", d)
+        self.assertGreater(len(d["error"]), 0)
+        self.assertEqual(d["orders"], [])
+        self.assertEqual(d["closed_logs"], [])
+        self.assertGreater(len(d["failures"]), 0)
+
+    def test_live_partial_failure_returns_200_with_failures_list(self):
+        """When SOME accounts succeed and SOME fail, mata_sell returns 200 with
+        a non-empty failures list — the frontend can warn without blocking."""
+        from unittest.mock import patch
+        from prime_trading.prime_schwab_orders import OrderGateError
+
+        # Only account 7926 has a resolvable hash; 0461 does not.
+        client = self._mock_client([
+            {"accountNumber": "123457926", "hashValue": "HASH_7926"},
+        ])
+
+        def fake_submit(**kwargs):
+            return {"order_id": "ORD-PARTIAL", "status": "SUBMITTED"}
+
+        with patch("prime_trading.prime_schwab.SchwabClient", return_value=client), \
+             patch("prime_trading.prime_schwab_orders.submit_order", side_effect=fake_submit):
+            resp = self.client.post("/api/v1/sell/mata", json={
+                "symbol": "AAPL", "direction": "LONG", "total_qty": 10,
+                "order_type": "MARKET", "price": 200.0,
+                "account_holdings": [
+                    {"account": "7926", "shares": 15},
+                    {"account": "0461", "shares": 10},
+                ],
+                "confirmed": True,
+            }, headers=self._auth, content_type="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        d = resp.get_json()
+        self.assertGreater(len(d["orders"]), 0)
+        self.assertGreater(len(d["failures"]), 0)
+        self.assertTrue(any(f["account"] == "0461" for f in d["failures"]))
 
 
 if __name__ == "__main__":

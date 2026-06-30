@@ -1943,6 +1943,24 @@ def mata_sell():
     except Exception as e:
         logger.error("mata_sell trade-log close error: %s", e)
 
+    # BUG-PRIME-MATA-SELL-SILENT-NOOP-01: in LIVE mode return 422 when every
+    # allocation failed — no broker order was submitted and the frontend must
+    # never display a plain success confirmation in that case.
+    if mode == "LIVE" and not orders_placed and failures:
+        return jsonify({
+            "symbol":          symbol,
+            "total_qty":       total_qty,
+            "total_held":      allocation["total_held"],
+            "allocated_total": allocation["allocated_total"],
+            "orders":          [],
+            "failures":        failures,
+            "closed_logs":     [],
+            "error": (
+                f"No broker orders submitted — {len(failures)} allocation(s) failed: "
+                + "; ".join(f.get("error", "unknown") for f in failures)
+            ),
+        }), 422
+
     return jsonify({
         "symbol":          symbol,
         "total_qty":       total_qty,
