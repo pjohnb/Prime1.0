@@ -248,9 +248,14 @@ function _renderRows(rows) {
       ? `<span style="cursor:pointer;font-size:10px;margin-right:4px;color:var(--text3)"
              onclick="_toggleExpand('${row.symbol}')" id="expand-toggle-${row.symbol}">${expanded ? '▼' : '▶'}</span>`
       : '';
+    // CIL-NEW-08: staged entry badge.
+    const si = row.stage_info;
+    const stageBadge = si
+      ? ` <span style="background:#1e3a5f;color:#93c5fd;font-size:10px;font-family:var(--mono);padding:1px 5px;border-radius:3px;font-weight:700" title="Staged entry: ${si.done} of ${si.total} tranches executed. Follow-on stages pending.">Staged: ${si.done}/${si.total}</span>`
+      : '';
 
     htmlParts.push(`<tr style="${subtotalBg}">
-      <td style="font-family:var(--mono);font-weight:700">${expandToggle}${row.symbol}${warnIcon}</td>
+      <td style="font-family:var(--mono);font-weight:700">${expandToggle}${row.symbol}${stageBadge}${warnIcon}</td>
       <td style="font-family:var(--mono)">${row.total_shares}</td>
       <td style="font-family:var(--mono)">$${_fmt(row.avg_entry_price)}</td>
       <td style="font-family:var(--mono)">$${_fmt(row.current_price)}</td>

@@ -279,6 +279,16 @@ def execute_signal_endpoint(signal_id):
     confirmed = bool(payload.get("confirmed", False))
     limit_price_raw = payload.get("limit_price")
 
+    # CIL-NEW-08: staged entry params
+    staged_entry_on    = bool(payload.get("staged_entry", False))
+    stage_count        = int(payload.get("stage_count", 2))
+    stage_trigger      = str(payload.get("stage_trigger", "TIME")).strip().upper()
+    stage_interval_min = int(payload.get("stage_interval_min", 30))
+    if stage_count not in (2, 3):
+        stage_count = 2
+    if stage_trigger not in ("TIME", "DK_CONFIRM"):
+        stage_trigger = "TIME"
+
     if not confirmed:
         return jsonify({"error": "confirmed is required to execute a signal"}), 400
 
@@ -410,6 +420,8 @@ def execute_signal_endpoint(signal_id):
                             trade_source="LIVE",
                             limit_price=limit_price_val,
                             signal_id=signal_id,
+                            stage_number=1 if staged_entry_on else None,
+                            stage_total=stage_count if staged_entry_on else None,
                         )
                         orders_placed.append({
                             "account": suffix,
@@ -461,6 +473,8 @@ def execute_signal_endpoint(signal_id):
                     trade_source="PAPER",
                     limit_price=limit_price_val,
                     signal_id=signal_id,
+                    stage_number=1 if staged_entry_on else None,
+                    stage_total=stage_count if staged_entry_on else None,
                 )
                 orders_placed.append({
                     "account": acct_name,
@@ -478,14 +492,93 @@ def execute_signal_endpoint(signal_id):
         except Exception as e:
             logger.warning("execute_signal: could not update signal status: %s", e)
 
+        # CIL-NEW-08: register and schedule follow-on stages if staged entry is on.
+        if staged_entry_on and stage_count > 1:
+            try:
+                from prime_trading.prime_staged_entry import StagedEntry, register
+                paper_accounts_list = []
+                live_accounts_list = []
+                if mode_cfg == "PAPER":
+                    _exec_profile = (getattr(cfg.ops, "mata_profile", "") or "").strip().lower()
+                    from prime_trading.prime_mata import load_accounts
+                    _all_accts = load_accounts()
+                    if _all_accts and _exec_profile and _exec_profile != "all":
+                        _filtered = [a for a in _all_accts if a.get("name", "").strip().lower() == _exec_profile]
+                        paper_accounts_list = _filtered if _filtered else _all_accts
+                    else:
+                        paper_accounts_list = _all_accts or [{"name": "PAPER", "buying_power": 100000}]
+                staged = StagedEntry(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    strategy=strategy,
+                    stage_count=stage_count,
+                    stage_trigger=stage_trigger,
+                    stage_interval_min=stage_interval_min,
+                    completed_stages=1,
+                    paper_accounts=paper_accounts_list,
+                    live_accounts=live_accounts_list,
+                    execution_price=execution_price,
+                    order_type=order_type,
+                    mode=mode_cfg,
+                    max_order_pct=max_order_pct,
+                    entry_price_scan=entry_price_scan or execution_price,
+                )
+                register(staged)
+
+                if stage_trigger == "TIME":
+                    _schedule_staged_entry_time_job(signal_id, stage_interval_min)
+            except Exception as e:
+                logger.error("execute_signal: staged entry registration failed: %s", e)
+
     return jsonify({
-        "signal_id": signal_id,
-        "symbol": symbol,
-        "orders_placed": orders_placed,
+        "signal_id":       signal_id,
+        "symbol":          symbol,
+        "orders_placed":   orders_placed,
         "allocated_total": total_allocated,
         "execution_price": execution_price,
-        "mode": mode_cfg,
+        "mode":            mode_cfg,
+        "staged_entry":    staged_entry_on,
+        "stage_count":     stage_count if staged_entry_on else None,
+        "stage_trigger":   stage_trigger if staged_entry_on else None,
     }), 200 if orders_placed else 400
+
+
+def _schedule_staged_entry_time_job(signal_id: str, interval_min: int) -> None:
+    """Register an APScheduler one-shot job to fire the next staged tranche."""
+    from datetime import timedelta
+    from apscheduler.triggers.date import DateTrigger
+
+    if _SCHEDULER is None or not _SCHEDULER.running:
+        return
+
+    fire_time = datetime.now() + timedelta(minutes=interval_min)
+    job_id = f"staged_{signal_id}"
+
+    def _fire():
+        from prime_trading.prime_staged_entry import get_pending, execute_next_stage
+        entry = get_pending(signal_id)
+        if entry is None:
+            return
+        result = execute_next_stage(entry)
+        # If more stages remain and trigger is TIME, re-schedule.
+        entry_after = get_pending(signal_id)
+        if entry_after is not None and entry_after.stage_trigger == "TIME":
+            _schedule_staged_entry_time_job(signal_id, entry_after.stage_interval_min)
+        logger.info("staged_entry: TIME job fired for %s — result: %s", signal_id, result)
+
+    try:
+        _SCHEDULER.add_job(
+            _fire,
+            trigger=DateTrigger(run_date=fire_time),
+            id=job_id,
+            replace_existing=True,
+        )
+        logger.info(
+            "staged_entry: TIME job scheduled for signal %s in %d min at %s",
+            signal_id, interval_min, fire_time.strftime("%H:%M"),
+        )
+    except Exception as e:
+        logger.error("staged_entry: could not schedule TIME job: %s", e)
 
 
 @api_bp.route("/advisory/positions", methods=["GET"])
@@ -1365,14 +1458,16 @@ def get_portfolio():
                 continue
             if sym not in groups:
                 groups[sym] = {
-                    "symbol":       sym,
-                    "total_shares": 0,
-                    "total_cost":   0.0,
-                    "accounts":     [],
-                    "log_ids":      [],
-                    "stop_prices":  [],
-                    "direction":    (p.get("direction") or "LONG").upper(),
-                    "per_account":  {},
+                    "symbol":        sym,
+                    "total_shares":  0,
+                    "total_cost":    0.0,
+                    "accounts":      [],
+                    "log_ids":       [],
+                    "stop_prices":   [],
+                    "direction":     (p.get("direction") or "LONG").upper(),
+                    "per_account":   {},
+                    "stage_numbers": [],   # CIL-NEW-08: track tranche counts
+                    "stage_totals":  [],
                 }
             ep = float(p.get("entry_price") or p.get("price_at_scan") or 0.0)
             sh = int(p.get("shares") or 0)
@@ -1382,6 +1477,13 @@ def get_portfolio():
             if acc and acc not in groups[sym]["accounts"]:
                 groups[sym]["accounts"].append(acc)
             groups[sym]["log_ids"].append(p.get("log_id"))
+            # CIL-NEW-08: capture staged entry indicators.
+            sn = p.get("stage_number")
+            st = p.get("stage_total")
+            if sn is not None:
+                groups[sym]["stage_numbers"].append(int(sn))
+            if st is not None:
+                groups[sym]["stage_totals"].append(int(st))
             sp = p.get("stop_price")
             if sp is not None:
                 groups[sym]["stop_prices"].append(float(sp))
@@ -1471,6 +1573,16 @@ def get_portfolio():
                         "stop_price":        round(min(acct_stops), 4) if acct_stops else None,
                     })
 
+            # CIL-NEW-08: compute staged entry indicator.
+            _stage_nums = g["stage_numbers"]
+            _stage_tots = g["stage_totals"]
+            stage_info = None
+            if _stage_nums and _stage_tots:
+                _max_done  = max(_stage_nums)
+                _max_total = max(_stage_tots)
+                if _max_done < _max_total:
+                    stage_info = {"done": _max_done, "total": _max_total}
+
             row = {
                 "symbol":            sym,
                 "total_shares":      shares,
@@ -1486,6 +1598,7 @@ def get_portfolio():
                 "log_ids":           g["log_ids"],
                 "stop_price":        round(stop_price, 4) if stop_price is not None else None,
                 "per_account_rows":  per_account_rows,
+                "stage_info":        stage_info,
             }
             rows.append(row)
             total_market_value += market_val

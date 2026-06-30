@@ -645,6 +645,43 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
              style="background:var(--bg4);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px;font-size:14px;width:100%;margin-top:4px"
              placeholder="Enter limit price">
     </div>
+    <!-- CIL-NEW-08: Staged Entry controls -->
+    <div id="buy-signal-staged-row" style="margin-bottom:12px;padding:10px;background:var(--bg4);border-radius:6px;border:1px solid var(--border)">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)">
+        <input type="checkbox" id="buy-signal-staged-toggle" onchange="toggleStagedEntry()"
+               style="width:14px;height:14px;cursor:pointer">
+        <span>Stage Entry</span>
+        <span style="font-size:11px;color:var(--text3)" title="Execute in 2-3 tranches. Stage 1 fires immediately; follow-on stages via time delay or DK confirmation.">(2-3 tranches)</span>
+      </label>
+      <div id="buy-signal-staged-options" style="display:none;margin-top:10px;display:none">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">Tranches</label>
+            <select id="buy-signal-stage-count"
+                    style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px">
+              <option value="2">2 stages</option>
+              <option value="3">3 stages</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">Trigger</label>
+            <select id="buy-signal-stage-trigger" onchange="onStageTriggerChange()"
+                    style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px">
+              <option value="TIME">TIME (delay)</option>
+              <option value="DK_CONFIRM">DK Confirm</option>
+            </select>
+          </div>
+          <div id="buy-signal-stage-interval-wrap">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">Delay (min)</label>
+            <input type="number" id="buy-signal-stage-interval" value="30" min="5" max="480"
+                   style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px;width:72px">
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text3)" id="buy-signal-staged-hint">
+          Stage 1 executes now. Stage 2 fires after the delay.
+        </div>
+      </div>
+    </div>
     <div id="buy-signal-msg" style="font-family:var(--mono);font-size:12px;min-height:16px;margin-bottom:8px"></div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeBuySignalModal()">Cancel</button>

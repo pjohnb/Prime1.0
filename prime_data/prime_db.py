@@ -176,6 +176,9 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_ml_dataset(db_path, "dnow_score", "REAL")
     # Sprint 33 Thread 2 / CIL-040: ab_volume_raw (call-minus-put side volume).
     _migrate_add_column_ml_dataset(db_path, "ab_volume_raw", "REAL")
+    # Sprint 35 CIL-NEW-08: staged entry tranche tracking.
+    _migrate_add_column_trade_log(db_path, "stage_number", "INTEGER")
+    _migrate_add_column_trade_log(db_path, "stage_total", "INTEGER")
 
     return path
 
@@ -289,6 +292,8 @@ def insert_trade(
     limit_price: Optional[float] = None,
     sector: Optional[str] = None,
     signal_id: Optional[str] = None,
+    stage_number: Optional[int] = None,
+    stage_total: Optional[int] = None,
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -320,8 +325,8 @@ def insert_trade(
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type, limit_price, sector,
-                signal_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                signal_id, stage_number, stage_total
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
@@ -329,7 +334,7 @@ def insert_trade(
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type or "FIXED",
-                limit_price, sector, signal_id,
+                limit_price, sector, signal_id, stage_number, stage_total,
             ),
         )
         conn.commit()
