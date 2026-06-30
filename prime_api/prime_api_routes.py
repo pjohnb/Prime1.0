@@ -1004,6 +1004,54 @@ def create_trade():
         from prime_trading.prime_schwab_orders import submit_order, OrderGateError
         from prime_trading.prime_fill_poller import start_fill_watcher
 
+        # WO-PRIME-ACTIVE-POSITION-MGMT-01 Part A: read stop/target from payload;
+        # apply config defaults when not provided. Every position must carry a
+        # fixed stop from the moment of entry.
+        try:
+            import json as _json
+            with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as _f:
+                _ops_cfg = _json.load(_f)
+        except Exception:
+            _ops_cfg = {}
+        _def_stop_pct   = float(_ops_cfg.get("default_stop_loss_pct", 3.0))   # percentage
+        _def_trail_pct  = float(_ops_cfg.get("default_trailing_stop_pct", 3.0)) / 100.0  # decimal
+
+        live_stop_type = (payload.get("stop_type") or "FIXED").upper()
+        if live_stop_type not in ("FIXED", "TRAILING"):
+            live_stop_type = "FIXED"
+
+        live_stop_price  = None
+        live_target_price = None
+        live_trail_pct   = None
+        try:
+            if live_stop_type == "TRAILING":
+                raw_tp = payload.get("trailing_stop_pct")
+                live_trail_pct = float(raw_tp) if raw_tp is not None else _def_trail_pct
+                # Fixed floor at default_stop_loss_pct even when trailing is active
+                sp_pct = float(payload.get("stop_pct") or _def_stop_pct)
+                live_stop_price = round(
+                    price * (1 + sp_pct / 100.0) if direction == "SHORT"
+                    else price * (1 - sp_pct / 100.0), 4
+                )
+            else:
+                sp_pct = float(payload.get("stop_pct") or _def_stop_pct)
+                live_stop_price = round(
+                    price * (1 + sp_pct / 100.0) if direction == "SHORT"
+                    else price * (1 - sp_pct / 100.0), 4
+                )
+            if payload.get("target_pct") is not None:
+                tp = float(payload["target_pct"])
+                live_target_price = round(
+                    price * (1 - tp / 100.0) if direction == "SHORT"
+                    else price * (1 + tp / 100.0), 4
+                )
+        except (TypeError, ValueError):
+            sp_pct = _def_stop_pct
+            live_stop_price = round(
+                price * (1 + sp_pct / 100.0) if direction == "SHORT"
+                else price * (1 - sp_pct / 100.0), 4
+            )
+
         account_hash = account or ""
         try:
             # Resolve account_hash: if the caller passed a short suffix, look up
@@ -1071,16 +1119,58 @@ def create_trade():
                 signal_source="UI",
                 trade_source="LIVE",
                 limit_price=limit_price_val,
+                stop_price=live_stop_price,
+                target_price=live_target_price,
+                stop_type=live_stop_type,
             )
+            # Wire trailing stop pct if TRAILING mode
+            if live_stop_type == "TRAILING" and live_trail_pct is not None and log_id:
+                from prime_data.prime_db import update_trailing_stop
+                update_trailing_stop(log_id, live_trail_pct)
         except TradeRecordError as e:
             return jsonify({"error": str(e)}), 400
 
         # Start fill watcher (non-blocking background thread)
+        schwab_for_fill = _sc if "_sc" in dir() else None  # type: ignore[name-defined]
         try:
-            schwab_for_fill = _sc if "_sc" in dir() else None  # type: ignore[name-defined]
             start_fill_watcher(result["order_id"], log_id, schwab_for_fill)
         except Exception:
             pass
+
+        # WO-PRIME-ACTIVE-POSITION-MGMT-01 Part A: attach protective STOP order.
+        # Two-step required (Section 3.3) — entry order already submitted above.
+        # On failure: log Tier 2 alert; do not block trade response.
+        if live_stop_price and live_stop_price > 0:
+            try:
+                from prime_trading.prime_schwab_orders import attach_stop_order
+                attach_stop_order(
+                    symbol=symbol,
+                    qty=qty,
+                    direction=direction,
+                    stop_price=live_stop_price,
+                    account_hash=account_hash,
+                    schwab_client=schwab_for_fill,
+                    db_path=None,
+                )
+            except Exception as _stop_err:
+                logger.error(
+                    "STOP_ATTACH_FAILED: %s log_id=%s — %s",
+                    symbol, log_id, _stop_err,
+                )
+                try:
+                    from prime_data.prime_db import log_ops_event
+                    log_ops_event(
+                        event_type="NO_STOP_VIOLATION",
+                        component="prime_api_routes",
+                        symbol=symbol,
+                        detail=(
+                            f"log_id={log_id} stop_attach_failed=True "
+                            f"reason={_stop_err}"
+                        ),
+                        severity="CRITICAL",
+                    )
+                except Exception:
+                    pass
 
         return jsonify({
             "log_id":    log_id,

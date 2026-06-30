@@ -310,3 +310,112 @@ def submit_order(
         "fill_price": 0.0,
         "timestamp":  ts,
     }
+
+
+# ---------------------------------------------------------------------------
+# WO-PRIME-ACTIVE-POSITION-MGMT-01 Part A: stop-order attachment
+# ---------------------------------------------------------------------------
+
+def _build_stop_order_raw(
+    symbol: str, qty: int, instruction: str, stop_price: float
+) -> dict:
+    """Raw Schwab STOP order dict (GTC). Used for protective stop-loss attachment.
+
+    Section 3.3: Schwab requires a two-step process — entry order first, then a
+    separate stop order. The schwab-py builder library does not expose a simple
+    equity stop helper, so we use the raw dict path that _place_order() already
+    falls back to for unsupported order types.
+    """
+    return {
+        "orderType": "STOP",
+        "session":   "NORMAL",
+        "duration":  "GOOD_TILL_CANCEL",
+        "orderStrategyType": "SINGLE",
+        "stopPrice": str(round(float(stop_price), 2)),
+        "orderLegCollection": [{
+            "instruction": instruction,  # "SELL" (LONG) or "BUY" (SHORT cover)
+            "quantity":    int(qty),
+            "instrument":  {"symbol": symbol, "assetType": "EQUITY"},
+        }],
+    }
+
+
+def attach_stop_order(
+    symbol: str,
+    qty: int,
+    direction: str,
+    stop_price: float,
+    account_hash: str,
+    schwab_client,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Submit a protective STOP order to Schwab as a guaranteed follow-up after entry.
+
+    WO-PRIME-ACTIVE-POSITION-MGMT-01 Section 3.3: Schwab does not support
+    bracket/OCO orders for equity entries, so the stop is a separate submission.
+    This function bypasses the 6-gate submit_order() because those gates govern
+    entry orders; this is a protective, pre-authorized follow-up order.
+
+    LONG: SELL STOP at stop_price (price floor).
+    SHORT: BUY STOP at stop_price (buy-to-cover trigger).
+
+    Returns {order_id, status}. Raises OrderGateError on rejection or missing params.
+    If stop attachment fails after a confirmed entry fill, the caller must escalate
+    immediately to a Tier 2 alert (see prime_stop_monitor.py Part B).
+    """
+    symbol     = (symbol or "").upper().strip()
+    direction  = (direction or "LONG").upper()
+    instruction = "BUY" if direction == "SHORT" else "SELL"
+    stop_price  = round(float(stop_price), 2)
+
+    if not symbol or int(qty) <= 0 or stop_price <= 0 or not account_hash:
+        raise OrderGateError(
+            "STOP_PARAMS",
+            f"attach_stop_order: invalid params — symbol={symbol!r} qty={qty} "
+            f"stop_price={stop_price} account_hash={bool(account_hash)}",
+        )
+    if schwab_client is None:
+        raise OrderGateError("NO_CLIENT", "attach_stop_order: no Schwab client available")
+
+    raw = _build_stop_order_raw(symbol, int(qty), instruction, stop_price)
+    try:
+        resp = schwab_client.client.place_order(account_hash, raw)
+    except Exception as exc:
+        raise OrderGateError("SCHWAB_ERROR", f"attach_stop_order API error: {exc}") from exc
+
+    if resp.status_code not in (200, 201):
+        reason = ""
+        try:
+            reason = resp.json().get("message", "")
+        except Exception:
+            pass
+        raise OrderGateError(
+            "SCHWAB_REJECT",
+            f"Schwab rejected stop order: HTTP {resp.status_code} {reason}".strip(),
+        )
+
+    import time as _time
+    location = resp.headers.get("Location") or resp.headers.get("location") or ""
+    stop_order_id = location.rstrip("/").split("/")[-1] if location else str(int(_time.time()))
+
+    logger.info(
+        "Stop order attached: %s %d %s STOP=%.2f order_id=%s",
+        symbol, qty, direction, stop_price, stop_order_id,
+    )
+    try:
+        from prime_data.prime_db import log_ops_event
+        log_ops_event(
+            event_type="STOP_ORDER_ATTACHED",
+            component="prime_schwab_orders",
+            symbol=symbol,
+            detail=(
+                f"direction={direction} qty={qty} stop_price={stop_price:.2f} "
+                f"order_id={stop_order_id}"
+            ),
+            severity="INFO",
+            db_path=db_path,
+        )
+    except Exception:
+        pass
+
+    return {"order_id": stop_order_id, "status": "STOP_SUBMITTED"}

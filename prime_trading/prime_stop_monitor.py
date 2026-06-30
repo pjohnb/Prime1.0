@@ -50,6 +50,35 @@ _alerts_lock = threading.Lock()
 _monitor_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 
+# ---------------------------------------------------------------------------
+# WO-PRIME-ACTIVE-POSITION-MGMT-01 Part B: escalation counters
+# Tracks consecutive daily checks that triggered each alert type per position.
+# Key: "{log_id}::{trigger_type}"  Value: consecutive-day count
+# ---------------------------------------------------------------------------
+_escalation_counters: Dict[str, int] = {}
+_escalation_lock = threading.Lock()
+
+
+def _esc_key(log_id: str, trigger: str) -> str:
+    return f"{log_id}::{trigger}"
+
+
+def _increment_escalation(log_id: str, trigger: str) -> int:
+    key = _esc_key(log_id, trigger)
+    with _escalation_lock:
+        _escalation_counters[key] = _escalation_counters.get(key, 0) + 1
+        return _escalation_counters[key]
+
+
+def _reset_escalation(log_id: str, trigger: str) -> None:
+    with _escalation_lock:
+        _escalation_counters.pop(_esc_key(log_id, trigger), None)
+
+
+def _get_escalation_count(log_id: str, trigger: str) -> int:
+    with _escalation_lock:
+        return _escalation_counters.get(_esc_key(log_id, trigger), 0)
+
 
 # ---------------------------------------------------------------------------
 # Public accessors
@@ -452,6 +481,244 @@ def _check_day_count(
 
 
 # ---------------------------------------------------------------------------
+# WO-PRIME-ACTIVE-POSITION-MGMT-01 — Part B (escalation tiers) + Part C (target)
+# ---------------------------------------------------------------------------
+
+def _tier3_recommendation(
+    symbol: str,
+    trigger: str,
+    consecutive: int,
+    pnl_pct: Optional[float],
+    direction: str,
+    hold_days: int = 0,
+) -> str:
+    """Generate a specific, actionable Tier 3 recommendation text."""
+    ctx_parts = []
+    if trigger == "DRIFT":
+        ctx_parts.append(f"unrealized loss {pnl_pct:.1f}% over {consecutive} consecutive check day(s)")
+    elif trigger == "DAY_COUNT":
+        ctx_parts.append(f"held {hold_days} days, day-count at policy limit for {consecutive} consecutive check day(s)")
+    elif trigger == "DK_ADVERSE":
+        ctx_parts.append(f"DK regime adverse for {consecutive} consecutive check day(s)")
+    elif trigger == "NO_STOP":
+        ctx_parts.append("no stop or trailing stop set — undefined downside risk")
+
+    action = "tighten stop to breakeven or exit"
+    if pnl_pct is not None and pnl_pct < -10.0:
+        action = "exit immediately — unrealized loss exceeds -10%"
+    elif hold_days >= 5:
+        action = "tighten stop to breakeven or exit — position age approaching day-count limit"
+
+    return f"{symbol}: {', '.join(ctx_parts)}. Recommend: {action}."
+
+
+def _check_no_stop_violation(
+    position: Dict[str, Any],
+    ops: Dict[str, Any],
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Tier 1/2: flag immediately when position has no stop_price AND no trailing stop.
+
+    Fires on EVERY check cycle (not throttled once-per-day) because this is a
+    standing policy violation, not a developing market trend. Escalates from WARN
+    to CRITICAL after no_stop_violation_grace_checks consecutive cycles without
+    resolution (default: after just 1 cycle, per ops_config).
+    """
+    stop_p    = position.get("stop_price")
+    trail_pct = position.get("trailing_stop_pct")
+    trail_act = bool(position.get("trailing_stop_active"))
+
+    has_stop = (stop_p and float(stop_p) > 0) or (trail_pct is not None) or trail_act
+    if has_stop:
+        _reset_escalation(position.get("log_id", ""), "NO_STOP")
+        return False
+
+    symbol = (position.get("symbol") or "").upper()
+    log_id = position.get("log_id", "")
+    grace  = int(ops.get("no_stop_violation_grace_checks", 1))
+    count  = _increment_escalation(log_id, "NO_STOP")
+    severity = "CRITICAL" if count > grace else "WARN"
+
+    rec = ""
+    if count > grace:
+        rec = " | " + _tier3_recommendation(symbol, "NO_STOP", count, None, "")
+
+    from prime_data.prime_db import log_ops_event
+    log_ops_event(
+        event_type="NO_STOP_VIOLATION",
+        component="prime_stop_monitor",
+        symbol=symbol,
+        detail=f"log_id={log_id} consecutive_cycles={count} severity={severity}{rec}",
+        severity=severity,
+        db_path=db_path,
+    )
+    logger.warning(
+        "NO_STOP_VIOLATION: %s log_id=%s (cycle #%d, %s)", symbol, log_id, count, severity,
+    )
+    return True
+
+
+def _check_drift_alert(
+    position: Dict[str, Any],
+    current_price: float,
+    ops: Dict[str, Any],
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Tier 1/2: fire once per day when unrealized loss exceeds drift threshold.
+
+    Default threshold: -5% (position_drift_alert_pct from ops_config).
+    Escalates to CRITICAL after position_escalation_consecutive_checks days.
+    Resets the counter if the position recovers above the threshold.
+    """
+    direction   = (position.get("direction") or "LONG").upper()
+    entry_price = float(position.get("entry_price") or position.get("price_at_scan") or 0.0)
+    if entry_price <= 0 or current_price <= 0:
+        return False
+
+    pnl_pct = (
+        (current_price - entry_price) / entry_price * 100.0 if direction == "LONG"
+        else (entry_price - current_price) / entry_price * 100.0
+    )
+    threshold = -abs(float(ops.get("position_drift_alert_pct", 5.0)))
+
+    log_id = position.get("log_id", "")
+    if pnl_pct > threshold:
+        _reset_escalation(log_id, "DRIFT")
+        return False
+
+    symbol = (position.get("symbol") or "").upper()
+    from prime_data.prime_db import _recent_trade_exists, log_ops_event
+
+    if _recent_trade_exists(symbol, "DRIFT_ALERT", _utc_day_start(), db_path=db_path):
+        return False
+
+    count        = _increment_escalation(log_id, "DRIFT")
+    escalate_at  = int(ops.get("position_escalation_consecutive_checks", 3))
+    severity     = "CRITICAL" if count >= escalate_at else "WARN"
+
+    rec = ""
+    if count >= escalate_at:
+        rec = " | " + _tier3_recommendation(symbol, "DRIFT", count, pnl_pct, direction)
+
+    log_ops_event(
+        event_type="DRIFT_ALERT",
+        component="prime_stop_monitor",
+        symbol=symbol,
+        detail=(
+            f"log_id={log_id} pnl_pct={pnl_pct:.2f} threshold={threshold:.2f} "
+            f"consecutive={count} severity={severity}{rec}"
+        ),
+        severity=severity,
+        db_path=db_path,
+    )
+    logger.warning(
+        "DRIFT_ALERT: %s pnl=%.2f%% threshold=%.2f%% (day #%d, %s)",
+        symbol, pnl_pct, threshold, count, severity,
+    )
+    return True
+
+
+def _check_dk_adverse(
+    position: Dict[str, Any],
+    ops: Dict[str, Any],
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Tier 1/2: fire once per day when the latest DK scan is adverse to position direction.
+
+    LONG + NULLIFYING = adverse (institutional selling against the long).
+    SHORT + CONFIRMING = adverse (institutional buying against the short).
+    Looks up the most recent DK signal for the symbol in prime_signals.
+    Skips silently if no DK signal exists for this symbol.
+    """
+    symbol    = (position.get("symbol") or "").upper()
+    direction = (position.get("direction") or "LONG").upper()
+    log_id    = position.get("log_id", "")
+
+    try:
+        from prime_analytics.prime_signals_db import get_signals
+        sigs = get_signals(symbol=symbol, strategy="DK", limit=1)
+        if not sigs:
+            return False
+        dk_status = (sigs[0].get("dk_status") or "NEUTRAL").upper()
+    except Exception:
+        return False
+
+    adverse = (
+        (direction == "LONG"  and dk_status == "NULLIFYING") or
+        (direction == "SHORT" and dk_status == "CONFIRMING")
+    )
+    if not adverse:
+        _reset_escalation(log_id, "DK_ADVERSE")
+        return False
+
+    from prime_data.prime_db import _recent_trade_exists, log_ops_event
+    if _recent_trade_exists(symbol, "DK_ADVERSE_ALERT", _utc_day_start(), db_path=db_path):
+        return False
+
+    count       = _increment_escalation(log_id, "DK_ADVERSE")
+    escalate_at = int(ops.get("position_escalation_consecutive_checks", 3))
+    severity    = "CRITICAL" if count >= escalate_at else "WARN"
+
+    rec = ""
+    if count >= escalate_at:
+        rec = " | " + _tier3_recommendation(symbol, "DK_ADVERSE", count, None, direction)
+
+    log_ops_event(
+        event_type="DK_ADVERSE_ALERT",
+        component="prime_stop_monitor",
+        symbol=symbol,
+        detail=(
+            f"log_id={log_id} dk_status={dk_status} direction={direction} "
+            f"consecutive={count} severity={severity}{rec}"
+        ),
+        severity=severity,
+        db_path=db_path,
+    )
+    logger.warning(
+        "DK_ADVERSE_ALERT: %s dk=%s direction=%s (day #%d, %s)",
+        symbol, dk_status, direction, count, severity,
+    )
+    return True
+
+
+def _check_profit_target(
+    position: Dict[str, Any],
+    current_price: float,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """Part C: auto-exit when current_price reaches the user-defined target_price.
+
+    Fires the same _fire_exit_sell pathway used by day-count and trailing-stop
+    automated exits, with exit_reason='TARGET_HIT'. Takes priority over trailing-
+    stop exits when both could theoretically fire at the same time (target is an
+    explicit, deliberate user choice).
+
+    Target is per-trade: if target_price is NULL, this check is a no-op.
+    Throttled once-per-day (like day-count) to avoid duplicate fires before the
+    fill watcher closes the record.
+    """
+    target_price = position.get("target_price")
+    if not target_price or float(target_price) <= 0:
+        return False
+
+    direction = (position.get("direction") or "LONG").upper()
+    target    = float(target_price)
+
+    if direction == "LONG"  and current_price < target:
+        return False
+    if direction == "SHORT" and current_price > target:
+        return False
+
+    symbol = (position.get("symbol") or "").upper()
+    from prime_data.prime_db import _recent_trade_exists
+    if _recent_trade_exists(symbol, "TARGET_HIT", _utc_day_start(), db_path=db_path):
+        return False
+
+    _fire_exit_sell(position, current_price, "TARGET_HIT", db_path=db_path)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Monitor loop
 # ---------------------------------------------------------------------------
 
@@ -488,7 +755,17 @@ def _run_check_cycle(db_path: Optional[Path] = None) -> None:
     for pos in positions:
         sym   = (pos.get("symbol") or "").upper()
         price = prices.get(sym)
+
+        # WO-PRIME-ACTIVE-POSITION-MGMT-01 Part B: no-stop violation check runs
+        # on every cycle regardless of price availability (policy check, not P&L).
+        _check_no_stop_violation(pos, ops, db_path)
+
         if not price:
+            continue
+
+        # Part C (profit target) takes priority — if it fires, the position is
+        # now closed; skip all remaining checks for this cycle.
+        if _check_profit_target(pos, price, db_path):
             continue
 
         # Sprint 30 PM-04: automated exits (gain-triggered trailing stop + day
@@ -499,6 +776,10 @@ def _run_check_cycle(db_path: Optional[Path] = None) -> None:
             continue
         if _check_day_count(pos, price, ops, db_path):
             continue
+
+        # Part B: drift and DK adverse alerts (Tier 1/2, once per day each).
+        _check_drift_alert(pos, price, ops, db_path)
+        _check_dk_adverse(pos, ops, db_path)
 
         # Update trailing high-water mark
         trailing_pct = pos.get("trailing_stop_pct")
