@@ -5,6 +5,10 @@ All 10 Signals tab column headers must carry data-tooltip attributes with
 the specific copy mandated by the work order.  The Tier column's existing
 (?) help-icon span is preserved for backward compatibility with
 test_tier_tooltip.py.
+
+AC6 (edge-collision) uses a JS floating-div approach: getBoundingClientRect()
+measures the rendered tooltip and clamps it within the viewport on both edges.
+The old CSS nth-child static-anchor approach is intentionally removed.
 """
 
 import re
@@ -13,7 +17,8 @@ import unittest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-INDEX_HTML = (PROJECT_ROOT / "prime_ui" / "index.html").read_text(encoding="utf-8")
+INDEX_HTML  = (PROJECT_ROOT / "prime_ui" / "index.html").read_text(encoding="utf-8")
+SIGNALS_JS  = (PROJECT_ROOT / "prime_ui" / "signals.js").read_text(encoding="utf-8")
 
 
 def _get_th_tooltip(html: str, header_text: str) -> str:
@@ -85,29 +90,57 @@ class TestSignalsColumnTooltips(unittest.TestCase):
         self.assertIsNotNone(m, "tooltip transition rule not found")
         self.assertIn("0.3s", m.group(0), "tooltip must have 0.3s (300ms) transition delay")
 
-    # AC 6: edge-collision fix — CSS rules anchor leftmost and rightmost columns
-    def test_edge_collision_css_left_anchor(self):
-        self.assertIn(
-            "#sig-table thead th:nth-child(-n+2)[data-tooltip]::after",
-            INDEX_HTML,
-            "Left-anchor CSS rule for first two columns not found",
-        )
-        # Rule must reset transform so the tooltip doesn't re-center off-screen
-        left_rule_start = INDEX_HTML.index("#sig-table thead th:nth-child(-n+2)")
-        left_rule = INDEX_HTML[left_rule_start:INDEX_HTML.index("}", left_rule_start)]
-        self.assertIn("left: 0", left_rule, "Left-anchor rule must set left: 0")
-        self.assertIn("transform: none", left_rule, "Left-anchor rule must clear transform")
+    # AC 6: edge-collision fix — JS floating div with getBoundingClientRect clamping.
+    # The old CSS nth-child static-anchor approach is replaced; these tests verify
+    # the JS implementation is present and correct.
 
-    def test_edge_collision_css_right_anchor(self):
+    def test_edge_collision_js_tooltip_div_in_html(self):
+        """A #sig-col-tip CSS block must exist for the JS-created floating div."""
+        self.assertIn("#sig-col-tip", INDEX_HTML,
+                      "#sig-col-tip CSS rule must be present for the JS tooltip div")
+        self.assertIn("position: fixed", INDEX_HTML,
+                      "#sig-col-tip must use position:fixed for viewport-relative placement")
+
+    def test_edge_collision_sig_header_pseudo_suppressed(self):
+        """::after pseudo must be suppressed on sig-table headers (JS replaces it)."""
         self.assertIn(
-            "#sig-table thead th:nth-last-child(-n+2)[data-tooltip]::after",
+            "#sig-table thead th[data-tooltip]::after { display: none; }",
             INDEX_HTML,
-            "Right-anchor CSS rule for last two columns not found",
+            "CSS must suppress ::after on sig-table headers so only the JS tooltip renders",
         )
-        right_rule_start = INDEX_HTML.index("#sig-table thead th:nth-last-child(-n+2)")
-        right_rule = INDEX_HTML[right_rule_start:INDEX_HTML.index("}", right_rule_start)]
-        self.assertIn("right: 0", right_rule, "Right-anchor rule must set right: 0")
-        self.assertIn("transform: none", right_rule, "Right-anchor rule must clear transform")
+
+    def test_edge_collision_js_function_exists(self):
+        self.assertIn("function initSigColTooltips()", SIGNALS_JS,
+                      "initSigColTooltips() must be defined in signals.js")
+
+    def test_edge_collision_js_uses_get_bounding_client_rect(self):
+        self.assertIn("getBoundingClientRect()", SIGNALS_JS,
+                      "initSigColTooltips must call getBoundingClientRect() to measure tooltip size")
+
+    def test_edge_collision_js_clamps_left_overflow(self):
+        self.assertIn("left < MARGIN", SIGNALS_JS,
+                      "initSigColTooltips must detect and clamp left-edge overflow")
+        self.assertIn("left = MARGIN", SIGNALS_JS,
+                      "initSigColTooltips must snap tooltip to left margin when it would overflow")
+
+    def test_edge_collision_js_clamps_right_overflow(self):
+        self.assertIn("left > maxLeft", SIGNALS_JS,
+                      "initSigColTooltips must detect and clamp right-edge overflow")
+        self.assertIn("left = maxLeft", SIGNALS_JS,
+                      "initSigColTooltips must snap tooltip to maxLeft when it would overflow right")
+
+    def test_edge_collision_old_css_rules_absent(self):
+        """Regression: the insufficient nth-child CSS rules must be gone."""
+        self.assertNotIn(
+            "nth-child(-n+2)[data-tooltip]::after",
+            INDEX_HTML,
+            "Old static CSS left-anchor rule must be removed (replaced by JS clamping)",
+        )
+        self.assertNotIn(
+            "nth-last-child(-n+2)[data-tooltip]::after",
+            INDEX_HTML,
+            "Old static CSS right-anchor rule must be removed (replaced by JS clamping)",
+        )
 
     # backward compat: existing tier-help-icon span preserved
     def test_tier_help_icon_preserved(self):

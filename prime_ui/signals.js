@@ -413,3 +413,62 @@ async function loadSignals() {
     document.getElementById('sig-body').innerHTML = '<tr><td colspan="10" class="empty-state">Failed to load signals</td></tr>';
   }
 }
+
+// WO-PRIME-SIGNALS-TOOLTIPS-01 edge-collision fix: JS-positioned floating tooltip
+// for #sig-table headers. Replaces CSS ::after pseudo-element approach which cannot
+// detect its own rendered position. Uses getBoundingClientRect() to measure the
+// tooltip after render and clamp it fully within the viewport on both edges.
+function initSigColTooltips() {
+  var tip = document.createElement('div');
+  tip.id = 'sig-col-tip';
+  tip.setAttribute('role', 'tooltip');
+  tip.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(tip);
+
+  var MARGIN = 8;  // minimum px gap from either viewport edge
+  var GAP    = 6;  // px gap between th top-edge and tooltip bottom
+
+  function showTip(th) {
+    var text = th.getAttribute('data-tooltip');
+    if (!text) return;
+
+    tip.textContent    = text;
+    tip.style.display  = 'block';
+    tip.style.visibility = 'hidden';  // render off-screen to measure size
+
+    var thRect  = th.getBoundingClientRect();
+    var tipRect = tip.getBoundingClientRect();
+
+    // Default: centered horizontally above the th.
+    var left = thRect.left + thRect.width / 2 - tipRect.width / 2;
+    var top  = thRect.top  - tipRect.height - GAP;
+
+    // If the tooltip would go above the viewport, flip it below the header.
+    if (top < MARGIN) {
+      top = thRect.bottom + GAP;
+    }
+
+    // Clamp horizontally: prevent overflow on left or right viewport edge.
+    var maxLeft = window.innerWidth - tipRect.width - MARGIN;
+    if (left < MARGIN)  left = MARGIN;
+    if (left > maxLeft) left = maxLeft;
+
+    tip.style.left       = left + 'px';
+    tip.style.top        = top  + 'px';
+    tip.style.visibility = 'visible';
+  }
+
+  function hideTip() {
+    tip.style.display = 'none';
+  }
+
+  var headers = document.querySelectorAll('#sig-table thead th[data-tooltip]');
+  headers.forEach(function(th) {
+    th.addEventListener('mouseenter', function() { showTip(th); });
+    th.addEventListener('mouseleave', hideTip);
+    th.addEventListener('focus',      function() { showTip(th); });
+    th.addEventListener('blur',       hideTip);
+  });
+}
+
+initSigColTooltips();

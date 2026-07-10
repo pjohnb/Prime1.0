@@ -138,9 +138,17 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
 [data-tooltip]:hover::after { opacity: 1; }
-/* Edge-collision fix: left-anchor first two columns, right-anchor last two columns. */
-#sig-table thead th:nth-child(-n+2)[data-tooltip]::after { left: 0; transform: none; }
-#sig-table thead th:nth-last-child(-n+2)[data-tooltip]::after { left: auto; right: 0; transform: none; }
+/* Suppress CSS pseudo-tooltip on sig-table headers — JS handles these with
+   viewport-aware getBoundingClientRect positioning (initSigColTooltips in signals.js). */
+#sig-table thead th[data-tooltip]::after { display: none; }
+/* Floating tooltip div created and clamped by initSigColTooltips(). */
+#sig-col-tip {
+  position: fixed; background: #1a1a2e; color: #e2e8f0;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 12px; line-height: 1.4; white-space: normal; max-width: 320px;
+  z-index: 1000; display: none; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
 </style>
 </head>
 <body>
