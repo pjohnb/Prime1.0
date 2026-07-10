@@ -1,9 +1,12 @@
 """
 WO-PRIME-PSA-STAGE0-CALIBRATION-01 acceptance tests.
 
-Verifies that the Stage 0 volume gate uses summed daily bar volumes rather
-than a single 5-minute bar, fixing the 100% rejection rate caused by comparing
-a single-bar volume (~300-11000 units) against the 500 000 daily threshold.
+Verifies that the Stage 0 volume gate:
+  1. Sums volume across all bars in the window (not single-bar)
+  2. Normalizes the sum to a full-day equivalent before comparing against the
+     500 000 daily threshold. PSA pulls 39 × 5-min bars (~3.25 h); raw-summing
+     that window against a daily threshold would still under-count by ~2x.
+     Normalization: daily_equiv = raw_sum * 78 / len(bars)
 """
 
 import sys
@@ -45,6 +48,19 @@ class TestPSAStage0VolumeAggregation(unittest.TestCase):
             "PSA scanner must NOT use bars[-1] for volume (single-bar anti-pattern)",
         )
 
+    # AC1b: normalization constant present in source
+    def test_source_uses_full_day_bars_normalization(self):
+        self.assertIn(
+            "_FULL_DAY_BARS_5MIN = 78",
+            PSA_SRC,
+            "PSA scanner must define _FULL_DAY_BARS_5MIN = 78 for daily normalization",
+        )
+        self.assertIn(
+            "_FULL_DAY_BARS_5MIN / len(bars)",
+            PSA_SRC,
+            "PSA scanner must normalize raw_vol by (78 / len(bars))",
+        )
+
     # AC2: per-symbol Stage0 rejection logging present
     def test_per_symbol_stage0_debug_logging(self):
         self.assertIn(
@@ -75,6 +91,26 @@ class TestPSAStage0VolumeAggregation(unittest.TestCase):
                                5.0, 500.0, DEFAULT_MIN_DAILY_VOLUME)
         self.assertIsNotNone(result, "Single bar volume must fail Stage0 (confirms the old bug)")
         self.assertIn("volume", result)
+
+    # AC3b: normalization math — half-window that would fail without it
+    def test_half_window_passes_after_normalization(self):
+        """39-bar window with 7000 vol/bar: raw=273K (fails 500K), normalized=546K (passes)."""
+        from prime_scanners.prime_psa_scanner import stage0_filter, DEFAULT_MIN_DAILY_VOLUME
+        n_bars = 39
+        vol_per_bar = 7000
+        raw_vol = n_bars * vol_per_bar  # 273 000 — would FAIL without normalization
+        full_day_bars = 78
+        normalized = raw_vol * full_day_bars / n_bars  # 546 000 — should PASS
+
+        self.assertLess(raw_vol, DEFAULT_MIN_DAILY_VOLUME,
+                        "Raw partial-window volume must be below threshold (confirms need for normalization)")
+        self.assertGreater(normalized, DEFAULT_MIN_DAILY_VOLUME,
+                           "Normalized daily-equivalent volume must exceed threshold")
+
+        result = stage0_filter("TEST", {"price": 50.0, "volume": normalized},
+                               5.0, 500.0, DEFAULT_MIN_DAILY_VOLUME)
+        self.assertIsNone(result,
+                          "Half-window with adequate annualized pace must pass Stage0 after normalization")
 
     # AC4: run_psa_scan integration — mocked fetch_bars returning multi-bar data
     def test_run_psa_scan_passes_symbol_with_adequate_summed_volume(self):

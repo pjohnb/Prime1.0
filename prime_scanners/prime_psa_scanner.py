@@ -586,11 +586,22 @@ def run_psa_scan(
             continue
 
         last_price = bars[-1]["close"] if bars else 0
-        last_vol = sum(b.get("volume", 0) for b in bars) if bars else 0
+        # Normalize bar-window volume to a full-day equivalent before comparing
+        # against the daily volume threshold. A complete RTH session is 78 × 5-min
+        # bars; the PSA window is 39 bars (~half day), so a raw sum would under-count
+        # by ~2x. Dividing by len(bars) and multiplying by 78 gives the equivalent
+        # daily pace regardless of how many bars the window actually contains.
+        _FULL_DAY_BARS_5MIN = 78
+        if bars:
+            _raw_vol = sum(b.get("volume", 0) for b in bars)
+            last_vol = _raw_vol * _FULL_DAY_BARS_5MIN / len(bars)
+        else:
+            last_vol = 0
         s0_reason = stage0_filter(symbol, {"price": last_price, "volume": last_vol},
                                    min_price, max_price, min_daily_volume)
         if s0_reason:
-            logger.debug("Stage0 rejected %s: %s (price=%.2f vol=%.0f)", symbol, s0_reason, last_price, last_vol)
+            logger.debug("Stage0 rejected %s: %s (price=%.2f vol=%.0f norm, raw=%.0f over %d bars)",
+                         symbol, s0_reason, last_price, last_vol, _raw_vol if bars else 0, len(bars))
             stage0_rejected += 1
             stage0_rejections.append({"symbol": symbol, "reason": s0_reason,
                                       "scan_ts": scan_time.isoformat()})
