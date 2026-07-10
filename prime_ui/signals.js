@@ -425,8 +425,11 @@ function initSigColTooltips() {
   tip.setAttribute('aria-hidden', 'true');
   document.body.appendChild(tip);
 
-  var MARGIN = 8;  // minimum px gap from either viewport edge
-  var GAP    = 6;  // px gap between th top-edge and tooltip bottom
+  var MARGIN = 8;    // minimum px gap from either viewport edge
+  var GAP    = 6;    // px gap between th top-edge and tooltip bottom
+  var DELAY  = 300;  // ms hover delay (WO Note 2: avoid flicker during scrolling)
+
+  var _showTimer = null;
 
   function showTip(th) {
     var text = th.getAttribute('data-tooltip');
@@ -459,14 +462,19 @@ function initSigColTooltips() {
   }
 
   function hideTip() {
+    clearTimeout(_showTimer);
+    _showTimer = null;
     tip.style.display = 'none';
   }
 
   var headers = document.querySelectorAll('#sig-table thead th[data-tooltip]');
   headers.forEach(function(th) {
-    th.addEventListener('mouseenter', function() { showTip(th); });
+    th.addEventListener('mouseenter', function() {
+      clearTimeout(_showTimer);
+      _showTimer = setTimeout(function() { showTip(th); }, DELAY);
+    });
     th.addEventListener('mouseleave', hideTip);
-    th.addEventListener('focus',      function() { showTip(th); });
+    th.addEventListener('focus',      function() { showTip(th); });  // focus: no delay
     th.addEventListener('blur',       hideTip);
   });
 }

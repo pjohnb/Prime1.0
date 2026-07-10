@@ -113,6 +113,13 @@ class TestSignalsColumnTooltips(unittest.TestCase):
         self.assertIn("function initSigColTooltips()", SIGNALS_JS,
                       "initSigColTooltips() must be defined in signals.js")
 
+    def test_tooltip_hover_delay_300ms(self):
+        """WO Note 2: 300ms hover delay must be present to avoid scroll flicker."""
+        self.assertIn("DELAY  = 300", SIGNALS_JS,
+                      "initSigColTooltips must define DELAY = 300 ms per WO implementation note")
+        self.assertIn("setTimeout", SIGNALS_JS,
+                      "initSigColTooltips must use setTimeout to apply the 300ms hover delay")
+
     def test_edge_collision_js_uses_get_bounding_client_rect(self):
         self.assertIn("getBoundingClientRect()", SIGNALS_JS,
                       "initSigColTooltips must call getBoundingClientRect() to measure tooltip size")
