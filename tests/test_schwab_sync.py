@@ -446,12 +446,17 @@ class TestSchwabSyncReimportGuard(unittest.TestCase):
         if self.db.exists():
             self.db.unlink()
 
-    def _close_symbol(self, symbol, hours_ago=1.0):
-        """Insert a CLOSED trade record as if it was closed hours_ago hours in the past."""
+    def _close_symbol(self, symbol, hours_ago=1.0, order_id="ORD-TEST-CLOSE"):
+        """Insert a CLOSED trade record as if it was closed hours_ago hours in the past.
+
+        order_id defaults to a non-NULL sentinel so that legitimate closes are
+        correctly included in the grace-period check.  Pass order_id=None to
+        simulate a phantom close (no real broker order), which must NOT trigger
+        the grace period (BUG-PRIME-SELL-NO-COVER-CLOSED-NULL-ORDER-01 fix).
+        """
         from prime_data.prime_db import insert_trade, get_connection
         from datetime import timedelta
         exit_time = (datetime.utcnow() - timedelta(hours=hours_ago)).isoformat()
-        # Insert as OPEN then manually close it with an exit_time in the past.
         log_id = insert_trade(
             strategy="SCHWAB_IMPORT", symbol=symbol, direction="LONG",
             mode="PAPER", order_type="MARKET", shares=10,
@@ -461,8 +466,8 @@ class TestSchwabSyncReimportGuard(unittest.TestCase):
         )
         with get_connection(self.db) as conn:
             conn.execute(
-                "UPDATE prime_trade_log SET status='CLOSED', exit_time=? WHERE log_id=?",
-                (exit_time, log_id),
+                "UPDATE prime_trade_log SET status='CLOSED', exit_time=?, order_id=? WHERE log_id=?",
+                (exit_time, order_id, log_id),
             )
             conn.commit()
         return log_id
@@ -523,6 +528,34 @@ class TestSchwabSyncReimportGuard(unittest.TestCase):
             result_short = sync_schwab_positions(db_path=self.db, schwab_client=client)
 
         self.assertEqual(result_short["imported"], 1, "Should import with 3h grace (close was 5h ago)")
+
+    def test_phantom_close_null_order_id_reimported_by_sync(self):
+        """Sync Now must reimport a position that is CLOSED locally with NULL order_id.
+
+        Regression guard for BUG-PRIME-SELL-NO-COVER-CLOSED-NULL-ORDER-01: a UI bug
+        can write status=CLOSED without a real broker order (order_id=NULL). The
+        grace-period check must ignore such phantom closes so Sync Now can restore
+        the correct OPEN state from Schwab.
+        """
+        # Pass order_id=None to simulate the phantom-close bug (no real broker order).
+        self._close_symbol("XLC", hours_ago=1.0, order_id=None)  # closed 1h ago, within 24h grace
+
+        # Schwab still shows XLC as open — the local close was a phantom.
+        positions = {"7926": [_mock_position("XLC", 100, 0, 106.0)]}
+        client = _make_mock_client(positions)
+
+        import json
+        from unittest.mock import mock_open
+        ops = json.dumps({"schwab_reimport_grace_hours": 24})
+        with patch("builtins.open", mock_open(read_data=ops)):
+            result = sync_schwab_positions(db_path=self.db, schwab_client=client)
+
+        # Must import (not skip) because the CLOSED record has no order_id.
+        self.assertEqual(result["imported"], 1, "XLC should be reimported — phantom close has NULL order_id")
+
+        from prime_data.prime_db import get_open_trades
+        open_syms = {t["symbol"] for t in get_open_trades(db_path=self.db)}
+        self.assertIn("XLC", open_syms, "XLC must appear as OPEN after sync restores it")
 
 
 if __name__ == "__main__":

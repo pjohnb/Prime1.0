@@ -235,5 +235,103 @@ class TestExecuteSignalEndpoint(_SignalsBase):
         self.assertEqual(resp.status_code, 401)
 
 
+class TestStagedEntry(unittest.TestCase):
+    """CIL-NEW-08: Staged entry data layer and module API."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_staged_entry.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _make_entry(self, signal_id="sig-test-1", stage_count=2, stage_trigger="TIME"):
+        from prime_trading.prime_staged_entry import StagedEntry
+        return StagedEntry(
+            signal_id=signal_id,
+            symbol="AAPL",
+            strategy="UOA",
+            stage_count=stage_count,
+            stage_trigger=stage_trigger,
+            stage_interval_min=30,
+            completed_stages=1,
+            paper_accounts=[{"name": "PAPER", "buying_power": 100000}],
+            live_accounts=[],
+            execution_price=150.0,
+            order_type="MARKET",
+            mode="PAPER",
+            max_order_pct=0.10,
+            entry_price_scan=149.0,
+            db_path=self.db,
+        )
+
+    def test_staged_entry_fires_stage1_immediately(self):
+        """Stage 1 records land in prime_trade_log with stage_number=1."""
+        from prime_trading.prime_staged_entry import StagedEntry, execute_next_stage
+        entry = StagedEntry(
+            signal_id="sig-stage1",
+            symbol="AAPL",
+            strategy="UOA",
+            stage_count=2,
+            stage_trigger="TIME",
+            stage_interval_min=30,
+            completed_stages=0,   # nothing done yet — this is Stage 1
+            paper_accounts=[{"name": "PAPER", "buying_power": 100000}],
+            live_accounts=[],
+            execution_price=150.0,
+            order_type="MARKET",
+            mode="PAPER",
+            max_order_pct=0.10,
+            entry_price_scan=149.0,
+            db_path=self.db,
+        )
+        result = execute_next_stage(entry)
+        self.assertEqual(result["stage_number"], 1)
+        self.assertGreater(result["total_allocated"], 0)
+        self.assertEqual(result["orders_placed"][0]["status"], "PAPER_SIMULATED")
+        # Verify DB record has stage_number=1
+        from prime_data.prime_db import get_connection
+        with get_connection(self.db) as conn:
+            rows = conn.execute("SELECT stage_number, stage_total FROM prime_trade_log").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], 1)
+        self.assertEqual(rows[0][1], 2)
+
+    def test_staged_entry_time_trigger_schedules_stage2(self):
+        """After Stage 1, register() places the entry in pending and stage_trigger=TIME is stored."""
+        from prime_trading.prime_staged_entry import register, get_pending, pop_pending
+        entry = self._make_entry(signal_id="sig-time-2", stage_trigger="TIME")
+        register(entry)
+        retrieved = get_pending("sig-time-2")
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.stage_trigger, "TIME")
+        self.assertEqual(retrieved.completed_stages, 1)
+        pop_pending("sig-time-2")
+
+    def test_staged_entry_dk_confirm_trigger(self):
+        """DK_CONFIRM entry registers in pending and check_dk_staged_entries fires next stage."""
+        from prime_trading.prime_staged_entry import register, get_pending, pop_pending, check_dk_staged_entries
+        entry = self._make_entry(signal_id="sig-dk-3", stage_trigger="DK_CONFIRM")
+        entry.completed_stages = 1
+        register(entry)
+
+        # Simulate DK_CONFIRM event for AAPL — check_dk_staged_entries should execute stage 2.
+        check_dk_staged_entries("AAPL")
+
+        # After firing stage 2 of 2, entry should be removed from pending.
+        self.assertIsNone(get_pending("sig-dk-3"))
+
+        # DB should have a stage_number=2 record.
+        from prime_data.prime_db import get_connection
+        with get_connection(self.db) as conn:
+            rows = conn.execute("SELECT stage_number FROM prime_trade_log ORDER BY stage_number").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

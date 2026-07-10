@@ -412,6 +412,46 @@ def get_sector_analytics(db_path: Optional[Path] = None) -> List[Dict[str, Any]]
         return results
 
 
+def get_strategy_approval_rates(days: int = 7, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Approval rate per strategy: % of signals passing Stage 0 screening (CIL-NEW-09).
+
+    'Approved' = signal was not SUPPRESSED and had no STAGE0 rejection.
+    Covers non-DISMISSED signals from the last `days` calendar days.
+    """
+    from datetime import date, timedelta
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    query = """
+        SELECT
+            strategy,
+            COUNT(*) AS total,
+            COUNT(CASE WHEN status NOT IN ('SUPPRESSED', 'DISMISSED')
+                            AND (rejection_stage IS NULL OR rejection_stage != 'STAGE0')
+                       THEN 1 END) AS approved_count
+        FROM prime_signals
+        WHERE status != 'DISMISSED'
+          AND scan_ts >= ?
+        GROUP BY strategy
+    """
+    try:
+        with get_connection(db_path) as conn:
+            rows = conn.execute(query, (cutoff,)).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                total = d.get("total") or 0
+                approved = d.get("approved_count") or 0
+                rate = round((approved / total * 100) if total > 0 else 0.0, 1)
+                results.append({
+                    "strategy":      d["strategy"],
+                    "total":         total,
+                    "approved":      approved,
+                    "approval_rate": rate,
+                })
+            return results
+    except Exception:
+        return []
+
+
 def get_factor_analysis(db_path: Optional[Path] = None) -> Dict[str, Any]:
     """Factor analysis: entry quality, stop accuracy, duration breakdown."""
     with get_connection(db_path) as conn:

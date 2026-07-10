@@ -397,5 +397,64 @@ class TestEffectiveness(unittest.TestCase):
         self.assertEqual(uoa["trade_count"], 5)
 
 
+class TestStrategyApprovalRate(unittest.TestCase):
+    """CIL-NEW-09: get_strategy_approval_rates() and summary endpoint approval_rate."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_approval_rate.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _insert_sig(self, strategy, status, scan_ts="2026-06-29T10:00:00"):
+        insert_signal(
+            symbol="AAPL", strategy=strategy, scan_ts=scan_ts,
+            entry_price=100.0, status=status, db_path=self.db,
+        )
+
+    def test_approval_rate_query_correct(self):
+        from prime_analytics.prime_signals_db import get_strategy_approval_rates
+        # 3 UOA signals: 2 APPROVED, 1 SUPPRESSED → approval_rate = 2/3*100 ≈ 66.7
+        self._insert_sig("UOA", "APPROVED")
+        self._insert_sig("UOA", "APPROVED", scan_ts="2026-06-29T10:01:00")
+        self._insert_sig("UOA", "SUPPRESSED", scan_ts="2026-06-29T10:02:00")
+        rates = get_strategy_approval_rates(days=7, db_path=self.db)
+        self.assertEqual(len(rates), 1)
+        r = rates[0]
+        self.assertEqual(r["strategy"], "UOA")
+        self.assertEqual(r["total"], 3)
+        self.assertEqual(r["approved"], 2)
+        self.assertAlmostEqual(r["approval_rate"], 66.7, places=0)
+
+    def test_strategy_breakdown_includes_approval_rate_in_response(self):
+        from unittest.mock import patch, MagicMock
+        self._insert_sig("PSA", "APPROVED")
+        self._insert_sig("PSA", "WATCH", scan_ts="2026-06-29T10:01:00")
+        with patch("prime_data.prime_db._db_path", return_value=self.db):
+            mock_cfg = MagicMock()
+            mock_cfg.trading_mode = "PAPER"
+            mock_cfg.api_token = "test-token-abc123"
+            mock_cfg.ops.mata_profile = "all"
+            with patch("prime_config.prime_config.get_config", return_value=mock_cfg):
+                from prime_api.prime_api_server import create_app
+                app = create_app()
+                app.config["TESTING"] = True
+                client = app.test_client()
+                resp = client.get("/api/v1/analytics/summary")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        strategies = data.get("strategies", [])
+        psa = next((s for s in strategies if s["strategy"] == "PSA"), None)
+        self.assertIsNotNone(psa, "PSA strategy not in summary response")
+        self.assertIn("approval_rate", psa)
+        self.assertGreaterEqual(psa["approval_rate"], 0.0)
+        self.assertLessEqual(psa["approval_rate"], 100.0)
+
+
 if __name__ == "__main__":
     unittest.main()

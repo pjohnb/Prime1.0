@@ -51,8 +51,40 @@ function openBuySignalConfirm(signalId, symbol, tier, price) {
   if (warnEl)   warnEl.style.display = rth ? 'none' : 'block';
   if (limitRow) limitRow.style.display = rth ? 'none' : 'block';
 
+  // CIL-NEW-08: reset staged entry toggle on each open.
+  const stagedToggle = document.getElementById('buy-signal-staged-toggle');
+  if (stagedToggle) { stagedToggle.checked = false; }
+  const stagedOpts = document.getElementById('buy-signal-staged-options');
+  if (stagedOpts) { stagedOpts.style.display = 'none'; }
+
   const modal = document.getElementById('buy-signal-modal');
   if (modal) modal.classList.add('open');
+}
+
+// CIL-NEW-08: show/hide staged entry options when toggle changes.
+function toggleStagedEntry() {
+  const toggle = document.getElementById('buy-signal-staged-toggle');
+  const opts   = document.getElementById('buy-signal-staged-options');
+  if (!toggle || !opts) return;
+  opts.style.display = toggle.checked ? 'block' : 'none';
+  if (toggle.checked) onStageTriggerChange();
+}
+
+// CIL-NEW-08: show/hide interval field based on trigger type.
+function onStageTriggerChange() {
+  const trigger  = document.getElementById('buy-signal-stage-trigger');
+  const wrap     = document.getElementById('buy-signal-stage-interval-wrap');
+  const hint     = document.getElementById('buy-signal-staged-hint');
+  const count    = document.getElementById('buy-signal-stage-count');
+  if (!trigger || !wrap) return;
+  const isTime   = trigger.value === 'TIME';
+  wrap.style.display = isTime ? '' : 'none';
+  if (hint && count) {
+    const n = count.value || 2;
+    hint.textContent = isTime
+      ? `Stage 1 executes now. Stage 2${n > 2 ? '/3' : ''} fires after the delay.`
+      : `Stage 1 executes now. Stage 2${n > 2 ? '/3' : ''} fires when DK turns CONFIRMING.`;
+  }
 }
 
 function closeBuySignalModal() {
@@ -63,6 +95,11 @@ function closeBuySignalModal() {
   if (limitInput) limitInput.value = '';
   const msgEl = document.getElementById('buy-signal-msg');
   if (msgEl) msgEl.textContent = '';
+  // CIL-NEW-08: reset staged toggle
+  const stagedToggle = document.getElementById('buy-signal-staged-toggle');
+  if (stagedToggle) stagedToggle.checked = false;
+  const stagedOpts = document.getElementById('buy-signal-staged-options');
+  if (stagedOpts) stagedOpts.style.display = 'none';
 }
 
 async function submitBuySignal() {
@@ -82,11 +119,24 @@ async function submitBuySignal() {
   if (confirmBtn) confirmBtn.disabled = true;
 
   const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
+  // CIL-NEW-08: read staged entry params
+  const stagedToggle = document.getElementById('buy-signal-staged-toggle');
+  const stagedOn = stagedToggle && stagedToggle.checked;
+  const stageCountEl    = document.getElementById('buy-signal-stage-count');
+  const stageTriggerEl  = document.getElementById('buy-signal-stage-trigger');
+  const stageIntervalEl = document.getElementById('buy-signal-stage-interval');
+
   const payload = {
     order_type: orderType,
     confirmed: true,
   };
   if (orderType === 'LIMIT' && limitPrice > 0) payload.limit_price = limitPrice;
+  if (stagedOn) {
+    payload.staged_entry    = true;
+    payload.stage_count     = stageCountEl    ? parseInt(stageCountEl.value)    : 2;
+    payload.stage_trigger   = stageTriggerEl  ? stageTriggerEl.value            : 'TIME';
+    payload.stage_interval_min = stageIntervalEl ? parseInt(stageIntervalEl.value) : 30;
+  }
 
   try {
     const resp = await fetch(API + '/signals/' + encodeURIComponent(signalId) + '/execute', {
@@ -99,7 +149,10 @@ async function submitBuySignal() {
     if (resp.ok) {
       const total = data.allocated_total || 0;
       const mode  = data.mode || 'PAPER';
-      if (msgEl) { msgEl.textContent = `${mode}: ${total} shares of ${symbol} ordered. Signal marked EXECUTED.`; msgEl.style.color = 'var(--green)'; }
+      const stagedMsg = data.staged_entry
+        ? ` | Stage 1/${data.stage_count} — next via ${data.stage_trigger}`
+        : '';
+      if (msgEl) { msgEl.textContent = `${mode}: ${total} shares of ${symbol} ordered. Signal marked EXECUTED.${stagedMsg}`; msgEl.style.color = 'var(--green)'; }
       setTimeout(() => { closeBuySignalModal(); loadSignals(); }, 1800);
     } else if (data.error === 'after_hours') {
       // Server confirmed after-hours — switch to LIMIT mode without closing.

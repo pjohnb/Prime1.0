@@ -279,6 +279,16 @@ def execute_signal_endpoint(signal_id):
     confirmed = bool(payload.get("confirmed", False))
     limit_price_raw = payload.get("limit_price")
 
+    # CIL-NEW-08: staged entry params
+    staged_entry_on    = bool(payload.get("staged_entry", False))
+    stage_count        = int(payload.get("stage_count", 2))
+    stage_trigger      = str(payload.get("stage_trigger", "TIME")).strip().upper()
+    stage_interval_min = int(payload.get("stage_interval_min", 30))
+    if stage_count not in (2, 3):
+        stage_count = 2
+    if stage_trigger not in ("TIME", "DK_CONFIRM"):
+        stage_trigger = "TIME"
+
     if not confirmed:
         return jsonify({"error": "confirmed is required to execute a signal"}), 400
 
@@ -410,6 +420,8 @@ def execute_signal_endpoint(signal_id):
                             trade_source="LIVE",
                             limit_price=limit_price_val,
                             signal_id=signal_id,
+                            stage_number=1 if staged_entry_on else None,
+                            stage_total=stage_count if staged_entry_on else None,
                         )
                         orders_placed.append({
                             "account": suffix,
@@ -461,6 +473,8 @@ def execute_signal_endpoint(signal_id):
                     trade_source="PAPER",
                     limit_price=limit_price_val,
                     signal_id=signal_id,
+                    stage_number=1 if staged_entry_on else None,
+                    stage_total=stage_count if staged_entry_on else None,
                 )
                 orders_placed.append({
                     "account": acct_name,
@@ -478,14 +492,93 @@ def execute_signal_endpoint(signal_id):
         except Exception as e:
             logger.warning("execute_signal: could not update signal status: %s", e)
 
+        # CIL-NEW-08: register and schedule follow-on stages if staged entry is on.
+        if staged_entry_on and stage_count > 1:
+            try:
+                from prime_trading.prime_staged_entry import StagedEntry, register
+                paper_accounts_list = []
+                live_accounts_list = []
+                if mode_cfg == "PAPER":
+                    _exec_profile = (getattr(cfg.ops, "mata_profile", "") or "").strip().lower()
+                    from prime_trading.prime_mata import load_accounts
+                    _all_accts = load_accounts()
+                    if _all_accts and _exec_profile and _exec_profile != "all":
+                        _filtered = [a for a in _all_accts if a.get("name", "").strip().lower() == _exec_profile]
+                        paper_accounts_list = _filtered if _filtered else _all_accts
+                    else:
+                        paper_accounts_list = _all_accts or [{"name": "PAPER", "buying_power": 100000}]
+                staged = StagedEntry(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    strategy=strategy,
+                    stage_count=stage_count,
+                    stage_trigger=stage_trigger,
+                    stage_interval_min=stage_interval_min,
+                    completed_stages=1,
+                    paper_accounts=paper_accounts_list,
+                    live_accounts=live_accounts_list,
+                    execution_price=execution_price,
+                    order_type=order_type,
+                    mode=mode_cfg,
+                    max_order_pct=max_order_pct,
+                    entry_price_scan=entry_price_scan or execution_price,
+                )
+                register(staged)
+
+                if stage_trigger == "TIME":
+                    _schedule_staged_entry_time_job(signal_id, stage_interval_min)
+            except Exception as e:
+                logger.error("execute_signal: staged entry registration failed: %s", e)
+
     return jsonify({
-        "signal_id": signal_id,
-        "symbol": symbol,
-        "orders_placed": orders_placed,
+        "signal_id":       signal_id,
+        "symbol":          symbol,
+        "orders_placed":   orders_placed,
         "allocated_total": total_allocated,
         "execution_price": execution_price,
-        "mode": mode_cfg,
+        "mode":            mode_cfg,
+        "staged_entry":    staged_entry_on,
+        "stage_count":     stage_count if staged_entry_on else None,
+        "stage_trigger":   stage_trigger if staged_entry_on else None,
     }), 200 if orders_placed else 400
+
+
+def _schedule_staged_entry_time_job(signal_id: str, interval_min: int) -> None:
+    """Register an APScheduler one-shot job to fire the next staged tranche."""
+    from datetime import timedelta
+    from apscheduler.triggers.date import DateTrigger
+
+    if _SCHEDULER is None or not _SCHEDULER.running:
+        return
+
+    fire_time = datetime.now() + timedelta(minutes=interval_min)
+    job_id = f"staged_{signal_id}"
+
+    def _fire():
+        from prime_trading.prime_staged_entry import get_pending, execute_next_stage
+        entry = get_pending(signal_id)
+        if entry is None:
+            return
+        result = execute_next_stage(entry)
+        # If more stages remain and trigger is TIME, re-schedule.
+        entry_after = get_pending(signal_id)
+        if entry_after is not None and entry_after.stage_trigger == "TIME":
+            _schedule_staged_entry_time_job(signal_id, entry_after.stage_interval_min)
+        logger.info("staged_entry: TIME job fired for %s — result: %s", signal_id, result)
+
+    try:
+        _SCHEDULER.add_job(
+            _fire,
+            trigger=DateTrigger(run_date=fire_time),
+            id=job_id,
+            replace_existing=True,
+        )
+        logger.info(
+            "staged_entry: TIME job scheduled for signal %s in %d min at %s",
+            signal_id, interval_min, fire_time.strftime("%H:%M"),
+        )
+    except Exception as e:
+        logger.error("staged_entry: could not schedule TIME job: %s", e)
 
 
 @api_bp.route("/advisory/positions", methods=["GET"])
@@ -715,8 +808,13 @@ def get_tiers():
 def get_analytics_summary():
     """GET /api/v1/analytics/summary -- Overview tab data."""
     from prime_analytics.prime_signals_db import get_analytics_summary as fetch_summary
+    from prime_analytics.prime_signals_db import get_strategy_approval_rates
     try:
         summary = fetch_summary()
+        # CIL-NEW-09: merge approval_rate into each strategy entry.
+        rate_map = {r["strategy"]: r["approval_rate"] for r in get_strategy_approval_rates(days=7)}
+        for s in summary.get("strategies", []):
+            s["approval_rate"] = rate_map.get(s["strategy"], 0.0)
         return jsonify(summary), 200
     except Exception as e:
         logger.error("analytics summary error: %s", e)
@@ -906,6 +1004,54 @@ def create_trade():
         from prime_trading.prime_schwab_orders import submit_order, OrderGateError
         from prime_trading.prime_fill_poller import start_fill_watcher
 
+        # WO-PRIME-ACTIVE-POSITION-MGMT-01 Part A: read stop/target from payload;
+        # apply config defaults when not provided. Every position must carry a
+        # fixed stop from the moment of entry.
+        try:
+            import json as _json
+            with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as _f:
+                _ops_cfg = _json.load(_f)
+        except Exception:
+            _ops_cfg = {}
+        _def_stop_pct   = float(_ops_cfg.get("default_stop_loss_pct", 3.0))   # percentage
+        _def_trail_pct  = float(_ops_cfg.get("default_trailing_stop_pct", 3.0)) / 100.0  # decimal
+
+        live_stop_type = (payload.get("stop_type") or "FIXED").upper()
+        if live_stop_type not in ("FIXED", "TRAILING"):
+            live_stop_type = "FIXED"
+
+        live_stop_price  = None
+        live_target_price = None
+        live_trail_pct   = None
+        try:
+            if live_stop_type == "TRAILING":
+                raw_tp = payload.get("trailing_stop_pct")
+                live_trail_pct = float(raw_tp) if raw_tp is not None else _def_trail_pct
+                # Fixed floor at default_stop_loss_pct even when trailing is active
+                sp_pct = float(payload.get("stop_pct") or _def_stop_pct)
+                live_stop_price = round(
+                    price * (1 + sp_pct / 100.0) if direction == "SHORT"
+                    else price * (1 - sp_pct / 100.0), 4
+                )
+            else:
+                sp_pct = float(payload.get("stop_pct") or _def_stop_pct)
+                live_stop_price = round(
+                    price * (1 + sp_pct / 100.0) if direction == "SHORT"
+                    else price * (1 - sp_pct / 100.0), 4
+                )
+            if payload.get("target_pct") is not None:
+                tp = float(payload["target_pct"])
+                live_target_price = round(
+                    price * (1 - tp / 100.0) if direction == "SHORT"
+                    else price * (1 + tp / 100.0), 4
+                )
+        except (TypeError, ValueError):
+            sp_pct = _def_stop_pct
+            live_stop_price = round(
+                price * (1 + sp_pct / 100.0) if direction == "SHORT"
+                else price * (1 - sp_pct / 100.0), 4
+            )
+
         account_hash = account or ""
         try:
             # Resolve account_hash: if the caller passed a short suffix, look up
@@ -973,16 +1119,58 @@ def create_trade():
                 signal_source="UI",
                 trade_source="LIVE",
                 limit_price=limit_price_val,
+                stop_price=live_stop_price,
+                target_price=live_target_price,
+                stop_type=live_stop_type,
             )
+            # Wire trailing stop pct if TRAILING mode
+            if live_stop_type == "TRAILING" and live_trail_pct is not None and log_id:
+                from prime_data.prime_db import update_trailing_stop
+                update_trailing_stop(log_id, live_trail_pct)
         except TradeRecordError as e:
             return jsonify({"error": str(e)}), 400
 
         # Start fill watcher (non-blocking background thread)
+        schwab_for_fill = _sc if "_sc" in dir() else None  # type: ignore[name-defined]
         try:
-            schwab_for_fill = _sc if "_sc" in dir() else None  # type: ignore[name-defined]
             start_fill_watcher(result["order_id"], log_id, schwab_for_fill)
         except Exception:
             pass
+
+        # WO-PRIME-ACTIVE-POSITION-MGMT-01 Part A: attach protective STOP order.
+        # Two-step required (Section 3.3) — entry order already submitted above.
+        # On failure: log Tier 2 alert; do not block trade response.
+        if live_stop_price and live_stop_price > 0:
+            try:
+                from prime_trading.prime_schwab_orders import attach_stop_order
+                attach_stop_order(
+                    symbol=symbol,
+                    qty=qty,
+                    direction=direction,
+                    stop_price=live_stop_price,
+                    account_hash=account_hash,
+                    schwab_client=schwab_for_fill,
+                    db_path=None,
+                )
+            except Exception as _stop_err:
+                logger.error(
+                    "STOP_ATTACH_FAILED: %s log_id=%s — %s",
+                    symbol, log_id, _stop_err,
+                )
+                try:
+                    from prime_data.prime_db import log_ops_event
+                    log_ops_event(
+                        event_type="NO_STOP_VIOLATION",
+                        component="prime_api_routes",
+                        symbol=symbol,
+                        detail=(
+                            f"log_id={log_id} stop_attach_failed=True "
+                            f"reason={_stop_err}"
+                        ),
+                        severity="CRITICAL",
+                    )
+                except Exception:
+                    pass
 
         return jsonify({
             "log_id":    log_id,
@@ -1360,14 +1548,16 @@ def get_portfolio():
                 continue
             if sym not in groups:
                 groups[sym] = {
-                    "symbol":       sym,
-                    "total_shares": 0,
-                    "total_cost":   0.0,
-                    "accounts":     [],
-                    "log_ids":      [],
-                    "stop_prices":  [],
-                    "direction":    (p.get("direction") or "LONG").upper(),
-                    "per_account":  {},
+                    "symbol":        sym,
+                    "total_shares":  0,
+                    "total_cost":    0.0,
+                    "accounts":      [],
+                    "log_ids":       [],
+                    "stop_prices":   [],
+                    "direction":     (p.get("direction") or "LONG").upper(),
+                    "per_account":   {},
+                    "stage_numbers": [],   # CIL-NEW-08: track tranche counts
+                    "stage_totals":  [],
                 }
             ep = float(p.get("entry_price") or p.get("price_at_scan") or 0.0)
             sh = int(p.get("shares") or 0)
@@ -1377,6 +1567,13 @@ def get_portfolio():
             if acc and acc not in groups[sym]["accounts"]:
                 groups[sym]["accounts"].append(acc)
             groups[sym]["log_ids"].append(p.get("log_id"))
+            # CIL-NEW-08: capture staged entry indicators.
+            sn = p.get("stage_number")
+            st = p.get("stage_total")
+            if sn is not None:
+                groups[sym]["stage_numbers"].append(int(sn))
+            if st is not None:
+                groups[sym]["stage_totals"].append(int(st))
             sp = p.get("stop_price")
             if sp is not None:
                 groups[sym]["stop_prices"].append(float(sp))
@@ -1466,6 +1663,16 @@ def get_portfolio():
                         "stop_price":        round(min(acct_stops), 4) if acct_stops else None,
                     })
 
+            # CIL-NEW-08: compute staged entry indicator.
+            _stage_nums = g["stage_numbers"]
+            _stage_tots = g["stage_totals"]
+            stage_info = None
+            if _stage_nums and _stage_tots:
+                _max_done  = max(_stage_nums)
+                _max_total = max(_stage_tots)
+                if _max_done < _max_total:
+                    stage_info = {"done": _max_done, "total": _max_total}
+
             row = {
                 "symbol":            sym,
                 "total_shares":      shares,
@@ -1481,6 +1688,7 @@ def get_portfolio():
                 "log_ids":           g["log_ids"],
                 "stop_price":        round(stop_price, 4) if stop_price is not None else None,
                 "per_account_rows":  per_account_rows,
+                "stage_info":        stage_info,
             }
             rows.append(row)
             total_market_value += market_val
@@ -1640,10 +1848,13 @@ def mata_sell():
     mode  = (cfg.trading_mode or "PAPER").upper()
     payload = request.get_json(silent=True) or {}
 
-    symbol    = str(payload.get("symbol", "")).strip().upper()
+    symbol     = str(payload.get("symbol", "")).strip().upper()
+    direction  = (payload.get("direction") or "LONG").strip().upper()
     order_type = str(payload.get("order_type", "MARKET")).upper()
     confirmed  = bool(payload.get("confirmed", False))
     holdings   = payload.get("account_holdings", [])
+    # SHORT positions are covered with a BUY order; LONG positions use SELL.
+    broker_side = "BUY" if direction == "SHORT" else "SELL"
 
     try:
         price = float(payload.get("price", 0))
@@ -1714,7 +1925,7 @@ def mata_sell():
                 result = submit_order(
                     symbol=symbol,
                     qty=sell_qty,
-                    side="SELL",
+                    side=broker_side,
                     order_type=order_type,
                     price=price or 0.0,
                     account_hash=account_hash,
@@ -1775,6 +1986,16 @@ def mata_sell():
                 a["account"] for a in allocation["allocations"] if a["sell_qty"] > 0
             ]
             for acct in sold_accounts:
+                # Safety invariant: in LIVE mode, never write CLOSED without a
+                # confirmed broker order_id. If the broker call failed/was rejected
+                # for this account, leave the local record OPEN and report the
+                # failure via the `failures` list already populated above.
+                if mode == "LIVE" and acct not in order_by_account:
+                    logger.warning(
+                        "mata_sell: skipping DB close for %s acct=%s — no confirmed order_id",
+                        symbol, acct,
+                    )
+                    continue
                 match = _match_open_record(open_recs, acct, consumed)
                 if match is None:
                     log_ops_event(
@@ -1793,16 +2014,16 @@ def mata_sell():
                 if summary:
                     closed_logs.append(summary)
 
-                # CIL-086: LIVE only — start a SELL fill watcher so the actual
-                # broker fill overwrites the live-quote exit price/P&L when it
-                # lands. PAPER mode has no broker order and skips this entirely.
+                # CIL-086: LIVE only — start a fill watcher so the actual broker
+                # fill overwrites the live-quote exit price/P&L when it lands.
+                # PAPER mode has no broker order and skips this entirely.
                 if mode == "LIVE" and schwab_client is not None:
                     order_id = order_by_account.get(acct)
                     if order_id:
                         try:
                             from prime_trading.prime_fill_poller import start_fill_watcher
                             start_fill_watcher(
-                                order_id, match["log_id"], schwab_client, side="SELL",
+                                order_id, match["log_id"], schwab_client, side=broker_side,
                             )
                         except Exception as fw_err:
                             logger.warning(
@@ -1811,6 +2032,24 @@ def mata_sell():
                             )
     except Exception as e:
         logger.error("mata_sell trade-log close error: %s", e)
+
+    # BUG-PRIME-MATA-SELL-SILENT-NOOP-01: in LIVE mode return 422 when every
+    # allocation failed — no broker order was submitted and the frontend must
+    # never display a plain success confirmation in that case.
+    if mode == "LIVE" and not orders_placed and failures:
+        return jsonify({
+            "symbol":          symbol,
+            "total_qty":       total_qty,
+            "total_held":      allocation["total_held"],
+            "allocated_total": allocation["allocated_total"],
+            "orders":          [],
+            "failures":        failures,
+            "closed_logs":     [],
+            "error": (
+                f"No broker orders submitted — {len(failures)} allocation(s) failed: "
+                + "; ".join(f.get("error", "unknown") for f in failures)
+            ),
+        }), 422
 
     return jsonify({
         "symbol":          symbol,

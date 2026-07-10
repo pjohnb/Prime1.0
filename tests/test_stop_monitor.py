@@ -518,5 +518,66 @@ class TestDayCountExit(_PM04Base):
         self.assertEqual(row["exit_reason"], "DAY_COUNT_AUTO")
 
 
+class TestDayCountOverride(_PM04Base):
+
+    def _db_name(self):
+        return "pm04_override"
+
+    _OPS_BASE = dict(_PM04_OPS, exit_day_count_max=3)
+
+    def _ops_with_override(self, symbol, max_days, reason="test override"):
+        return dict(self._OPS_BASE, exit_day_count_overrides={
+            symbol.upper(): {"max_days": max_days, "reason": reason}
+        })
+
+    def test_override_suppresses_alert_below_override_max(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        # XLC at day 4, global max=3, override max=7 — should NOT alert
+        entry = (now - timedelta(days=4)).isoformat()
+        log_id = self._seed(entry_time=entry, symbol="XLC")
+        pos = get_trade(log_id, db_path=self.db)
+        ops = self._ops_with_override("XLC", max_days=7, reason="approved 2026-06-30 by Pat")
+        acted = _check_day_count(pos, 100.0, ops, db_path=self.db, now=now)
+        self.assertFalse(acted)
+
+    def test_override_alerts_at_override_max_and_includes_reason(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        # XLC at day 7, override max=7 — should alert with reason in detail
+        entry = (now - timedelta(days=7)).isoformat()
+        log_id = self._seed(entry_time=entry, symbol="XLC")
+        pos = get_trade(log_id, db_path=self.db)
+        reason = "approved 2026-06-30 by Pat"
+        ops = self._ops_with_override("XLC", max_days=7, reason=reason)
+        acted = _check_day_count(pos, 100.0, ops, db_path=self.db, now=now)
+        self.assertTrue(acted)
+        events = get_ops_events(component="prime_stop_monitor", db_path=self.db)
+        alert = next(e for e in events if e["event_type"] == "DAY_COUNT_ALERT")
+        self.assertIn(reason, alert["detail"])
+
+    def test_no_override_falls_back_to_global_max(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        # MSFT at day 4, global max=3, no override — should alert (regression guard)
+        entry = (now - timedelta(days=4)).isoformat()
+        log_id = self._seed(entry_time=entry, symbol="MSFT")
+        pos = get_trade(log_id, db_path=self.db)
+        # ops has no exit_day_count_overrides key at all
+        acted = _check_day_count(pos, 100.0, _PM04_OPS, db_path=self.db, now=now)
+        self.assertTrue(acted)
+
+    def test_missing_overrides_key_does_not_raise(self):
+        from datetime import datetime as _dt
+        now = _dt.now()
+        # ops without exit_day_count_overrides key — must behave identically to global-only
+        entry = (now - timedelta(days=1)).isoformat()
+        log_id = self._seed(entry_time=entry, symbol="SPY")
+        pos = get_trade(log_id, db_path=self.db)
+        ops_no_key = {k: v for k, v in _PM04_OPS.items() if k != "exit_day_count_overrides"}
+        acted = _check_day_count(pos, 100.0, ops_no_key, db_path=self.db, now=now)
+        self.assertFalse(acted)
+
+
 if __name__ == "__main__":
     unittest.main()

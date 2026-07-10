@@ -228,6 +228,15 @@ class PositionMonitor:
         dk_status = self._latest_dk_status(symbol)
         latest_sig = self._latest_originating_signal(symbol, scanner)
 
+        # CIL-NEW-08: fire any DK_CONFIRM staged entries for this symbol when
+        # institutional flow turns CONFIRMING.
+        if dk_status == "CONFIRMING":
+            try:
+                from prime_trading.prime_staged_entry import check_dk_staged_entries
+                check_dk_staged_entries(symbol)
+            except Exception as _dk_se_err:
+                logger.debug("staged_entry DK hook error for %s: %s", symbol, _dk_se_err)
+
         thesis, reason, alert_type = compute_thesis_status(
             pos_dir, signal_id, dk_status, latest_sig, now
         )
