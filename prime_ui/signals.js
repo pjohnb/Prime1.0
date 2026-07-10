@@ -57,6 +57,11 @@ function openBuySignalConfirm(signalId, symbol, tier, price) {
   const stagedOpts = document.getElementById('buy-signal-staged-options');
   if (stagedOpts) { stagedOpts.style.display = 'none'; }
 
+  // WO-PRIME-BUY-DIALOG-QUANTITY-01: reset qty field and disable confirm until filled.
+  const qtyInput = document.getElementById('buy-signal-qty');
+  if (qtyInput) qtyInput.value = '';
+  updateBuyConfirmBtn();
+
   const modal = document.getElementById('buy-signal-modal');
   if (modal) modal.classList.add('open');
 }
@@ -100,6 +105,20 @@ function closeBuySignalModal() {
   if (stagedToggle) stagedToggle.checked = false;
   const stagedOpts = document.getElementById('buy-signal-staged-options');
   if (stagedOpts) stagedOpts.style.display = 'none';
+  // WO-PRIME-BUY-DIALOG-QUANTITY-01: reset qty field
+  const qtyInput = document.getElementById('buy-signal-qty');
+  if (qtyInput) qtyInput.value = '';
+  const confirmBtn = document.getElementById('buy-signal-confirm-btn');
+  if (confirmBtn) confirmBtn.disabled = false;
+}
+
+// WO-PRIME-BUY-DIALOG-QUANTITY-01: enable/disable confirm based on valid qty.
+function updateBuyConfirmBtn() {
+  const qtyInput  = document.getElementById('buy-signal-qty');
+  const confirmBtn = document.getElementById('buy-signal-confirm-btn');
+  if (!confirmBtn) return;
+  const qty = qtyInput ? parseInt(qtyInput.value, 10) : 0;
+  confirmBtn.disabled = !(qty > 0);
 }
 
 async function submitBuySignal() {
@@ -110,6 +129,14 @@ async function submitBuySignal() {
   const limitPrice   = limitPriceEl ? parseFloat(limitPriceEl.value) : null;
   const msgEl        = document.getElementById('buy-signal-msg');
   const confirmBtn   = document.getElementById('buy-signal-confirm-btn');
+
+  // WO-PRIME-BUY-DIALOG-QUANTITY-01: validate qty.
+  const qtyEl  = document.getElementById('buy-signal-qty');
+  const qty    = qtyEl ? parseInt(qtyEl.value, 10) : 0;
+  if (!(qty > 0)) {
+    if (msgEl) { msgEl.textContent = 'Share quantity is required.'; msgEl.style.color = 'var(--red)'; }
+    return;
+  }
 
   if (orderType === 'LIMIT' && (!limitPrice || limitPrice <= 0)) {
     if (msgEl) { msgEl.textContent = 'Limit price is required for after-hours orders.'; msgEl.style.color = 'var(--red)'; }
@@ -129,6 +156,7 @@ async function submitBuySignal() {
   const payload = {
     order_type: orderType,
     confirmed: true,
+    qty: qty,
   };
   if (orderType === 'LIMIT' && limitPrice > 0) payload.limit_price = limitPrice;
   if (stagedOn) {

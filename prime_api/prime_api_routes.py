@@ -289,6 +289,11 @@ def execute_signal_endpoint(signal_id):
     if stage_trigger not in ("TIME", "DK_CONFIRM"):
         stage_trigger = "TIME"
 
+    # WO-PRIME-BUY-DIALOG-QUANTITY-01: user-supplied share qty overrides auto-compute.
+    user_qty = int(payload.get("qty", 0)) if payload.get("qty") is not None else 0
+    if user_qty < 0:
+        user_qty = 0
+
     if not confirmed:
         return jsonify({"error": "confirmed is required to execute a signal"}), 400
 
@@ -389,7 +394,7 @@ def execute_signal_endpoint(signal_id):
                             buying_power = 0.0
                     except Exception:
                         buying_power = 0.0
-                    shares = int(buying_power * max_order_pct / execution_price)
+                    shares = user_qty if user_qty > 0 else int(buying_power * max_order_pct / execution_price)
                     if shares <= 0:
                         continue
                     try:
@@ -453,7 +458,7 @@ def execute_signal_endpoint(signal_id):
             paper_accounts = mata_accounts if mata_accounts else [{"name": "PAPER", "buying_power": 100000}]
         for acct in paper_accounts:
             bp = float(acct.get("buying_power", 100000) or 100000)
-            shares = int(bp * max_order_pct / execution_price)
+            shares = user_qty if user_qty > 0 else int(bp * max_order_pct / execution_price)
             if shares <= 0:
                 continue
             acct_name = str(acct.get("name", "PAPER"))

@@ -648,6 +648,14 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
              style="background:var(--bg4);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px;font-size:14px;width:100%;margin-top:4px"
              placeholder="Enter limit price">
     </div>
+    <!-- WO-PRIME-BUY-DIALOG-QUANTITY-01: share quantity -->
+    <div id="buy-signal-qty-row" style="margin-bottom:12px">
+      <label style="font-size:13px;color:var(--text3)">Quantity (shares)</label>
+      <input id="buy-signal-qty" type="number" step="1" min="1"
+             oninput="updateBuyConfirmBtn()"
+             style="background:var(--bg4);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px;font-size:14px;width:100%;margin-top:4px"
+             placeholder="Enter number of shares">
+    </div>
     <!-- CIL-NEW-08: Staged Entry controls -->
     <div id="buy-signal-staged-row" style="margin-bottom:12px;padding:10px;background:var(--bg4);border-radius:6px;border:1px solid var(--border)">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)">
