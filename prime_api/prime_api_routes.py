@@ -2248,8 +2248,12 @@ _scan_state: Dict[str, Any] = {}
 _scan_lock = threading.Lock()
 
 
-def _run_scanner_bg(scanner: str, module: str) -> None:
-    """Background thread: run scanner subprocess, append output to dated scan log."""
+def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> None:
+    """Background thread: run scanner subprocess, append output to dated scan log.
+
+    skip_bridge — when True the per-scanner signal-bridge call is suppressed.
+    Set by the parallel deep-scan coordinator, which runs its own bridge passes.
+    """
     import sys as _sys
     import os as _os
     _LOGS_DIR.mkdir(exist_ok=True)
@@ -2297,8 +2301,10 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
                 output_lines.append(line)
         proc.wait()
 
-        # After scanner completes, run bridge to ingest new signals
-        if scanner in ("psa", "pead", "uoa", "srs", "mts"):
+        # After scanner completes, run bridge to ingest new signals.
+        # Suppressed in parallel batch mode (skip_bridge=True); coordinator
+        # runs two consolidated bridge passes instead.
+        if not skip_bridge and scanner in ("psa", "pead", "uoa", "srs", "mts"):
             bridge_proc = _subprocess.run(
                 [_sys.executable, "-m", "prime_bridge.prime_signal_bridge", "--ingest-latest"],
                 cwd=str(_PROJECT_ROOT_PATH),
@@ -2336,6 +2342,135 @@ def _run_scanner_bg(scanner: str, module: str) -> None:
         logger.error("scan runner %s error: %s", scanner, exc)
         with _scan_lock:
             _scan_state[scanner].update({"status": "error", "error": str(exc)})
+
+
+def _run_bridge(label: str) -> None:
+    """Run signal bridge and append labelled output to the scan log.
+
+    Extracted as module-level so the parallel coordinator can call it between
+    stages and tests can patch it directly.
+    """
+    import sys as _sys
+    import os as _os
+    _env = dict(_os.environ)
+    _env["PYTHONPATH"] = str(_PROJECT_ROOT_PATH)
+    _env["PYTHONIOENCODING"] = "utf-8"
+    scan_log = _get_scan_log_path()
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        bp = _subprocess.run(
+            [_sys.executable, "-m", "prime_bridge.prime_signal_bridge", "--ingest-latest"],
+            cwd=str(_PROJECT_ROOT_PATH),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_env,
+        )
+        with open(scan_log, "a", encoding="utf-8") as lf:
+            lf.write(f"--- {ts} BRIDGE-{label} ---\n")
+            lf.write(bp.stdout or "")
+            if bp.stderr:
+                lf.write(bp.stderr)
+    except Exception as exc:
+        logger.error("Bridge pass %s error: %s", label, exc)
+
+
+def _run_parallel_deep_scan() -> None:
+    """WO-PRIME-PARALLEL-SCANS-01: concurrent deep-scan coordinator.
+
+    Execution model:
+      Stage 1 (concurrent) — IDX, UOA, MTS, PEAD, SRS, API-semaphore gated.
+      Bridge pass 1        — fires as soon as UOA + PEAD complete; gates PSA
+                             signal-led upgrade (PSA reads prime_signals for
+                             UOA triggers, which only exist after the bridge).
+      Stage 2              — PSA submitted to the same pool once UOA+PEAD
+                             threads are free.
+      Bridge pass 2        — consolidates PSA + SRS + all remaining output.
+      Short scanner        — after bridge pass 2 (needs UOA/PEAD/PSA in DB).
+
+    Per-API semaphores prevent concurrent Polygon or Schwab subprocesses from
+    exceeding API rate limits.  Polygon concurrency = 1 on free plan, 3 on
+    paid.  A failed scanner does not block remaining scanners (AC6).
+    """
+    import concurrent.futures as _cf
+
+    # --- API semaphores -------------------------------------------------------
+    try:
+        ops = json.loads(open(_OPS_CONFIG_PATH, encoding="utf-8").read())
+        polygon_plan = ops.get("polygon_plan", "free")
+    except Exception:
+        polygon_plan = "free"
+
+    polygon_sem = threading.Semaphore(1 if polygon_plan == "free" else 3)
+    schwab_sem = threading.Semaphore(3)
+
+    _SCANNER_API_CLASS: Dict[str, str] = {
+        "psa":   "polygon",
+        "pead":  "polygon",
+        "uoa":   "schwab",
+        "srs":   "polygon",
+        "mts":   "schwab",
+        "idx":   "polygon",
+        "short": "schwab",
+    }
+
+    uoa_done: threading.Event = threading.Event()
+    pead_done: threading.Event = threading.Event()
+
+    def _guarded_run(scanner: str) -> None:
+        """Acquire API semaphore, run scanner without per-scanner bridge, release."""
+        mod = _SCANNER_MAP.get(scanner)
+        if not mod:
+            return
+        with _scan_lock:
+            if _scan_state.get(scanner, {}).get("status") == "running":
+                logger.info("Parallel deep scan: %s already running — skipping", scanner)
+                if scanner == "uoa":
+                    uoa_done.set()
+                elif scanner == "pead":
+                    pead_done.set()
+                return
+        api = _SCANNER_API_CLASS.get(scanner, "polygon")
+        sem = polygon_sem if api == "polygon" else schwab_sem
+        sem.acquire()
+        try:
+            _run_scanner_bg(scanner, mod, skip_bridge=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Parallel deep scan: %s failed: %s", scanner, exc)
+        finally:
+            sem.release()
+            if scanner == "uoa":
+                uoa_done.set()
+            elif scanner == "pead":
+                pead_done.set()
+
+    # Stage 1: five scanners concurrent, PSA submitted after bridge pass 1.
+    # max_workers = Stage-1 count + 1 so PSA always has a free slot.
+    stage1 = ["idx", "uoa", "mts", "pead", "srs"]
+    with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 1,
+                                thread_name_prefix="deepscan") as pool:
+        for s in stage1:
+            pool.submit(_guarded_run, s)
+
+        # Block *this* thread (not a pool worker) until UOA + PEAD complete,
+        # then run bridge pass 1 and submit PSA.  The pool keeps running
+        # IDX/MTS/SRS concurrently throughout.
+        uoa_done.wait()
+        pead_done.wait()
+        _run_bridge("1")
+        pool.submit(_guarded_run, "psa")
+    # ThreadPoolExecutor.__exit__ calls shutdown(wait=True) — all work done here.
+
+    # Bridge pass 2: consolidate PSA + SRS + IDX output into prime_signals.
+    _run_bridge("2")
+
+    # Short scanner: reads UOA/PEAD/PSA signals from DB after bridge pass 2.
+    short_mod = _SCANNER_MAP.get("short")
+    if short_mod:
+        with _scan_lock:
+            if _scan_state.get("short", {}).get("status") != "running":
+                _run_scanner_bg("short", short_mod, skip_bridge=False)
 
 
 @api_bp.route("/scans/<string:scanner>", methods=["POST"])
@@ -2644,16 +2779,7 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
     deep_h, deep_m = _parse_time(schedule.get("deep_scan_time", "08:00"))
 
     def _deep_scan_job():
-        _DEEP_ORDER = ["psa", "pead", "uoa", "srs", "mts", "idx", "short"]
-        for s in _DEEP_ORDER:
-            mod = _SCANNER_MAP.get(s)
-            if not mod:
-                continue
-            state = _scan_state.get(s, {})
-            if state.get("status") == "running":
-                logger.info("Deep scan: %s already running — skipping", s)
-                continue
-            _run_scanner_bg(s, mod)
+        _run_parallel_deep_scan()
 
     job_defs = [
         ("scan_job_psa",   _make_job("psa"),   psa_h, psa_m),
