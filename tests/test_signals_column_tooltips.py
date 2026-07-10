@@ -40,14 +40,29 @@ class TestSignalsColumnTooltips(unittest.TestCase):
                 self.assertRegex(INDEX_HTML, pattern,
                                  msg=f"column '{col}' is missing data-tooltip")
 
-    # AC 2: Tier tooltip states the two-condition gate
+    # AC 2: Tier tooltip — revised copy (AC4 sign-off)
     def test_tier_tooltip_two_condition_gate(self):
         tip = _get_th_tooltip(INDEX_HTML, "Tier")
         self.assertIn("83.3", tip, "Tier tooltip must cite Score >= 83.3")
         self.assertIn("120%", tip, "Tier tooltip must cite 120% volume threshold")
-        self.assertIn("WEAK", tip, "Tier tooltip must mention WEAK tier")
-        self.assertIn("volume does not confirm", tip,
+        self.assertIn("both required", tip,
+                      "Tier tooltip must state both conditions are required")
+        self.assertIn("does not guarantee STRONG tier", tip,
                       "Tier tooltip must state high Score alone does not guarantee STRONG tier")
+        self.assertIn("volume does not confirm", tip,
+                      "Tier tooltip must reference volume confirmation failure")
+
+    # AC 2: Status tooltip — revised copy (AC4 sign-off)
+    def test_status_tooltip_approved_not_volume_confirmed(self):
+        tip = _get_th_tooltip(INDEX_HTML, "Status")
+        self.assertIn("all screening gates", tip,
+                      "Status tooltip must say 'all screening gates'")
+        self.assertIn("APPROVED does not mean volume-confirmed", tip,
+                      "Status tooltip must clarify APPROVED != volume-confirmed")
+        self.assertIn("WEAK tier signal can still be APPROVED", tip,
+                      "Status tooltip must note WEAK tier signals can be APPROVED")
+        self.assertIn("REJECTED_STAGE0", tip,
+                      "Status tooltip must mention REJECTED_STAGE0")
 
     # AC 3: Score tooltip notes strategy-specific calculation and non-comparability
     def test_score_tooltip_non_comparability(self):
@@ -69,6 +84,30 @@ class TestSignalsColumnTooltips(unittest.TestCase):
         m = re.search(r'transition:\s*opacity[^;]+;', INDEX_HTML)
         self.assertIsNotNone(m, "tooltip transition rule not found")
         self.assertIn("0.3s", m.group(0), "tooltip must have 0.3s (300ms) transition delay")
+
+    # AC 6: edge-collision fix — CSS rules anchor leftmost and rightmost columns
+    def test_edge_collision_css_left_anchor(self):
+        self.assertIn(
+            "#sig-table thead th:nth-child(-n+2)[data-tooltip]::after",
+            INDEX_HTML,
+            "Left-anchor CSS rule for first two columns not found",
+        )
+        # Rule must reset transform so the tooltip doesn't re-center off-screen
+        left_rule_start = INDEX_HTML.index("#sig-table thead th:nth-child(-n+2)")
+        left_rule = INDEX_HTML[left_rule_start:INDEX_HTML.index("}", left_rule_start)]
+        self.assertIn("left: 0", left_rule, "Left-anchor rule must set left: 0")
+        self.assertIn("transform: none", left_rule, "Left-anchor rule must clear transform")
+
+    def test_edge_collision_css_right_anchor(self):
+        self.assertIn(
+            "#sig-table thead th:nth-last-child(-n+2)[data-tooltip]::after",
+            INDEX_HTML,
+            "Right-anchor CSS rule for last two columns not found",
+        )
+        right_rule_start = INDEX_HTML.index("#sig-table thead th:nth-last-child(-n+2)")
+        right_rule = INDEX_HTML[right_rule_start:INDEX_HTML.index("}", right_rule_start)]
+        self.assertIn("right: 0", right_rule, "Right-anchor rule must set right: 0")
+        self.assertIn("transform: none", right_rule, "Right-anchor rule must clear transform")
 
     # backward compat: existing tier-help-icon span preserved
     def test_tier_help_icon_preserved(self):
