@@ -127,11 +127,13 @@ _ACCOUNT_LABELS = {
 
 def _get_all_account_positions(
     schwab_client,
-) -> List[Tuple[str, str, List[Dict[str, Any]]]]:
-    """Return [(account_number, account_suffix, positions_list), ...] for all accounts.
+) -> List[Tuple[str, str, str, List[Dict[str, Any]]]]:
+    """Return [(account_number, account_suffix, hash_val, positions_list), ...] for all accounts.
 
     schwab_client must be a connected SchwabClient instance. Each account is
     fetched independently so a failure on one account does not abort the others.
+    hash_val is included so callers can submit follow-on orders (e.g. stop attachment)
+    without an additional get_account_numbers call.
     """
     try:
         resp = schwab_client.client.get_account_numbers()
@@ -162,7 +164,7 @@ def _get_all_account_positions(
                 .get("securitiesAccount", {})
                 .get("positions", [])
             )
-            results.append((acct_num, suffix, positions))
+            results.append((acct_num, suffix, hash_val, positions))
             logger.info("Schwab account ...%s: %d positions", suffix, len(positions))
         except Exception as e:
             logger.warning("Schwab account ...%s fetch error: %s", suffix, e)
@@ -170,13 +172,16 @@ def _get_all_account_positions(
 
 
 def _open_positions_index(db_path: Optional[Path] = None) -> set:
-    """Return a set of (symbol_upper, account_suffix) for all OPEN trade records
-    with trade_source='SCHWAB_IMPORT'. Used for dedup."""
+    """Return a set of (symbol_upper, account_suffix) for all OPEN trade records.
+
+    Covers SCHWAB_IMPORT, LIVE, and PAPER sources so that PRIME-originated
+    positions are treated as already-tracked and are not duplicated by sync.
+    """
     from prime_data.prime_db import get_connection
     with get_connection(db_path) as conn:
         rows = conn.execute(
             "SELECT symbol, account FROM prime_trade_log "
-            "WHERE status='OPEN' AND trade_source='SCHWAB_IMPORT'"
+            "WHERE status='OPEN' AND trade_source IN ('SCHWAB_IMPORT', 'LIVE', 'PAPER')"
         ).fetchall()
     return {(row[0].upper(), (row[1] or "")) for row in rows}
 
@@ -383,10 +388,26 @@ def sync_schwab_positions(
     existing = _open_positions_index(db_path)
     now_ts = datetime.now().isoformat()
 
+    # WO-PRIME-PORTFOLIO-SYNC-MANUAL-01: use actual system mode so imported
+    # positions are tagged consistently with the current trading mode.
+    try:
+        from prime_config.prime_config import get_config as _get_config
+        import_mode = (_get_config().trading_mode or "PAPER").upper()
+    except Exception:
+        import_mode = "PAPER"
+
+    # WO-PRIME-PORTFOLIO-SYNC-MANUAL-01: read default stop pct for AC4 stop attachment.
+    try:
+        import json as _json
+        _ops = _json.loads((Path(__file__).resolve().parent.parent / "ops_config.json").read_text())
+        _default_stop_pct = float(_ops.get("default_stop_loss_pct", 3.0))
+    except Exception:
+        _default_stop_pct = 3.0
+
     # Build set of live (symbol, account_suffix) keys for reconciliation.
     live_keys: set = set()
 
-    for acct_num, suffix, positions in all_accounts:
+    for acct_num, suffix, acct_hash, positions in all_accounts:
         for pos in positions:
             instrument = pos.get("instrument", {})
             asset_type = instrument.get("assetType", "")
@@ -441,12 +462,17 @@ def sync_schwab_positions(
             # shared sector_map; unknowns fall back to the Schwab fundamental API.
             sector = _resolve_sector(symbol, asset_type, schwab_client)
 
+            # WO-PRIME-PORTFOLIO-SYNC-MANUAL-01 AC4: compute default stop price
+            # so the record carries a protective stop from import time.
+            _import_stop = round(avg_price * (1 - _default_stop_pct / 100.0), 4) \
+                if direction == "LONG" else round(avg_price * (1 + _default_stop_pct / 100.0), 4)
+
             try:
-                insert_trade(
+                log_id = insert_trade(
                     strategy="SCHWAB_IMPORT",
                     symbol=symbol,
                     direction=direction,
-                    mode="PAPER",
+                    mode=import_mode,
                     order_type="MARKET",
                     shares=shares,
                     entry_time=now_ts,
@@ -457,11 +483,51 @@ def sync_schwab_positions(
                     trade_source="SCHWAB_IMPORT",
                     notes=f"Imported from Schwab account ...{suffix}",
                     sector=sector,
+                    stop_price=_import_stop,
                     db_path=db_path,
                 )
                 existing.add(dedup_key)
                 result["imported"] += 1
                 logger.info("Imported %s (%s) from Schwab account ...%s", symbol, direction, suffix)
+
+                # WO-PRIME-PORTFOLIO-SYNC-MANUAL-01 AC4: attach protective stop order
+                # to Schwab for newly imported positions (import_mode==LIVE only).
+                if import_mode == "LIVE" and acct_hash and _import_stop > 0:
+                    try:
+                        from prime_trading.prime_schwab_orders import attach_stop_order
+                        attach_stop_order(
+                            symbol=symbol,
+                            qty=shares,
+                            direction=direction,
+                            stop_price=_import_stop,
+                            account_hash=acct_hash,
+                            schwab_client=schwab_client,
+                            db_path=db_path,
+                        )
+                        logger.info(
+                            "Stop attached for imported %s ...%s @ %.4f",
+                            symbol, suffix, _import_stop,
+                        )
+                    except Exception as _stop_err:
+                        logger.error(
+                            "STOP_ATTACH_FAILED for imported %s ...%s: %s",
+                            symbol, suffix, _stop_err,
+                        )
+                        try:
+                            from prime_data.prime_db import log_ops_event
+                            log_ops_event(
+                                event_type="NO_STOP_VIOLATION",
+                                component="schwab_sync",
+                                symbol=symbol,
+                                detail=(
+                                    f"log_id={log_id} stop_attach_failed=True "
+                                    f"reason={_stop_err}"
+                                ),
+                                severity="CRITICAL",
+                                db_path=db_path,
+                            )
+                        except Exception:
+                            pass
             except TradeRecordError as e:
                 msg = f"Skipped {symbol} ...{suffix}: {e}"
                 logger.warning(msg)
