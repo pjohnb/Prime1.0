@@ -28,7 +28,7 @@ class TestAssembleDigest(unittest.TestCase):
             {"symbol": "MSFT", "strategy": "PEAD", "score": 7.2, "price_at_scan": 415.0,
              "trade_factors": json.dumps({"duration": {"class": "MT"}, "entry": {"method": "SCALED"},
                                           "nullifier": {"status": "SUSPECT"}})},
-            {"symbol": "TSLA", "strategy": "MTS", "score": 6.0, "price_at_scan": 200.0,
+            {"symbol": "TSLA", "strategy": "MMR", "score": 6.0, "price_at_scan": 200.0,
              "trade_factors": "{}"},
         ]
 

@@ -25,7 +25,7 @@ from prime_data.prime_db import get_ops_events, log_ops_event, init_db
 
 logger = logging.getLogger(__name__)
 
-SCANNERS = ["psa_scanner", "uoa_scanner", "pead_scanner", "srs_scanner", "mts_scanner", "index_scanner"]
+SCANNERS = ["psa_scanner", "uoa_scanner", "pead_scanner", "srs_scanner", "mmr_scanner", "index_scanner"]
 
 # Max staleness before a scanner is flagged (in minutes)
 STALE_THRESHOLDS = {
@@ -33,7 +33,7 @@ STALE_THRESHOLDS = {
     "uoa_scanner": 1440,    # runs once daily
     "pead_scanner": 1440,
     "srs_scanner": 1440,
-    "mts_scanner": 1440,
+    "mmr_scanner": 1440,
     "index_scanner": 1440,
 }
 

@@ -103,7 +103,7 @@ class TestPriceAtScanCapturedByScanner(unittest.TestCase):
         self.assertEqual(record["signal_source"], "prime_scanners/prime_pead_scanner.py")
 
     def test_all_strategy_types_store_price_at_scan(self):
-        strategies = ["UOA", "PEAD", "MTS", "SRS", "PSA", "IDX"]
+        strategies = ["UOA", "PEAD", "MMR", "SRS", "PSA", "IDX"]
         for strat in strategies:
             log_id = insert_trade(
                 strategy=strat,

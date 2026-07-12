@@ -13,7 +13,7 @@ let _runAllActive = false;
 const _SCANNER_TOOLTIPS = {
   PSA:   'PSA: Price &amp; Signal Action — monitors intraday price acceleration and volume for momentum breakouts. Requires UOA or PEAD trigger confirmation before approving.',
   UOA:   'UOA: Unusual Options Activity — detects anomalous options volume vs. open interest. High sizzle index = institutional positioning signal.',
-  MTS:   'MTS: Momentum &amp; Trend — multi-window momentum scanner for metals ETFs (GLD, SLV). Uses RSI, SMA deviation, and volume surge.',
+  MMR:   'MMR: Metals Mean-Reversion — precious metals mean-reversion scanner. Uses RSI(14) to identify oversold bounce and overbought reversal conditions. Universe: SLV, GLD, GDX, GDXJ, NEM, WPM, AG, PAAS, HL, FR.',
   PEAD:  'PEAD: Post-Earnings Announcement Drift — identifies stocks drifting after earnings beats or misses. Classifies guidance flags.',
   DK:    'DK: Dark Pool — detects off-exchange institutional accumulation or distribution. Confirms or nullifies other scanner signals.',
   IDX:   'IDX: Index &amp; Sector — tracks relative strength across sector ETFs vs. S&amp;P 500. Provides market regime context.',

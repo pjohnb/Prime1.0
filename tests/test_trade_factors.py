@@ -1,5 +1,5 @@
 """
-Item 4 (TF-001 Phase 3) acceptance tests -- MTS + SRS factor sets
+Item 4 (TF-001 Phase 3) acceptance tests -- MMR + SRS factor sets
 and Item 5 (IDX-001) factor set.
 """
 
@@ -14,17 +14,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from prime_intelligence.prime_trade_factors import (
     TradeFactorEvaluation,
     evaluate_index,
-    evaluate_mts,
+    evaluate_mmr,
     evaluate_pead,
     evaluate_srs,
     evaluate_uoa,
 )
 
 
-class TestEvaluateMTS(unittest.TestCase):
-    """AC 4.1 -- evaluate_mts() all five factor categories populated."""
+class TestEvaluateMMR(unittest.TestCase):
+    """AC 4.1 -- evaluate_mmr() all five factor categories populated."""
 
-    def test_mts_returns_all_five_categories(self):
+    def test_mmr_returns_all_five_categories(self):
         signal = {
             "symbol": "GLD",
             "direction": "LONG",
@@ -32,9 +32,9 @@ class TestEvaluateMTS(unittest.TestCase):
             "price_at_scan": 220.0,
             "session_open_price": 218.0,
         }
-        result = evaluate_mts("GLD", signal)
+        result = evaluate_mmr("GLD", signal)
         self.assertIsInstance(result, TradeFactorEvaluation)
-        self.assertEqual(result.strategy, "MTS")
+        self.assertEqual(result.strategy, "MMR")
 
         d = result.to_dict()
         self.assertIn("duration", d)
@@ -47,20 +47,20 @@ class TestEvaluateMTS(unittest.TestCase):
         self.assertIn("status", d["nullifier"])
         self.assertIn("maintenance_flags", d)
 
-    def test_mts_duration_is_medium_term(self):
+    def test_mmr_duration_is_medium_term(self):
         signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 30.0}
-        result = evaluate_mts("SLV", signal)
+        result = evaluate_mmr("SLV", signal)
         self.assertEqual(result.duration_class, "MT")
 
-    def test_mts_has_ratio_reversal_exit_trigger(self):
+    def test_mmr_has_ratio_reversal_exit_trigger(self):
         signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 30.0}
-        result = evaluate_mts("SLV", signal)
+        result = evaluate_mmr("SLV", signal)
         trigger_types = [t["type"] for t in result.exit_triggers]
         self.assertIn("RATIO_REVERSAL", trigger_types)
 
-    def test_mts_maintenance_includes_gold_silver_monitor(self):
+    def test_mmr_maintenance_includes_gold_silver_monitor(self):
         signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 30.0}
-        result = evaluate_mts("SLV", signal)
+        result = evaluate_mmr("SLV", signal)
         combined = " ".join(result.maintenance_flags)
         self.assertIn("gold/silver", combined.lower())
 
@@ -103,16 +103,16 @@ class TestEvaluateSRS(unittest.TestCase):
 
 
 class TestDK001Integration(unittest.TestCase):
-    """AC 4.3 -- DK-001 nullifier integrated into both MTS and SRS evaluation."""
+    """AC 4.3 -- DK-001 nullifier integrated into both MMR and SRS evaluation."""
 
-    def test_mts_dark_pool_nullifier_present(self):
+    def test_mmr_dark_pool_nullifier_present(self):
         signal = {
             "direction": "LONG",
             "score": 5.0,
             "price_at_scan": 220.0,
             "session_open_price": 210.0,
         }
-        result = evaluate_mts("GLD", signal)
+        result = evaluate_mmr("GLD", signal)
         self.assertIsNotNone(result.dark_pool_eval)
         self.assertIn(result.nullifier_status, ("CLEAR", "SUSPECT", "NULLIFIED"))
 
@@ -128,7 +128,7 @@ class TestDK001Integration(unittest.TestCase):
         self.assertIsNotNone(result.dark_pool_eval)
         self.assertIn(result.nullifier_status, ("CLEAR", "SUSPECT", "NULLIFIED"))
 
-    def test_mts_nullified_on_suspicious_signal(self):
+    def test_mmr_nullified_on_suspicious_signal(self):
         signal = {
             "direction": "LONG",
             "strategy": "UOA",
@@ -137,7 +137,7 @@ class TestDK001Integration(unittest.TestCase):
             "session_open_price": 100.0,
             "block_prints": [{"side": "SELL", "size": 50000}],
         }
-        result = evaluate_mts("GLD", signal)
+        result = evaluate_mmr("GLD", signal)
         self.assertTrue(result.nullifier_status in ("SUSPECT", "NULLIFIED"))
 
 
@@ -146,7 +146,7 @@ class TestTradeFactorsJSON(unittest.TestCase):
 
     def test_factor_eval_serializable(self):
         signal = {"direction": "LONG", "score": 6.0, "price_at_scan": 100.0}
-        for evaluate_fn, sym in [(evaluate_mts, "GLD"), (evaluate_srs, "XLK"),
+        for evaluate_fn, sym in [(evaluate_mmr, "GLD"), (evaluate_srs, "XLK"),
                                   (evaluate_index, "SPY")]:
             result = evaluate_fn(sym, signal)
             serialized = json.dumps(result.to_dict())

@@ -151,7 +151,7 @@ class TestParallelScansBehavior(unittest.TestCase):
                    PROJECT_ROOT / "ops_config.json"):
             self._run_parallel_deep_scan()
 
-        stage1 = {"idx", "uoa", "mts", "pead", "srs"}
+        stage1 = {"idx", "uoa", "mmr", "pead", "srs"}
         for scanner, skip_bridge in call_log:
             if scanner in stage1:
                 self.assertTrue(skip_bridge,
@@ -188,7 +188,7 @@ class TestParallelScansBehavior(unittest.TestCase):
         self.assertFalse(short_calls[0][1], "Short scanner must be called with skip_bridge=False")
 
     def test_uoa_failure_does_not_block_other_scanners(self):
-        """AC6: a failing UOA must not prevent IDX, MTS, SRS, PEAD, PSA from running."""
+        """AC6: a failing UOA must not prevent IDX, MMR, SRS, PEAD, PSA from running."""
         call_log = []
         with patch("prime_api.prime_api_routes._run_scanner_bg",
                    side_effect=self._make_mock_scanner_bg(call_log, fail_on="uoa")), \
@@ -199,7 +199,7 @@ class TestParallelScansBehavior(unittest.TestCase):
             self._run_parallel_deep_scan()
 
         ran = {c[0] for c in call_log}
-        for expected in ("idx", "mts", "pead", "srs", "psa"):
+        for expected in ("idx", "mmr", "pead", "srs", "psa"):
             self.assertIn(expected, ran,
                           f"AC6: {expected} must run even if UOA fails")
 

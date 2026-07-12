@@ -55,7 +55,7 @@ class TestScanExplainEndpoint(unittest.TestCase):
         if self.db.exists():
             self.db.unlink()
 
-    def _post(self, scanner="mts", signal_count=0, log_excerpt="", rejection_summary=""):
+    def _post(self, scanner="mmr", signal_count=0, log_excerpt="", rejection_summary=""):
         return self.client.post(
             "/api/v1/advisory/scan-explain",
             json={
@@ -70,21 +70,21 @@ class TestScanExplainEndpoint(unittest.TestCase):
 
     def test_no_api_key_returns_graceful_message(self):
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
-            resp = self._post(scanner="mts", signal_count=0)
+            resp = self._post(scanner="mmr", signal_count=0)
         self.assertEqual(resp.status_code, 200)
         d = resp.get_json()
         self.assertIn("explanation", d)
         self.assertIn("Advisory unavailable", d["explanation"])
 
-    def test_mts_scanner_returns_explanation(self):
+    def test_mmr_scanner_returns_explanation(self):
         mock_resp = MagicMock()
-        mock_resp.content = [MagicMock(text="MTS scan found 0 signals because RSI was above 60 on all candidates.")]
+        mock_resp.content = [MagicMock(text="MMR scan found 0 signals because RSI was above 60 on all candidates.")]
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_resp
 
         with patch("anthropic.Anthropic", return_value=mock_client), \
              patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            resp = self._post(scanner="mts", signal_count=0, log_excerpt="RSI=65 filtered")
+            resp = self._post(scanner="mmr", signal_count=0, log_excerpt="RSI=65 filtered")
 
         self.assertEqual(resp.status_code, 200)
         d = resp.get_json()

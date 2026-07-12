@@ -1,14 +1,14 @@
 """
 PRIME Sprint 14 Item 1 -- v0.9 Scanner -> v1.0 DB Bridge.
 
-The v0.9 scanners (PSA, PEAD, UOA, MTS, SRS) write their output to CSV/JSON
+The v0.9 scanners (PSA, PEAD, UOA, MMR, SRS) write their output to CSV/JSON
 files in C:\\Dev\\PRIME\\scan_results and to the prime_ai_monitoring.db SQLite
 database. This bridge intercepts that output, maps APPROVED signals to the
 v1.0 prime_signals schema, and writes them to prime_trades.db -- so every scan
 auto-populates the Lovable UI Signals tab with no manual import step.
 
 Design:
-  * strategy column = scanner name (UOA / PEAD / SRS / PSA / MTS) so the UI
+  * strategy column = scanner name (UOA / PEAD / SRS / PSA / MMR) so the UI
     strategy filter works; scanner-specific grouping (e.g. UOA "group") is
     preserved inside the factors JSON blob.
   * instrument_type = "EQUITY" (matches the UI type filter and table default).
@@ -45,7 +45,7 @@ V09_MONITORING_DB = Path(r"C:\Dev\PRIME\prime_ai_monitoring.db")
 
 # Approval gates per scanner (the value(s) that mean "tradeable signal").
 UOA_APPROVED_TIERS = ("STRONG", "WATCH")
-MTS_APPROVED_TRANCHES = ("TRANCHE_1", "TRANCHE_2")
+MMR_APPROVED_TRANCHES = ("TRANCHE_1", "TRANCHE_2")
 SRS_APPROVED_PHASES = ("RECOVERING",)
 
 INSTRUMENT_TYPE = "EQUITY"
@@ -233,16 +233,16 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
     return count
 
 
-def bridge_mts_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) -> int:
-    """MTS CSV rows. Approved = tranche in TRANCHE_1/TRANCHE_2 (WATCH excluded)."""
+def bridge_mmr_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) -> int:
+    """MMR CSV rows. Approved = tranche in TRANCHE_1/TRANCHE_2 (WATCH excluded)."""
     count = 0
     for row in rows:
         tranche = (row.get("tranche") or "").strip().upper()
-        if tranche not in MTS_APPROVED_TRANCHES:
+        if tranche not in MMR_APPROVED_TRANCHES:
             continue
         signal = {
             "symbol": (row.get("symbol") or "").strip(),
-            "strategy": "MTS",
+            "strategy": "MMR",
             "scan_ts": (row.get("scan_ts") or "").strip(),
             "entry_price": _to_float(row.get("price")),
             "score": _to_float(row.get("vol_surge_mult")),
@@ -349,7 +349,7 @@ def ingest_latest(
     """
     init_signals_table(db_path)
     scan_dir = Path(scan_dir)
-    results: Dict[str, int] = {"UOA": 0, "PSA": 0, "PEAD": 0, "MTS": 0, "SRS": 0}
+    results: Dict[str, int] = {"UOA": 0, "PSA": 0, "PEAD": 0, "MMR": 0, "SRS": 0}
 
     def _try(name: str, fn):
         try:
@@ -366,9 +366,9 @@ def ingest_latest(
     if psa:
         _try("PSA", lambda: bridge_psa_rows(_read_csv(psa), _psa_scan_ts(psa), db_path))
 
-    mts = _latest(scan_dir, "mts_signals_*.csv")
-    if mts:
-        _try("MTS", lambda: bridge_mts_rows(_read_csv(mts), db_path))
+    mmr = _latest(scan_dir, "mmr_signals_*.csv")
+    if mmr:
+        _try("MMR", lambda: bridge_mmr_rows(_read_csv(mmr), db_path))
 
     srs = _latest(scan_dir, "srs_scan_*.json")
     if srs:

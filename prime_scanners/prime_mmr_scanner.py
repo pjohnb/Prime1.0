@@ -1,6 +1,6 @@
 """
-PRIME v1.0 Metals Trading Strategy Scanner (MTS).
-Ported from v0.9 prime_mts_scanner.py (773 lines).
+PRIME v1.0 Metals Mean-Reversion Scanner (MMR).
+Ported from v0.9 prime_mts_scanner.py (renamed to MMR in WO-PRIME-MMR-RENAME-01).
 
 Mean-reversion strategy for precious metals ETFs and mining equities.
 Two-phase staged entry: oversold screen (Phase 1) then momentum
@@ -12,7 +12,7 @@ TradeStation is retired (Sprint 25). Scheduled at 12:45 ET alongside IDX.
 Targets: SLV, GLD, GDX, GDXJ, NEM, WPM, AG, PAAS, HL, FR
 Context: Gold/Silver ratio for macro positioning.
 
-Standalone: python prime_scanners/prime_mts_scanner.py
+Standalone: python prime_scanners/prime_mmr_scanner.py
 """
 
 import json
@@ -40,7 +40,7 @@ POLYGON_BASE = "https://api.polygon.io"
 API_TIMEOUT = 10
 API_DELAY = 0.25
 
-MTS_TARGETS = ["SLV", "GLD", "GDX", "GDXJ", "NEM", "WPM", "AG", "PAAS", "HL", "FR"]
+MMR_TARGETS = ["SLV", "GLD", "GDX", "GDXJ", "NEM", "WPM", "AG", "PAAS", "HL", "FR"]
 GS_RATIO_SYMBOLS = ("GLD", "SLV")
 
 MA_PERIOD = 20
@@ -77,7 +77,7 @@ def _get_schwab_client():
             app_secret=ss.schwab_app_secret,
         )
     except Exception as e:
-        logger.debug("Schwab unavailable for MTS: %s", e)
+        logger.debug("Schwab unavailable for MMR: %s", e)
         return None
 
 
@@ -322,18 +322,18 @@ def fetch_gs_ratio(api_key: str, schwab_client=None) -> Optional[float]:
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
-def run_mts_scan(api_key: str) -> Dict[str, Any]:
+def run_mmr_scan(api_key: str) -> Dict[str, Any]:
     scan_time = datetime.now()
 
-    logger.info("MTS SCAN -- %s", scan_time.strftime("%Y-%m-%d %H:%M ET"))
+    logger.info("MMR SCAN -- %s", scan_time.strftime("%Y-%m-%d %H:%M ET"))
 
     schwab_client = _get_schwab_client()
     if schwab_client:
-        logger.info("MTS: using Schwab daily bars (primary)")
+        logger.info("MMR: using Schwab daily bars (primary)")
     elif api_key:
-        logger.info("MTS: Schwab unavailable, using Polygon fallback")
+        logger.info("MMR: Schwab unavailable, using Polygon fallback")
     else:
-        logger.warning("MTS: no data source available -- 0 signals")
+        logger.warning("MMR: no data source available -- 0 signals")
 
     gs_ratio = fetch_gs_ratio(api_key, schwab_client)
     if gs_ratio:
@@ -342,7 +342,7 @@ def run_mts_scan(api_key: str) -> Dict[str, Any]:
     signals: List[Dict[str, Any]] = []
     all_results: Dict[str, Any] = {}
 
-    for symbol in MTS_TARGETS:
+    for symbol in MMR_TARGETS:
         bars = fetch_daily_bars(symbol, BARS_NEEDED, api_key, schwab_client)
         if schwab_client is None:
             time.sleep(API_DELAY)
@@ -369,15 +369,15 @@ def run_mts_scan(api_key: str) -> Dict[str, Any]:
     watch = [s for s in signals if s["tier"] == TIER_WATCH]
 
     logger.info(
-        "MTS complete: %d signals (T2=%d T1=%d Watch=%d)",
+        "MMR complete: %d signals (T2=%d T1=%d Watch=%d)",
         len(signals), len(t2), len(t1), len(watch),
     )
 
     return {
         "scan_time": scan_time.isoformat(),
-        "scanner": "prime_mts_scanner",
+        "scanner": "prime_mmr_scanner",
         "version": "1.0",
-        "targets": MTS_TARGETS,
+        "targets": MMR_TARGETS,
         "gs_ratio": round(gs_ratio, 2) if gs_ratio else None,
         "thresholds": {
             "oversold_pct": OVERSOLD_THRESHOLD_PCT,
@@ -398,7 +398,7 @@ def save_results(scan_data: Dict) -> Path:
     out_dir = cfg.scan_results_dir
     out_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M")
-    out = out_dir / f"mts_scan_{ts}_ET.json"
+    out = out_dir / f"mmr_scan_{ts}_ET.json"
     with open(out, "w", encoding="utf-8") as f:
         json.dump(scan_data, f, indent=2, default=str)
     logger.info("Results saved: %s", out)
@@ -408,7 +408,7 @@ def save_results(scan_data: Dict) -> Path:
 def main():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [MTS] %(levelname)s %(message)s",
+        format="%(asctime)s [MMR] %(levelname)s %(message)s",
     )
 
     cfg = get_config()
@@ -421,11 +421,11 @@ def main():
 
     init_db()
 
-    log_ops_event("SCAN_START", "mts_scanner")
+    log_ops_event("SCAN_START", "mmr_scanner")
 
-    scan_data = run_mts_scan(api_key)
+    scan_data = run_mmr_scan(api_key)
 
-    print(f"\nMTS Scan: {scan_data['signals_found']} signals "
+    print(f"\nMMR Scan: {scan_data['signals_found']} signals "
           f"(T2={scan_data['tranche2_count']} T1={scan_data['tranche1_count']} "
           f"Watch={scan_data['watch_count']})")
     if scan_data.get("gs_ratio"):
@@ -440,7 +440,7 @@ def main():
 
     log_ops_event(
         "SCAN_COMPLETE",
-        "mts_scanner",
+        "mmr_scanner",
         detail=f"signals={scan_data['signals_found']}",
     )
 

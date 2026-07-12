@@ -1,7 +1,7 @@
 """
 Sprint 14 Item 1 (Scanner Bridge) acceptance tests.
 
-Mocks each v0.9 scanner output format (UOA, PSA, PEAD, MTS, SRS), verifies the
+Mocks each v0.9 scanner output format (UOA, PSA, PEAD, MMR, SRS), verifies the
 bridge inserts approved signals into prime_signals with the correct field
 mapping, filters out non-approved rows, and is idempotent on re-run (signal_id
 dedup).
@@ -136,7 +136,7 @@ class TestPEAD(_BridgeTestBase):
         self.assertAlmostEqual(sig["entry_price"], 880.5, places=1)
 
 
-class TestMTS(_BridgeTestBase):
+class TestMMR(_BridgeTestBase):
     ROWS = [
         {"symbol": "SLV", "price": "31.2", "tranche": "TRANCHE_2", "confidence": "HIGH",
          "rsi": "28.0", "pct_from_sma": "-6.5", "vol_surge_mult": "1.8",
@@ -146,11 +146,11 @@ class TestMTS(_BridgeTestBase):
     ]
 
     def test_inserts_tranches_only(self):
-        n = bridge.bridge_mts_rows(self.ROWS, db_path=self.db)
+        n = bridge.bridge_mmr_rows(self.ROWS, db_path=self.db)
         self.assertEqual(n, 1)  # TRANCHE_2 in, WATCH out
         sig = self._signals()[0]
         self.assertEqual(sig["symbol"], "SLV")
-        self.assertEqual(sig["strategy"], "MTS")
+        self.assertEqual(sig["strategy"], "MMR")
         self.assertEqual(sig["tier"], "TRANCHE_2")
         self.assertAlmostEqual(sig["entry_price"], 31.2, places=1)
 
@@ -201,8 +201,8 @@ class TestIngestLatest(_BridgeTestBase):
             "Symbol,Momentum%,Volume%,Volatility%,Trend,Consecutive,Approved\n"
             "MSFT,8.5,70,30,1,3,YES\n",
             encoding="utf-8")
-        # MTS CSV
-        (self.scan_dir / "mts_signals_20260602_1100.csv").write_text(
+        # MMR CSV
+        (self.scan_dir / "mmr_signals_20260602_1100.csv").write_text(
             "symbol,price,pct_from_sma,rsi,vol_surge_mult,tranche,confidence,scan_ts\n"
             "SLV,31.2,-6.5,28.0,1.8,TRANCHE_2,HIGH,2026-06-02T11:00:00\n",
             encoding="utf-8")
@@ -231,10 +231,10 @@ class TestIngestLatest(_BridgeTestBase):
     def test_ingest_all_scanners(self):
         results = bridge.ingest_latest(
             scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
-        self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MTS": 1, "SRS": 1})
+        self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MMR": 1, "SRS": 1})
         self.assertEqual(len(self._signals()), 5)
         strategies = {s["strategy"] for s in self._signals()}
-        self.assertEqual(strategies, {"UOA", "PSA", "PEAD", "MTS", "SRS"})
+        self.assertEqual(strategies, {"UOA", "PSA", "PEAD", "MMR", "SRS"})
 
     def test_ingest_idempotent(self):
         bridge.ingest_latest(scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)

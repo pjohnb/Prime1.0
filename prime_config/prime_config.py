@@ -279,7 +279,7 @@ def load_config(
     if not (raw.get("polygon_api_key") or "").strip():
         logger.warning(
             "config.json: polygon_api_key is missing or empty — PSA/SRS/IDX/SHORT "
-            "scans will be skipped (graceful degradation). MTS and PEAD are unaffected."
+            "scans will be skipped (graceful degradation). MMR and PEAD are unaffected."
         )
 
     cfg = PrimeConfig(

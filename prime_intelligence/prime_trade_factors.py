@@ -1,7 +1,7 @@
 """
 PRIME v1.0 Trade Factor Registry (CIL-PRIME-TF-001).
 
-Evaluates trade factors for all strategies: UOA, PEAD, MTS, SRS, IDX.
+Evaluates trade factors for all strategies: UOA, PEAD, MMR, SRS, IDX.
 Each strategy produces a five-category evaluation per TIP Section 2:
   1. Duration Classifiers (ST/MT/LT)
   2. Entry Modifiers (IMMEDIATE_FULL/IMMEDIATE_HALF/WAIT/SCALED)
@@ -105,7 +105,7 @@ def _classify_duration(signal: Dict[str, Any], strategy: str) -> tuple:
             return "MT", "MEDIUM", f"PEAD {days_since}d post-earnings -> extended drift"
         else:
             return "LT", "LOW", f"PEAD {days_since}d post-earnings -> late drift, lower conviction"
-    elif strategy == "MTS":
+    elif strategy == "MMR":
         return "MT", "MEDIUM", "Metals thesis: sector rotation timing is medium-term"
     elif strategy == "SRS":
         phase = signal.get("sector_phase", "STABLE")
@@ -187,7 +187,7 @@ def _build_exit_triggers(signal: Dict[str, Any], strategy: str, duration: str) -
             "value": "sector_phase != RECOVERING",
             "description": "SRS sector phase flips away from RECOVERING",
         })
-    elif strategy == "MTS":
+    elif strategy == "MMR":
         triggers.append({
             "type": "RATIO_REVERSAL",
             "status": "ARMED",
@@ -237,7 +237,7 @@ def _build_maintenance_flags(signal: Dict[str, Any], strategy: str) -> List[str]
     if signal.get("contradictory_signal"):
         flags.append("Contradictory signal from another PRIME strategy detected")
 
-    if strategy == "MTS":
+    if strategy == "MMR":
         flags.append("Monitor gold/silver ratio for directional changes")
     elif strategy == "SRS":
         flags.append("Monitor sector phase for recovery confirmation or reversal")
@@ -261,9 +261,9 @@ def evaluate_pead(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
     return _evaluate("PEAD", symbol, signal)
 
 
-def evaluate_mts(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
-    """Evaluate trade factors for an MTS (Metals Trading Strategy) signal."""
-    return _evaluate("MTS", symbol, signal)
+def evaluate_mmr(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+    """Evaluate trade factors for an MMR (Metals Mean-Reversion) signal."""
+    return _evaluate("MMR", symbol, signal)
 
 
 def evaluate_srs(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:

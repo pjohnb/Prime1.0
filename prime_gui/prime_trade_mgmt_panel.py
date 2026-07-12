@@ -1,7 +1,7 @@
 """
 PRIME v1.0 Trade Management Panel.
 
-Reusable panel component for all trader tabs (UOA, PEAD, MTS, SRS, IDX).
+Reusable panel component for all trader tabs (UOA, PEAD, MMR, SRS, IDX).
 Displays the five-category Trade Factor Evaluation and Claude advisory.
 
 Reference: PRIME Trade Intelligence Paper v1.0, Section 4.
