@@ -45,7 +45,7 @@ V09_MONITORING_DB = Path(r"C:\Dev\PRIME\prime_ai_monitoring.db")
 
 # Approval gates per scanner (the value(s) that mean "tradeable signal").
 UOA_APPROVED_TIERS = ("STRONG", "WATCH")
-MMR_APPROVED_TRANCHES = ("TRANCHE_1", "TRANCHE_2")
+MMR_APPROVED_TRANCHES = ("TRANCHE_1", "TRANCHE_2", "SHORT_TRANCHE_1", "SHORT_TRANCHE_2")
 SRS_APPROVED_PHASES = ("RECOVERING",)
 
 INSTRUMENT_TYPE = "EQUITY"
@@ -234,12 +234,17 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
 
 
 def bridge_mmr_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) -> int:
-    """MMR CSV rows. Approved = tranche in TRANCHE_1/TRANCHE_2 (WATCH excluded)."""
+    """MMR CSV rows. Approved = TRANCHE_1/2 (LONG) or SHORT_TRANCHE_1/2 (SHORT).
+
+    Direction is inferred from tranche prefix: SHORT_* → SHORT, else LONG.
+    WATCH and unrecognised tiers are excluded.
+    """
     count = 0
     for row in rows:
         tranche = (row.get("tranche") or "").strip().upper()
         if tranche not in MMR_APPROVED_TRANCHES:
             continue
+        direction = "SHORT" if tranche.startswith("SHORT_") else "LONG"
         signal = {
             "symbol": (row.get("symbol") or "").strip(),
             "strategy": "MMR",
@@ -247,7 +252,7 @@ def bridge_mmr_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
             "entry_price": _to_float(row.get("price")),
             "score": _to_float(row.get("vol_surge_mult")),
             "tier": tranche,
-            "direction": "LONG",
+            "direction": direction,
             "status": "APPROVED",
             "factors": {
                 "confidence": (row.get("confidence") or "").strip(),

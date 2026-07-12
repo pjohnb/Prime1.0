@@ -84,9 +84,9 @@ const STRATEGY_INFO = {
   },
   MMR: {
     fullName: "Metals Mean-Reversion Scanner",
-    summary: "Monitors 10 precious metals instruments for oversold bounce (LONG) and overbought reversal (SHORT) conditions using RSI(14). Two-phase gate: TRANCHE_1 sets up the condition, TRANCHE_2 confirms directional turn.",
+    summary: "Monitors 10 precious metals instruments for oversold bounce (LONG) and overbought reversal (SHORT) using RSI(14). LONG universe: all 10 (SLV, GLD, GDX, GDXJ, NEM, WPM, AG, PAAS, HL, FR). SHORT universe: ETF-only (SLV, GLD, GDX, GDXJ) — individual miners are LONG-only.",
     trigger: "RSI(14) below oversold threshold (LONG) or above overbought threshold (SHORT). Phase 1: initial condition met. Phase 2: directional RSI turn confirmed.",
-    confirmation: "TRANCHE_2 requires both the initial condition and a confirmed RSI reversal with price bounce confirmation.",
+    confirmation: "TRANCHE_2 / SHORT_TRANCHE_2 require both the initial condition and a confirmed RSI reversal with directional price move. TRANCHE_1 / SHORT_TRANCHE_1 = Phase 1 met, awaiting Phase 2 confirmation.",
     dk: "CONFIRMING elevates TRANCHE_1 conviction. NULLIFYING suppresses metals signals — institutional flow opposing the mean-reversion thesis is a hard veto.",
     hold: "2–5 sessions (metals mean-reversion typically resolves within a week).",
     stop: "–5% from entry; exit if RSI moves further against thesis.",

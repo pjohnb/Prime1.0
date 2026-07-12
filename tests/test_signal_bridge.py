@@ -143,16 +143,43 @@ class TestMMR(_BridgeTestBase):
          "scan_ts": "2026-06-02T11:00:00"},
         {"symbol": "GLD", "price": "210.0", "tranche": "WATCH", "confidence": "LOW",
          "vol_surge_mult": "1.1", "scan_ts": "2026-06-02T11:00:00"},
+        {"symbol": "GLD", "price": "212.0", "tranche": "SHORT_TRANCHE_2", "confidence": "HIGH",
+         "rsi": "72.0", "pct_from_sma": "6.8", "vol_surge_mult": "2.1",
+         "scan_ts": "2026-06-02T11:00:00"},
+        {"symbol": "GDX", "price": "38.5", "tranche": "SHORT_TRANCHE_1", "confidence": "MEDIUM",
+         "rsi": "67.0", "pct_from_sma": "5.2", "vol_surge_mult": "1.6",
+         "scan_ts": "2026-06-02T11:00:00"},
     ]
 
     def test_inserts_tranches_only(self):
         n = bridge.bridge_mmr_rows(self.ROWS, db_path=self.db)
-        self.assertEqual(n, 1)  # TRANCHE_2 in, WATCH out
-        sig = self._signals()[0]
-        self.assertEqual(sig["symbol"], "SLV")
-        self.assertEqual(sig["strategy"], "MMR")
-        self.assertEqual(sig["tier"], "TRANCHE_2")
-        self.assertAlmostEqual(sig["entry_price"], 31.2, places=1)
+        self.assertEqual(n, 3)  # TRANCHE_2, SHORT_TRANCHE_2, SHORT_TRANCHE_1 in; WATCH out
+        tiers = {s["tier"] for s in self._signals()}
+        self.assertIn("TRANCHE_2", tiers)
+        self.assertIn("SHORT_TRANCHE_2", tiers)
+        self.assertIn("SHORT_TRANCHE_1", tiers)
+
+    def test_long_tranche_direction(self):
+        bridge.bridge_mmr_rows(self.ROWS, db_path=self.db)
+        slv = next(s for s in self._signals() if s["symbol"] == "SLV")
+        self.assertEqual(slv["strategy"], "MMR")
+        self.assertEqual(slv["tier"], "TRANCHE_2")
+        self.assertEqual(slv["direction"], "LONG")
+        self.assertAlmostEqual(slv["entry_price"], 31.2, places=1)
+
+    def test_short_tranche_direction(self):
+        bridge.bridge_mmr_rows(self.ROWS, db_path=self.db)
+        gld = next(s for s in self._signals() if s["symbol"] == "GLD")
+        self.assertEqual(gld["strategy"], "MMR")
+        self.assertEqual(gld["tier"], "SHORT_TRANCHE_2")
+        self.assertEqual(gld["direction"], "SHORT")
+
+    def test_watch_excluded(self):
+        bridge.bridge_mmr_rows(self.ROWS, db_path=self.db)
+        symbols = [s["symbol"] for s in self._signals()]
+        # GLD appears as SHORT_TRANCHE_2 but not as WATCH
+        watch_sigs = [s for s in self._signals() if s["tier"] == "WATCH"]
+        self.assertEqual(len(watch_sigs), 0)
 
 
 class TestSRS(_BridgeTestBase):
@@ -201,10 +228,11 @@ class TestIngestLatest(_BridgeTestBase):
             "Symbol,Momentum%,Volume%,Volatility%,Trend,Consecutive,Approved\n"
             "MSFT,8.5,70,30,1,3,YES\n",
             encoding="utf-8")
-        # MMR CSV
+        # MMR CSV (one LONG + one SHORT row)
         (self.scan_dir / "mmr_signals_20260602_1100.csv").write_text(
-            "symbol,price,pct_from_sma,rsi,vol_surge_mult,tranche,confidence,scan_ts\n"
-            "SLV,31.2,-6.5,28.0,1.8,TRANCHE_2,HIGH,2026-06-02T11:00:00\n",
+            "symbol,price,pct_from_sma,rsi,vol_surge_mult,tranche,confidence,direction,scan_ts\n"
+            "SLV,31.2,-6.5,28.0,1.8,TRANCHE_2,HIGH,LONG,2026-06-02T11:00:00\n"
+            "GLD,212.0,6.8,72.0,2.1,SHORT_TRANCHE_2,HIGH,SHORT,2026-06-02T11:00:00\n",
             encoding="utf-8")
         # SRS JSON
         (self.scan_dir / "srs_scan_20260602_0800_ET.json").write_text(
@@ -231,17 +259,20 @@ class TestIngestLatest(_BridgeTestBase):
     def test_ingest_all_scanners(self):
         results = bridge.ingest_latest(
             scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
-        self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MMR": 1, "SRS": 1})
-        self.assertEqual(len(self._signals()), 5)
+        self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MMR": 2, "SRS": 1})
+        self.assertEqual(len(self._signals()), 6)
         strategies = {s["strategy"] for s in self._signals()}
         self.assertEqual(strategies, {"UOA", "PSA", "PEAD", "MMR", "SRS"})
+        mmr_sigs = [s for s in self._signals() if s["strategy"] == "MMR"]
+        directions = {s["direction"] for s in mmr_sigs}
+        self.assertEqual(directions, {"LONG", "SHORT"})
 
     def test_ingest_idempotent(self):
         bridge.ingest_latest(scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
         results = bridge.ingest_latest(
             scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
         self.assertEqual(sum(results.values()), 0)
-        self.assertEqual(len(self._signals()), 5)
+        self.assertEqual(len(self._signals()), 6)
 
 
 if __name__ == "__main__":
