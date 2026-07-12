@@ -60,8 +60,8 @@ class PrimeMLEvent:
     sizzle_index: Optional[float] = None      # UOA
     dnow_score: Optional[float] = None        # UOA D-NOW numeric direction (CIL-039)
     ab_volume_raw: Optional[float] = None     # UOA call-minus-put volume (CIL-040)
-    rsi: Optional[float] = None               # MTS
-    pct_from_sma: Optional[float] = None      # MTS
+    rsi: Optional[float] = None               # MMR
+    pct_from_sma: Optional[float] = None      # MMR
     eps_surprise: Optional[float] = None      # PEAD
     guidance_flag: Optional[str] = None       # PEAD
     borrow_rate: Optional[float] = None       # SHORT
@@ -96,7 +96,7 @@ _REGIME_BEAR_FACTOR = 0.97
 def _fetch_spy_closes(schwab_client) -> list:
     """Return SPY daily closes (oldest first) via the Schwab price-history API.
 
-    Mirrors the bar-fetch shape used by prime_mts_scanner. Returns [] on any
+    Mirrors the bar-fetch shape used by prime_mmr_scanner. Returns [] on any
     problem -- the caller treats an empty/short series as 'UNKNOWN'.
     """
     today = datetime.now()

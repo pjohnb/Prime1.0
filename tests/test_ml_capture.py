@@ -135,7 +135,7 @@ class TestCapture:
         assert row["scanner"] == "uoa"
 
     def test_capture_scanner_specific_fields(self, db):
-        # UOA populates sizzle_index; MTS-only fields stay NULL.
+        # UOA populates sizzle_index; MMR-only fields stay NULL.
         capture_ml_event(_uoa_signal(), db_path=db)
         row = _row(db, "sig_uoa_1")
         assert row["sizzle_index"] == 3.2

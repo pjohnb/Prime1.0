@@ -176,7 +176,7 @@ class TestCloseEndpoint(unittest.TestCase):
 
     def test_close_trade_manual_short_direction(self):
         sid = insert_trade(
-            strategy="MTS", symbol="TSLA", direction="SHORT", mode="PAPER",
+            strategy="MMR", symbol="TSLA", direction="SHORT", mode="PAPER",
             order_type="MARKET", shares=5, entry_time=datetime.now().isoformat(),
             price_at_scan=200.0, entry_price=200.0, trade_source="PAPER",
             db_path=self.db,

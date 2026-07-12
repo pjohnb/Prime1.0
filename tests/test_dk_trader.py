@@ -82,7 +82,7 @@ class TestPropagateAndSuppress(_Base):
     def test_propagate_dk_status(self):
         insert_signal("SPY", "UOA", "2026-06-02 10:00", status="APPROVED", db_path=self.db)
         insert_signal("QQQ", "PEAD", "2026-06-02 10:00", status="APPROVED", db_path=self.db)
-        insert_signal("TSLA", "MTS", "2026-06-02 10:00", status="APPROVED", db_path=self.db)
+        insert_signal("TSLA", "MMR", "2026-06-02 10:00", status="APPROVED", db_path=self.db)
         self._seed_dk()
         counts = dkt.propagate_dk_status(db_path=self.db)
         # Sprint 20 three-state (PENDING retired)

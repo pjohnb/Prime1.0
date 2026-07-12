@@ -55,7 +55,7 @@ class TestDistinctTiers(unittest.TestCase):
 
     def test_weak_long_is_present(self):
         """The reported missing tier (WEAK-LONG) must surface in the list."""
-        insert_signal(symbol="GLD", strategy="MTS", scan_ts="2026-06-02 10:00",
+        insert_signal(symbol="GLD", strategy="MMR", scan_ts="2026-06-02 10:00",
                       tier="WEAK-LONG", db_path=self.db)
         self.assertIn("WEAK-LONG", get_distinct_tiers(db_path=self.db))
 
@@ -69,7 +69,7 @@ class TestDistinctTiers(unittest.TestCase):
     def test_tiers_endpoint(self):
         insert_signal(symbol="SPY", strategy="UOA", scan_ts="2026-06-02 10:00",
                       tier="STRONG-LONG", db_path=self.db)
-        insert_signal(symbol="GLD", strategy="MTS", scan_ts="2026-06-02 10:00",
+        insert_signal(symbol="GLD", strategy="MMR", scan_ts="2026-06-02 10:00",
                       tier="WEAK-LONG", db_path=self.db)
         resp = self.client.get("/api/v1/tiers")
         self.assertEqual(resp.status_code, 200)

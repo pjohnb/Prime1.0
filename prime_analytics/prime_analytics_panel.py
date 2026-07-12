@@ -6,7 +6,7 @@ All data sourced from prime_signals + prime_trade_log via prime_signals_db.
 
 Tabs:
   1. Overview -- aggregate P&L, win rate, avg hold, total trades, by strategy
-  2. By Strategy -- individual PEAD/UOA/SRS/PSA/MTS/IDX breakdowns
+  2. By Strategy -- individual PEAD/UOA/SRS/PSA/MMR/IDX breakdowns
   3. By Sector -- performance grouped by GICS sector
   4. Signal History -- unified prime_signals view with filter/sort
   5. Factor Analysis -- entry quality, stop accuracy, duration classification
@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-STRATEGIES = ["UOA", "PEAD", "SRS", "PSA", "MTS", "IDX"]
+STRATEGIES = ["UOA", "PEAD", "SRS", "PSA", "MMR", "IDX"]
 
 
 class AnalyticsPanel(ttk.Frame):

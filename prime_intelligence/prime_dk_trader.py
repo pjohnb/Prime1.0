@@ -21,7 +21,7 @@ scanners. dk_conviction (0.0-1.0) is propagated alongside dk_status.
 
 Nullifier suppression: any APPROVED non-DK signal whose symbol carries an
 active DK NULLIFIER is flipped to status='SUPPRESSED', removing it from the
-PSA/PEAD/UOA/MTS pipeline output.
+PSA/PEAD/UOA/MMR pipeline output.
 
 The Tkinter "DK Trader tab" named in the work order lives in the frozen v0.9
 prime_gui_app.py; v1.0's UI is the Lovable web app, where strategy="DK" rows

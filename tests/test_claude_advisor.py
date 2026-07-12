@@ -17,7 +17,7 @@ class TestClaudeAdvisoryFallback(unittest.TestCase):
 
     def _sample_factor_eval(self, nullifier_status="CLEAR", score=7.0):
         return {
-            "strategy": "MTS",
+            "strategy": "MMR",
             "symbol": "GLD",
             "direction": "LONG",
             "signal_score": score,

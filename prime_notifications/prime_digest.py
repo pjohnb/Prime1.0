@@ -53,10 +53,10 @@ def _get_next_scan_time(scanner_name: str) -> str:
 # CIL-091 (Sprint 30 Thread 3): all-scanner schedule summary for the footer.
 # Canonical display order; any scanner present in config but not listed here is
 # appended in config order.
-_SCAN_SUMMARY_ORDER = ["psa", "uoa", "pead", "srs", "idx", "mts", "short"]
+_SCAN_SUMMARY_ORDER = ["psa", "uoa", "pead", "srs", "idx", "mmr", "short"]
 _SCAN_SUMMARY_FALLBACK = (
     "PSA: 09:45/11:20/12:50/14:20 ET | UOA+PEAD+SRS: 12:40 ET | "
-    "IDX+MTS: 12:45 ET | SHORT: 12:50 ET"
+    "IDX+MMR: 12:45 ET | SHORT: 12:50 ET"
 )
 
 

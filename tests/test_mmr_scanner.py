@@ -1,5 +1,5 @@
 """
-Sprint 7 Item 3 -- MTS scanner port verification.
+Sprint 7 Item 3 -- MMR scanner port verification.
 Tests signal evaluation, RSI/SMA calculations, and phase detection.
 """
 
@@ -10,8 +10,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from prime_scanners.prime_mts_scanner import (
-    MTS_TARGETS,
+from prime_scanners.prime_mmr_scanner import (
+    MMR_TARGETS,
     OVERSOLD_THRESHOLD_PCT,
     RSI_OVERSOLD,
     VOL_SURGE_MULT,
@@ -136,18 +136,18 @@ class TestEvaluateSignal(unittest.TestCase):
                 self.assertIn(field, signal)
 
 
-class TestMTSTargets(unittest.TestCase):
+class TestMMRTargets(unittest.TestCase):
 
     def test_target_count(self):
-        self.assertEqual(len(MTS_TARGETS), 10)
+        self.assertEqual(len(MMR_TARGETS), 10)
 
     def test_etfs_present(self):
         for etf in ("SLV", "GLD", "GDX", "GDXJ"):
-            self.assertIn(etf, MTS_TARGETS)
+            self.assertIn(etf, MMR_TARGETS)
 
     def test_miners_present(self):
         for miner in ("NEM", "WPM", "AG"):
-            self.assertIn(miner, MTS_TARGETS)
+            self.assertIn(miner, MMR_TARGETS)
 
 
 class TestGoldSilverRatioContext(unittest.TestCase):
@@ -166,29 +166,29 @@ class TestGoldSilverRatioContext(unittest.TestCase):
 class TestModuleInterface(unittest.TestCase):
 
     def test_importable(self):
-        from prime_scanners import prime_mts_scanner
-        self.assertTrue(hasattr(prime_mts_scanner, "main"))
-        self.assertTrue(hasattr(prime_mts_scanner, "run_mts_scan"))
+        from prime_scanners import prime_mmr_scanner
+        self.assertTrue(hasattr(prime_mmr_scanner, "main"))
+        self.assertTrue(hasattr(prime_mmr_scanner, "run_mmr_scan"))
 
     def test_no_gui_imports(self):
-        import prime_scanners.prime_mts_scanner as mod
+        import prime_scanners.prime_mmr_scanner as mod
         source = Path(mod.__file__).read_text()
         self.assertNotIn("import tkinter", source)
         self.assertNotIn("prime_gui", source)
 
     def test_no_direct_sqlite(self):
-        import prime_scanners.prime_mts_scanner as mod
+        import prime_scanners.prime_mmr_scanner as mod
         source = Path(mod.__file__).read_text()
         self.assertNotIn("import sqlite3", source)
 
 
 class TestTradeFactorsIntegration(unittest.TestCase):
 
-    def test_evaluate_mts_callable(self):
-        from prime_intelligence.prime_trade_factors import evaluate_mts
+    def test_evaluate_mmr_callable(self):
+        from prime_intelligence.prime_trade_factors import evaluate_mmr
         signal = {"direction": "LONG", "score": 30, "price_at_scan": 25.0}
-        tfe = evaluate_mts("SLV", signal)
-        self.assertEqual(tfe.strategy, "MTS")
+        tfe = evaluate_mmr("SLV", signal)
+        self.assertEqual(tfe.strategy, "MMR")
         self.assertEqual(tfe.duration_class, "MT")
         trigger_types = [t["type"] for t in tfe.exit_triggers]
         self.assertIn("RATIO_REVERSAL", trigger_types)

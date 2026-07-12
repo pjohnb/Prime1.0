@@ -45,20 +45,20 @@ class TestDistinctStrategies(unittest.TestCase):
         self.assertEqual(get_distinct_strategies(db_path=self.db), [])
 
     def test_distinct_sorted_no_dupes(self):
-        for strat in ("UOA", "PEAD", "UOA", "MTS"):
+        for strat in ("UOA", "PEAD", "UOA", "MMR"):
             insert_signal(symbol="X", strategy=strat, scan_ts="2026-06-02 10:00",
                           db_path=self.db)
-        self.assertEqual(get_distinct_strategies(db_path=self.db), ["MTS", "PEAD", "UOA"])
+        self.assertEqual(get_distinct_strategies(db_path=self.db), ["MMR", "PEAD", "UOA"])
 
     def test_strategies_endpoint(self):
         insert_signal(symbol="SPY", strategy="UOA", scan_ts="2026-06-02 10:00",
                       db_path=self.db)
-        insert_signal(symbol="GLD", strategy="MTS", scan_ts="2026-06-02 10:00",
+        insert_signal(symbol="GLD", strategy="MMR", scan_ts="2026-06-02 10:00",
                       db_path=self.db)
         resp = self.client.get("/api/v1/strategies")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["strategies"], ["MTS", "UOA"])
+        self.assertEqual(data["strategies"], ["MMR", "UOA"])
         self.assertEqual(data["count"], 2)
 
 

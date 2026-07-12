@@ -115,7 +115,7 @@ class TestGlossary(_Base):
 class TestStrategyPopovers(_Base):
     def test_all_eight_strategy_buttons_in_html(self):
         html = self._html()
-        for strat in ("PSA", "PEAD", "UOA", "SRS", "MTS", "IDX", "DK", "SHORT"):
+        for strat in ("PSA", "PEAD", "UOA", "SRS", "MMR", "IDX", "DK", "SHORT"):
             self.assertIn(f"toggleStrategyInfo('{strat}'", html,
                           f"Missing strategy button: {strat}")
 
@@ -126,7 +126,7 @@ class TestStrategyPopovers(_Base):
     def test_strategy_info_data_in_js(self):
         js = self._js()
         self.assertIn("STRATEGY_INFO", js)
-        for strat in ("PSA", "PEAD", "UOA", "SRS", "MTS", "IDX", "DK", "SHORT"):
+        for strat in ("PSA", "PEAD", "UOA", "SRS", "MMR", "IDX", "DK", "SHORT"):
             self.assertIn(f'"{strat}"', js, f"Missing STRATEGY_INFO entry: {strat}")
 
     def test_popover_toggle_function_in_js(self):

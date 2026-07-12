@@ -60,10 +60,10 @@ class TestScannerHealthAfterEvent(_DBTestCase):
         self.assertEqual(uoa["status"], "RUNNING")
 
     def test_scan_error_is_error(self):
-        log_ops_event("SCAN_ERROR", "mts_scanner", detail="API timeout", severity="ERROR", db_path=self.db_path)
+        log_ops_event("SCAN_ERROR", "mmr_scanner", detail="API timeout", severity="ERROR", db_path=self.db_path)
         health = check_scanner_health(db_path=self.db_path)
-        mts = next(h for h in health if h["scanner"] == "mts_scanner")
-        self.assertEqual(mts["status"], "ERROR")
+        mmr = next(h for h in health if h["scanner"] == "mmr_scanner")
+        self.assertEqual(mmr["status"], "ERROR")
 
 
 class TestAlertGeneration(_DBTestCase):

@@ -615,11 +615,11 @@ def get_advisory_briefing():
 
 
 _SCAN_EXPLAIN_PROMPTS = {
-    "mts": (
-        "You are analyzing a Momentum Trading System (MTS) scan run. "
-        "MTS uses RSI thresholds, SMA filters, and pct_from_sma to identify momentum setups. "
+    "mmr": (
+        "You are analyzing a Metals Mean-Reversion (MMR) scan run. "
+        "MMR uses RSI(14) to identify oversold bounce conditions on precious metals instruments. "
         "Explain in plain English why this run produced {signal_count} signal(s). "
-        "Reference the RSI/SMA/momentum metrics visible in the log. "
+        "Reference the RSI/SMA/pct_from_sma metrics visible in the log. "
         "If 0 signals: explain what conditions were not met. "
         "Be specific — mention actual metric values from the log if present. "
         "150–300 words."
@@ -2243,7 +2243,7 @@ _SCANNER_MAP: Dict[str, str] = {
     "pead":  "prime_scanners.prime_pead_scanner",
     "uoa":   "prime_scanners.prime_uoa_scanner",
     "srs":   "prime_scanners.prime_srs_scanner",
-    "mts":   "prime_scanners.prime_mts_scanner",
+    "mmr":   "prime_scanners.prime_mmr_scanner",
     "idx":   "prime_intelligence.prime_index_scanner",
     "short": "prime_intelligence.prime_short_scanner",
 }
@@ -2309,7 +2309,7 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
         # After scanner completes, run bridge to ingest new signals.
         # Suppressed in parallel batch mode (skip_bridge=True); coordinator
         # runs two consolidated bridge passes instead.
-        if not skip_bridge and scanner in ("psa", "pead", "uoa", "srs", "mts"):
+        if not skip_bridge and scanner in ("psa", "pead", "uoa", "srs", "mmr"):
             bridge_proc = _subprocess.run(
                 [_sys.executable, "-m", "prime_bridge.prime_signal_bridge", "--ingest-latest"],
                 cwd=str(_PROJECT_ROOT_PATH),
@@ -2385,7 +2385,7 @@ def _run_parallel_deep_scan() -> None:
     """WO-PRIME-PARALLEL-SCANS-01: concurrent deep-scan coordinator.
 
     Execution model:
-      Stage 1 (concurrent) — IDX, UOA, MTS, PEAD, SRS, API-semaphore gated.
+      Stage 1 (concurrent) — IDX, UOA, MMR, PEAD, SRS, API-semaphore gated.
       Bridge pass 1        — fires as soon as UOA + PEAD complete; gates PSA
                              signal-led upgrade (PSA reads prime_signals for
                              UOA triggers, which only exist after the bridge).
@@ -2415,7 +2415,7 @@ def _run_parallel_deep_scan() -> None:
         "pead":  "polygon",
         "uoa":   "schwab",
         "srs":   "polygon",
-        "mts":   "schwab",
+        "mmr":   "schwab",
         "idx":   "polygon",
         "short": "schwab",
     }
@@ -2452,7 +2452,7 @@ def _run_parallel_deep_scan() -> None:
 
     # Stage 1: five scanners concurrent, PSA submitted after bridge pass 1.
     # max_workers = Stage-1 count + 1 so PSA always has a free slot.
-    stage1 = ["idx", "uoa", "mts", "pead", "srs"]
+    stage1 = ["idx", "uoa", "mmr", "pead", "srs"]
     with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 1,
                                 thread_name_prefix="deepscan") as pool:
         for s in stage1:
@@ -2460,7 +2460,7 @@ def _run_parallel_deep_scan() -> None:
 
         # Block *this* thread (not a pool worker) until UOA + PEAD complete,
         # then run bridge pass 1 and submit PSA.  The pool keeps running
-        # IDX/MTS/SRS concurrently throughout.
+        # IDX/MMR/SRS concurrently throughout.
         uoa_done.wait()
         pead_done.wait()
         _run_bridge("1")
@@ -2484,7 +2484,7 @@ def trigger_scan(scanner: str):
 
     Sprint 25 Item 1. Returns 202 immediately; actual run happens async. If the
     scanner is already running, returns 409. Valid scanners: psa, pead, uoa,
-    srs, mts, idx, short.
+    srs, mmr, idx, short.
     """
     scanner = scanner.lower()
     if scanner not in _SCANNER_MAP:
@@ -2733,7 +2733,7 @@ _SCHEDULER: Any = None
 _SCAN_SCHEDULE_DEFAULTS = {
     "psa_time":           "09:45",
     "uoa_pead_srs_time":  "12:40",
-    "mts_time":           "12:45",
+    "mmr_time":           "12:45",
     "idx_time":           "12:45",
     "short_time":         "12:50",
     "schedule_enabled":   True,
@@ -2776,7 +2776,7 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
 
     psa_h, psa_m = _parse_time(schedule.get("psa_time", "09:45"))
     uoa_h, uoa_m = _parse_time(schedule.get("uoa_pead_srs_time", "12:40"))
-    mts_h, mts_m = _parse_time(schedule.get("mts_time", "12:45"))
+    mmr_h, mmr_m = _parse_time(schedule.get("mmr_time", "12:45"))
     idx_h, idx_m = _parse_time(schedule.get("idx_time", "12:45"))
     sht_h, sht_m = _parse_time(schedule.get("short_time", "12:50"))
 
@@ -2791,7 +2791,7 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
         ("scan_job_uoa",   _make_job("uoa"),   uoa_h, uoa_m),
         ("scan_job_pead",  _make_job("pead"),  uoa_h, uoa_m),
         ("scan_job_srs",   _make_job("srs"),   uoa_h, uoa_m),
-        ("scan_job_mts",   _make_job("mts"),   mts_h, mts_m),
+        ("scan_job_mmr",   _make_job("mmr"),   mmr_h, mmr_m),
         ("scan_job_idx",   _make_job("idx"),   idx_h, idx_m),
         ("scan_job_short", _make_job("short"), sht_h, sht_m),
     ]
