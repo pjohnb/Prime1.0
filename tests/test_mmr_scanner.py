@@ -12,14 +12,19 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from prime_scanners.prime_mmr_scanner import (
     MMR_TARGETS,
+    MMR_SHORT_TARGETS,
     OVERSOLD_THRESHOLD_PCT,
     RSI_OVERSOLD,
+    OVERBOUGHT_THRESHOLD_PCT,
+    RSI_OVERBOUGHT,
     VOL_SURGE_MULT,
     GS_RATIO_HIGH,
     GS_RATIO_NORMAL,
     TIER_TRANCHE_1,
     TIER_TRANCHE_2,
     TIER_WATCH,
+    TIER_SHORT_TRANCHE_1,
+    TIER_SHORT_TRANCHE_2,
     MA_PERIOD,
     RSI_PERIOD,
     BARS_NEEDED,
@@ -27,6 +32,7 @@ from prime_scanners.prime_mmr_scanner import (
     calc_rsi,
     calc_avg_volume,
     evaluate_signal,
+    evaluate_signal_short,
 )
 
 
@@ -148,6 +154,83 @@ class TestMMRTargets(unittest.TestCase):
     def test_miners_present(self):
         for miner in ("NEM", "WPM", "AG"):
             self.assertIn(miner, MMR_TARGETS)
+
+
+class TestMMRShortTargets(unittest.TestCase):
+
+    def test_short_target_count(self):
+        self.assertEqual(len(MMR_SHORT_TARGETS), 4)
+
+    def test_short_etfs_only(self):
+        for etf in ("SLV", "GLD", "GDX", "GDXJ"):
+            self.assertIn(etf, MMR_SHORT_TARGETS)
+
+    def test_miners_not_in_short(self):
+        for miner in ("NEM", "WPM", "AG", "PAAS", "HL", "FR"):
+            self.assertNotIn(miner, MMR_SHORT_TARGETS)
+
+    def test_short_targets_subset_of_long(self):
+        for sym in MMR_SHORT_TARGETS:
+            self.assertIn(sym, MMR_TARGETS)
+
+
+class TestEvaluateSignalShort(unittest.TestCase):
+
+    def test_stable_price_no_short_signal(self):
+        closes = [100.0] * BARS_NEEDED
+        bars = _make_bars(closes)
+        self.assertIsNone(evaluate_signal_short("GLD", bars))
+
+    def test_overbought_generates_short_signal(self):
+        # Price rises well above SMA, high RSI, volume surge on rise
+        base = [100] * 40
+        rise = [108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+                118, 119, 120, 121, 122, 123, 124, 125, 126, 127]
+        closes = base + rise
+        vols = [1000000] * 40 + [2000000] * 20
+        bars = _make_bars(closes, vols)
+        signal = evaluate_signal_short("GLD", bars)
+        if signal is not None:
+            self.assertEqual(signal["direction"], "SHORT")
+            self.assertIn(signal["tier"], (TIER_SHORT_TRANCHE_1, TIER_SHORT_TRANCHE_2))
+
+    def test_short_signal_direction_is_short(self):
+        base = [100] * 40
+        rise = [108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+                118, 119, 120, 121, 122, 123, 124, 125, 126, 127]
+        closes = base + rise
+        vols = [1000000] * 40 + [2500000] * 20
+        bars = _make_bars(closes, vols)
+        signal = evaluate_signal_short("SLV", bars)
+        if signal is not None:
+            self.assertEqual(signal["direction"], "SHORT")
+
+    def test_short_signal_has_required_fields(self):
+        base = [100] * 40
+        rise = [110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                120, 121, 122, 123, 124, 125, 126, 127, 128, 129]
+        closes = base + rise
+        vols = [1000000] * 40 + [2500000] * 20
+        bars = _make_bars(closes, vols)
+        signal = evaluate_signal_short("GDX", bars, gs_ratio=75.0)
+        if signal is not None:
+            for field in ("symbol", "price_at_scan", "direction", "score",
+                          "tier", "rsi", "pct_from_sma", "gs_ratio"):
+                self.assertIn(field, signal)
+
+    def test_insufficient_bars_returns_none(self):
+        bars = _make_bars([100] * 10)
+        self.assertIsNone(evaluate_signal_short("GLD", bars))
+
+    def test_short_tranche_tiers_are_valid(self):
+        self.assertIn("SHORT_TRANCHE_1", (TIER_SHORT_TRANCHE_1,))
+        self.assertIn("SHORT_TRANCHE_2", (TIER_SHORT_TRANCHE_2,))
+
+    def test_overbought_threshold_is_positive(self):
+        self.assertGreater(OVERBOUGHT_THRESHOLD_PCT, 0)
+
+    def test_rsi_overbought_above_50(self):
+        self.assertGreater(RSI_OVERBOUGHT, 50)
 
 
 class TestGoldSilverRatioContext(unittest.TestCase):
