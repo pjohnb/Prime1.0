@@ -791,8 +791,9 @@ def get_scenarios_endpoint():
       active_only=false  (default: true, only active scenarios)
       limit=N            (default: 100)
     """
-    from prime_scenarios.prime_scenarios_db import get_scenarios
+    from prime_scenarios.prime_scenarios_db import get_scenarios, init_scenarios_table
     try:
+        init_scenarios_table()  # idempotent — ensures table exists before first query
         direction = request.args.get("direction")
         type_num = request.args.get("type_num")
         active_only = request.args.get("active_only", "true").lower() != "false"
@@ -2526,6 +2527,24 @@ def _run_parallel_deep_scan() -> None:
         with _scan_lock:
             if _scan_state.get("short", {}).get("status") != "running":
                 _run_scanner_bg("short", short_mod, skip_bridge=False)
+
+
+@api_bp.route("/scans/all", methods=["POST"])
+def trigger_all_scans():
+    """POST /api/v1/scans/all -- run full parallel deep scan coordinator.
+
+    Mirrors the APScheduler _deep_scan_job(). Returns 202 immediately;
+    coordinator runs in a daemon thread with the same stage ordering and
+    bridge passes as the scheduled pre-market deep scan.
+    """
+    with _scan_lock:
+        running = [s for s, st in _scan_state.items() if st.get("status") == "running"]
+    if running:
+        return jsonify({"error": "scan already running", "running": running}), 409
+    t = threading.Thread(target=_run_parallel_deep_scan, daemon=True)
+    t.name = "manual-deep-scan"
+    t.start()
+    return jsonify({"status": "started"}), 202
 
 
 @api_bp.route("/scans/<string:scanner>", methods=["POST"])

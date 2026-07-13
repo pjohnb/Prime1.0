@@ -199,6 +199,8 @@ def _build_scenario(
             "symbol": s.get("symbol", ""),
             "scan_ts": s.get("scan_ts", ""),
             "staleness": s.get("_staleness", "FRESH"),
+            "score": s.get("score"),
+            "entry_price": s.get("entry_price"),
         }
         for s in constituent_signals
     ]

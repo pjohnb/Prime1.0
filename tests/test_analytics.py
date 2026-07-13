@@ -7,6 +7,7 @@ sector analytics, factor analysis, empty state, migration idempotent.
 import json
 import sys
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -411,7 +412,9 @@ class TestStrategyApprovalRate(unittest.TestCase):
         if self.db.exists():
             self.db.unlink()
 
-    def _insert_sig(self, strategy, status, scan_ts="2026-06-29T10:00:00"):
+    def _insert_sig(self, strategy, status, scan_ts=None):
+        if scan_ts is None:
+            scan_ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         insert_signal(
             symbol="AAPL", strategy=strategy, scan_ts=scan_ts,
             entry_price=100.0, status=status, db_path=self.db,
@@ -420,9 +423,12 @@ class TestStrategyApprovalRate(unittest.TestCase):
     def test_approval_rate_query_correct(self):
         from prime_analytics.prime_signals_db import get_strategy_approval_rates
         # 3 UOA signals: 2 APPROVED, 1 SUPPRESSED → approval_rate = 2/3*100 ≈ 66.7
+        _now = datetime.utcnow()
         self._insert_sig("UOA", "APPROVED")
-        self._insert_sig("UOA", "APPROVED", scan_ts="2026-06-29T10:01:00")
-        self._insert_sig("UOA", "SUPPRESSED", scan_ts="2026-06-29T10:02:00")
+        self._insert_sig("UOA", "APPROVED",
+                         scan_ts=(_now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"))
+        self._insert_sig("UOA", "SUPPRESSED",
+                         scan_ts=(_now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S"))
         rates = get_strategy_approval_rates(days=7, db_path=self.db)
         self.assertEqual(len(rates), 1)
         r = rates[0]
@@ -434,7 +440,8 @@ class TestStrategyApprovalRate(unittest.TestCase):
     def test_strategy_breakdown_includes_approval_rate_in_response(self):
         from unittest.mock import patch, MagicMock
         self._insert_sig("PSA", "APPROVED")
-        self._insert_sig("PSA", "WATCH", scan_ts="2026-06-29T10:01:00")
+        self._insert_sig("PSA", "WATCH",
+                         scan_ts=(datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"))
         with patch("prime_data.prime_db._db_path", return_value=self.db):
             mock_cfg = MagicMock()
             mock_cfg.trading_mode = "PAPER"
