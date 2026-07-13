@@ -25,6 +25,9 @@ API_PORT = 5001
 
 def create_app() -> Flask:
     """Create and configure the Flask application."""
+    from prime_scenarios.prime_scenarios_db import init_scenarios_table
+    init_scenarios_table()  # idempotent — ensures prime_scenarios table exists on startup
+
     app = Flask(__name__)
     app.register_blueprint(api_bp)
 

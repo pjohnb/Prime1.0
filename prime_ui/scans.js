@@ -75,33 +75,49 @@ async function _pollUntilIdle(scanner, btnId, msgEl) {
 
 // ── Run All ──────────────────────────────────────────────────────────────────
 
-const _RUN_ALL_SEQ = ['psa', 'pead', 'uoa', 'srs', 'idx', 'short'];
-
 async function runAllScans() {
   if (_runAllActive) return;
   _runAllActive = true;
   const btn = document.getElementById('run-all-btn');
   const prog = document.getElementById('run-all-progress');
   if (btn) btn.disabled = true;
+  if (prog) prog.textContent = 'Starting parallel scan coordinator…';
   _startLogPolling();
 
-  for (let i = 0; i < _RUN_ALL_SEQ.length; i++) {
-    const s = _RUN_ALL_SEQ[i];
-    if (prog) prog.textContent = `Running ${i + 1}/${_RUN_ALL_SEQ.length}: ${s.toUpperCase()}…`;
+  try {
+    const resp = await fetch(_scansApi() + '/scans/all', { method: 'POST' });
+    if (resp.status === 409) {
+      if (prog) prog.textContent = 'Scan already running — check status below.';
+      if (btn) btn.disabled = false;
+      _runAllActive = false;
+      return;
+    }
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      if (prog) prog.textContent = d.error || 'Error starting scan.';
+      if (btn) btn.disabled = false;
+      _runAllActive = false;
+      return;
+    }
+  } catch (e) {
+    if (prog) prog.textContent = 'API offline.';
+    if (btn) btn.disabled = false;
+    _runAllActive = false;
+    return;
+  }
+
+  if (prog) prog.textContent = 'Parallel scan running…';
+
+  // Poll until all scanners are idle (complete or error); timeout at ~10 min
+  for (let i = 0; i < 240; i++) {
+    await new Promise(r => setTimeout(r, 2500));
     try {
-      const resp = await fetch(_scansApi() + '/scans/' + s, { method: 'POST' });
-      if (resp.status === 202 || resp.status === 409) {
-        // Wait for this scanner to complete before starting next
-        for (let w = 0; w < 120; w++) {
-          await new Promise(r => setTimeout(r, 2500));
-          const sr = await fetch(_scansApi() + '/scans/status');
-          const sd = await sr.json();
-          const row = (sd.scanners || []).find(x => x.scanner.toLowerCase() === s);
-          if (!row || row.status === 'complete' || row.status === 'error') break;
-        }
-      }
-    } catch (e) {}
-    if (i < _RUN_ALL_SEQ.length - 1) await new Promise(r => setTimeout(r, 5000));
+      const sr = await fetch(_scansApi() + '/scans/status');
+      const sd = await sr.json();
+      const running = (sd.scanners || []).filter(x => x.status === 'running');
+      if (running.length === 0) break;
+      if (prog) prog.textContent = `Running: ${running.map(x => x.scanner.toUpperCase()).join(', ')}…`;
+    } catch (e) { break; }
   }
 
   if (prog) prog.textContent = 'All scans complete.';
