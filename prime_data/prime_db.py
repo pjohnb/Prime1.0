@@ -149,6 +149,8 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     init_batch_summary_table(db_path)
     from prime_analytics.prime_signals_db import init_signals_table
     init_signals_table(db_path)
+    from prime_scenarios.prime_scenarios_db import init_scenarios_table
+    init_scenarios_table(db_path)
 
     # Sprint 24 Item 4: trailing stop columns (idempotent migrations)
     _migrate_add_column_trade_log(db_path, "trailing_stop_pct", "REAL")

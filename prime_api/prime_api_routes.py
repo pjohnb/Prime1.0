@@ -781,6 +781,56 @@ def advisory_rebalance():
         return jsonify({"error": str(e), "suggestions": []}), 500
 
 
+@api_bp.route("/scenarios", methods=["GET"])
+def get_scenarios_endpoint():
+    """GET /api/v1/scenarios -- detected convergence scenarios (WO-PRIME-SCENARIOS-01).
+
+    Query params:
+      direction=LONG|SHORT
+      type_num=1..9
+      active_only=false  (default: true, only active scenarios)
+      limit=N            (default: 100)
+    """
+    from prime_scenarios.prime_scenarios_db import get_scenarios
+    try:
+        direction = request.args.get("direction")
+        type_num = request.args.get("type_num")
+        active_only = request.args.get("active_only", "true").lower() != "false"
+        limit = int(request.args.get("limit", 100))
+        scenarios = get_scenarios(
+            limit=limit,
+            active_only=active_only,
+            direction=direction or None,
+            type_num=type_num or None,
+        )
+        return jsonify({"scenarios": scenarios, "count": len(scenarios)}), 200
+    except Exception as e:
+        logger.error("scenarios endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/scenarios/detect", methods=["POST"])
+@require_local_token
+def detect_scenarios_endpoint():
+    """POST /api/v1/scenarios/detect -- run scenario detection against current signals.
+
+    Reads all APPROVED signals from prime_signals, runs the convergence engine,
+    persists new scenario records. Engine failure returns an error response but
+    does not affect individual signal records.
+    Body: {} (no parameters required; uses all current APPROVED signals)
+    """
+    from prime_analytics.prime_signals_db import get_signals as fetch_signals
+    from prime_scenarios.prime_scenario_engine import run_detection
+    try:
+        signals = fetch_signals(limit=1000)
+        approved = [s for s in signals if s.get("status") == "APPROVED"]
+        result = run_detection(approved)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error("detect_scenarios endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/strategies", methods=["GET"])
 def get_strategies():
     """GET /api/v1/strategies -- distinct strategies for the UI filter (Item 3)."""
