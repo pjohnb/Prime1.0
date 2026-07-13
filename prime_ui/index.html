@@ -176,6 +176,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
   <div class="tab active" onclick="showView('dashboard')">Dashboard</div>
   <div class="tab" onclick="showView('scans')">Scans</div>
   <div class="tab" onclick="showView('signals')">Signals</div>
+  <div class="tab" onclick="showView('scenarios')">Scenarios</div>
   <div class="tab" onclick="showView('portfolio')">Portfolio</div>
   <div class="tab" id="health-tab-btn" onclick="showView('health')">Health</div>
   <div class="tab" onclick="showView('history')">History</div>
@@ -454,6 +455,26 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
     <thead><tr><th data-tooltip="Time of signal generation (Eastern Time). Multiple entries for the same symbol reflect successive scan runs.">Time</th><th data-tooltip="Ticker symbol of the scanned security or ETF.">Symbol</th><th data-tooltip="Directional alignment score. IDX: measures how many of 6 trend components (SMA50, SMA100, SMA200, SMA regime, SMA crossover, relative strength vs. SPY) agree on direction. Scale 0–100; only 7 discrete values possible. Higher = stronger directional consensus. Note: Score is not comparable across strategies — IDX, UOA, and PSA each compute Score differently.">Score</th><th data-tooltip="Signal source. IDX = sector ETF trend scanner. UOA = unusual options activity scanner. PSA = price/momentum scanner. SRS = sector recovery scanner. MMR = metals mean-reversion scanner.">Strategy</th><th data-tooltip="The specific event or pattern that generated the signal (e.g. UOA_CALL = unusual call options sweep detected).">Trigger</th><th data-tooltip="Signal conviction level. STRONG_LONG/STRONG_SHORT = directional alignment (Score ≥ 83.3) AND volume ≥ 120% of 20-day average — both required. WEAK_LONG/WEAK_SHORT = directional alignment confirmed but volume below threshold. A perfect Score (100.0) does not guarantee STRONG tier if volume does not confirm. Tier is the primary actionability indicator.">Tier <span id="tier-help-icon" title="Tier = [Strength]-[Direction]. Strength: STRONG (high conviction), WATCH (moderate conviction — monitor closely), WEAK (informational only), TRANCHE_1 (MMR LONG Phase 1 entry), TRANCHE_2 (MMR LONG Phase 2 confirmed entry — scaling in), SHORT_TRANCHE_1 (MMR SHORT Phase 1 entry — ETF-only), SHORT_TRANCHE_2 (MMR SHORT Phase 2 confirmed entry — ETF-only). Direction: LONG (bullish) or SHORT (bearish). Some tiers omit direction — see DIR column." style="cursor:help;font-size:11px;opacity:.7">(?)</span></th><th data-tooltip="Dorsey Wright DK (Don't Know) sentiment indicator. NEUTRAL = no adverse sentiment flag. Adverse DK status suppresses signal approval.">DK Status</th><th data-tooltip="Suggested entry price at time of signal generation. Current market price may differ — always verify before executing.">Entry</th><th data-tooltip="APPROVED = signal passed all screening gates and is actionable. Note: APPROVED does not mean volume-confirmed — a WEAK tier signal can still be APPROVED. REJECTED_STAGE0 = eliminated at initial screening (volume, price, or universe filter). Other rejection statuses indicate which gate the signal failed.">Status</th><th data-tooltip="Buy = enter a LONG position. For SHORT signals, the Buy button initiates a short sell. Disabled when signal is not APPROVED.">Actions</th></tr></thead>
     <tbody id="sig-body"></tbody>
   </table>
+</div>
+
+<!-- WO-PRIME-SCENARIOS-01 Phase 2: Scenarios tab -->
+<div class="view" id="view-scenarios">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Signal Convergence Scenarios</span>
+    <button class="btn-refresh" onclick="loadScenarios()" style="font-size:12px;padding:5px 14px">Refresh</button>
+  </div>
+  <div id="scen-cards"></div>
+</div>
+
+<!-- Scenario ⓘ info modal (WO-PRIME-SCENARIOS-01 Phase 2) -->
+<div id="scen-info-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeScenarioInfo()">
+  <div class="modal-box" style="max-width:520px;max-height:80vh;overflow-y:auto">
+    <h3 id="scen-info-title" style="margin-bottom:12px;font-size:15px;color:var(--text)"></h3>
+    <p id="scen-info-body" style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:20px"></p>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeScenarioInfo()">Close</button>
+    </div>
+  </div>
 </div>
 
 <!-- Sprint 23 Item 2: Settings view -->
@@ -893,6 +914,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
 <script src="orders.js"></script>
 <script src="history.js"></script>
 <script src="help.js"></script>
+<script src="scenarios.js"></script>
 <script>
 const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
 
@@ -907,6 +929,7 @@ function showView(id) {
   if (id === 'scans') loadScans();
   if (id === 'positions') loadPositions();
   if (id === 'signals') loadSignals();
+  if (id === 'scenarios') loadScenarios();
   if (id === 'settings') loadSettings();
   if (id === 'portfolio') loadPortfolio();
   if (id === 'history') loadHistory();
@@ -968,6 +991,7 @@ function refreshActiveView() {
   if (active.id === 'view-dashboard') loadDashboard();
   else if (active.id === 'view-positions') loadPositions();
   else if (active.id === 'view-signals') loadSignals();
+  else if (active.id === 'view-scenarios') loadScenarios();
   else if (active.id === 'view-portfolio') loadPortfolio();
 }
 

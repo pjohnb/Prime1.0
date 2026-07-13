@@ -357,6 +357,20 @@ function _renderSettings() {
       <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">IDX and SHORT scanners use Polygon for daily price bars. Change takes effect on next scan.</div>
     </div>
 
+    <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">SCENARIOS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
+        <label style="display:flex;flex-direction:column;gap:4px" title="Maximum number of scenario cards shown in the Scenarios tab. FIFO — newest first. Stored locally in this browser.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Scenario Max Rows</span>
+          <input type="number" id="scenario-max-rows-input" min="1" max="200"
+            value="${parseInt(localStorage.getItem('prime_scenario_max_rows') || '20', 10)}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"
+            onchange="localStorage.setItem('prime_scenario_max_rows', this.value)"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 20. FIFO — newest first.</span>
+        </label>
+      </div>
+    </div>
+
     <div class="panel-title" style="margin-bottom:10px">STRATEGY THRESHOLDS</div>
     ${Object.entries(_STRATEGY_LABELS).map(([key, meta]) => _stratCard(key, meta, thresholds[key] || {})).join('')}
 
