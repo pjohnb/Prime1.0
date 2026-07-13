@@ -2587,11 +2587,14 @@ def _run_parallel_deep_scan() -> None:
         for s in stage1:
             pool.submit(_guarded_run, s)
 
-        # Block *this* thread (not a pool worker) until UOA + PEAD complete,
-        # then run bridge pass 1 and submit PSA.  The pool keeps running
-        # IDX/MMR/SRS concurrently throughout.
+        # Block *this* thread (not a pool worker) until UOA completes, then
+        # run bridge pass 1 and submit PSA.  PSA's signal-led gate requires
+        # only UOA signals in prime_signals; PEAD is supplementary and runs
+        # concurrently — its signals reach bridge pass 2.  Previously gated on
+        # both UOA+PEAD, but PEAD contends for polygon_sem with IDX/SRS (free
+        # plan cap=1) and can block the coordinator indefinitely, preventing
+        # PSA and SHORT from firing at all.
         uoa_done.wait()
-        pead_done.wait()
         _run_bridge("1")
         pool.submit(_guarded_run, "psa")
     # ThreadPoolExecutor.__exit__ calls shutdown(wait=True) — all work done here.
