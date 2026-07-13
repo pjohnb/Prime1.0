@@ -17,8 +17,10 @@ Scenario types (Types 4+ and 9 deferred — require MTFA scanner):
 
 Staleness framework:
   - PEAD: EXEMPT (always eligible, multi-session drift play)
-  - All others: scan_ts date < today (ET) → VETOED (hard 1-session veto)
+  - All others: scan_ts date < today (ET midnight) → VETOED (hard 1-session veto)
   - Within scanner soft window: FRESH; beyond soft window: SOFT_STALE
+  - Session boundary: ET midnight (America/New_York); handles EST/EDT automatically
+  - Naive `now` arguments are always treated as UTC then converted to ET
 
 Signal direction matching:
   - IDX tiers use STRONG-LONG / WEAK-LONG / STRONG-SHORT / WEAK-SHORT
@@ -28,10 +30,13 @@ Signal direction matching:
 """
 
 import logging
+import pytz
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_ET = pytz.timezone("America/New_York")
 
 # ---------------------------------------------------------------------------
 # Scenario type registry
@@ -65,6 +70,22 @@ PEAD_MAX_SESSIONS = 5  # sessions PEAD remains eligible (no specific number give
 # Staleness helpers
 # ---------------------------------------------------------------------------
 
+def _et_now_naive(now: Optional[datetime] = None) -> datetime:
+    """Return the current time in ET as a naive datetime.
+
+    Naive `now` is treated as UTC before conversion. This is the correct
+    reference for all session-boundary decisions in a US equity trading system.
+    """
+    if now is None:
+        reference_aware = datetime.utcnow().replace(tzinfo=timezone.utc)
+    elif now.tzinfo is None:
+        reference_aware = now.replace(tzinfo=timezone.utc)
+    else:
+        reference_aware = now
+    et = reference_aware.astimezone(_ET)
+    return et.replace(tzinfo=None)
+
+
 def _parse_ts(ts_str: str) -> Optional[datetime]:
     """Parse an ISO or 'YYYY-MM-DD HH:MM' timestamp to a naive datetime."""
     if not ts_str:
@@ -85,31 +106,32 @@ def get_signal_staleness(signal: Dict[str, Any], now: Optional[datetime] = None)
     """Return 'FRESH', 'SOFT_STALE', or 'VETOED' for a signal.
 
     PEAD is EXEMPT from the hard veto and remains FRESH up to PEAD_MAX_SESSIONS.
-    All other strategies are VETOED if their scan_ts date precedes the reference date.
-    Session boundary is UTC-midnight (deterministic across platforms).
+    All other strategies are VETOED if their scan_ts date precedes today in ET.
+    Session boundary is ET midnight (America/New_York) — handles EST/EDT automatically.
+    Naive `now` is treated as UTC then converted to ET.
     """
     strategy = signal.get("strategy", "")
     scan_ts = _parse_ts(signal.get("scan_ts", ""))
     if scan_ts is None:
         return "VETOED"
 
-    reference = now or datetime.utcnow()
-    today = datetime(reference.year, reference.month, reference.day)
+    et_ref = _et_now_naive(now)
+    today = datetime(et_ref.year, et_ref.month, et_ref.day)  # ET midnight, naive
 
     if strategy == "PEAD":
-        age_days = (reference - scan_ts).days
+        age_days = (et_ref - scan_ts).days
         if age_days > PEAD_MAX_SESSIONS:
             return "VETOED"
         return "FRESH"
 
-    # Hard veto: scan_ts date is before today
+    # Hard veto: scan_ts date is before today (ET)
     scan_date = datetime(scan_ts.year, scan_ts.month, scan_ts.day)
     if scan_date < today:
         return "VETOED"
 
-    # Soft window check
+    # Soft window check (elapsed time measured in ET)
     soft_window = _SOFT_WINDOWS.get(strategy, timedelta(hours=8))
-    age = reference - scan_ts
+    age = et_ref - scan_ts
     if age > soft_window:
         return "SOFT_STALE"
 

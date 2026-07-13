@@ -96,10 +96,11 @@ class TestStaleness(unittest.TestCase):
     def _sig_ts(self, strategy, ts_str):
         return {"strategy": strategy, "scan_ts": ts_str}
 
-    # Use a fixed reference to avoid timezone/midnight edge-cases
-    FIXED_NOW = datetime(2026, 7, 12, 15, 0, 0)  # 3 PM UTC, a reference moment
-    FIXED_TODAY = FIXED_NOW.strftime("%Y-%m-%d")
-    FIXED_YESTERDAY = (FIXED_NOW - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Fixed UTC reference; staleness framework treats naive `now` as UTC → converts to ET.
+    # 15:00 UTC = 11:00 ET (EDT, July 2026), so ET date = 2026-07-12 = FIXED_TODAY.
+    FIXED_NOW = datetime(2026, 7, 12, 15, 0, 0)
+    FIXED_TODAY = "2026-07-12"
+    FIXED_YESTERDAY = "2026-07-11"
 
     def test_today_signal_is_fresh(self):
         sig = self._sig_ts("IDX", f"{self.FIXED_TODAY} 10:00")
@@ -331,9 +332,11 @@ class TestType8MetalsMR(unittest.TestCase):
 class TestStalenessInDetection(unittest.TestCase):
 
     def test_vetoed_signal_excluded(self):
-        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-        signals = [_idx("STRONG-LONG", scan_ts=f"{yesterday} 09:30")]
-        result = detect_scenarios(signals, now=_now())
+        # Use a fixed UTC reference to avoid UTC/ET midnight crossover ambiguity.
+        # 15:00 UTC = 11:00 ET; ET today = 2026-07-12; ET yesterday = 2026-07-11.
+        FIXED_NOW = datetime(2026, 7, 12, 15, 0, 0)
+        signals = [_idx("STRONG-LONG", scan_ts="2026-07-11 09:30")]
+        result = detect_scenarios(signals, now=FIXED_NOW)
         t1 = [s for s in result if s["type_num"] == "1"]
         self.assertEqual(len(t1), 0)
 
