@@ -512,6 +512,35 @@ def _tier3_recommendation(
     return f"{symbol}: {', '.join(ctx_parts)}. Recommend: {action}."
 
 
+def _schwab_has_stop(symbol: str, account_suffix: str, ops: Dict[str, Any]) -> bool:
+    """Return True if Schwab has an open STOP order for symbol on this account.
+
+    Addendum to WO-PRIME-SCENARIO-EXECUTE-01: stops placed outside PRIME (or after
+    a restart) should not trigger NO_STOP_VIOLATION escalation. Fail-open — returns
+    False on any error so a transient API blip never silently suppresses a real alert.
+    Only runs in LIVE mode; PAPER mode always returns False.
+    """
+    if (ops.get("trading_mode") or "PAPER").upper() != "LIVE":
+        return False
+    try:
+        from prime_trading.prime_schwab import SchwabClient
+        from prime_trading.prime_schwab_orders import has_open_stop_order
+        sc = SchwabClient()
+        sc.connect()
+        if not sc.connected:
+            return False
+        resp = sc.client.get_account_numbers()
+        if resp.status_code != 200:
+            return False
+        for acct in (resp.json() or []):
+            if (acct.get("accountNumber") or "")[-4:] != account_suffix:
+                continue
+            return has_open_stop_order(symbol, acct.get("hashValue", ""), sc)
+    except Exception as exc:
+        logger.debug("_schwab_has_stop: check failed for %s/%s: %s", symbol, account_suffix, exc)
+    return False
+
+
 def _check_no_stop_violation(
     position: Dict[str, Any],
     ops: Dict[str, Any],
@@ -535,6 +564,15 @@ def _check_no_stop_violation(
 
     symbol = (position.get("symbol") or "").upper()
     log_id = position.get("log_id", "")
+
+    # Addendum to WO-PRIME-SCENARIO-EXECUTE-01: before escalating, verify no Schwab
+    # stop exists that PRIME has not recorded (e.g. placed outside PRIME or after restart).
+    account_suffix = (position.get("account") or "").strip()[-4:]
+    if _schwab_has_stop(symbol, account_suffix, ops):
+        _reset_escalation(log_id, "NO_STOP")
+        logger.info("NO_STOP_VIOLATION suppressed: Schwab stop found for %s/%s", symbol, account_suffix)
+        return False
+
     grace  = int(ops.get("no_stop_violation_grace_checks", 1))
     count  = _increment_escalation(log_id, "NO_STOP")
     severity = "CRITICAL" if count > grace else "WARN"

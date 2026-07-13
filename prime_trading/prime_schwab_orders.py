@@ -348,6 +348,7 @@ def attach_stop_order(
     account_hash: str,
     schwab_client,
     db_path: Optional[Path] = None,
+    min_stop_price: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Submit a protective STOP order to Schwab as a guaranteed follow-up after entry.
 
@@ -359,6 +360,11 @@ def attach_stop_order(
     LONG: SELL STOP at stop_price (price floor).
     SHORT: BUY STOP at stop_price (buy-to-cover trigger).
 
+    min_stop_price (addendum — stop escalation guard): when provided, the proposed
+    stop_price must not be worse than this floor (LONG: stop_price >= min_stop_price;
+    SHORT: stop_price <= min_stop_price). Callers set this to the trailing-stop
+    high-water level so an escalated stop can never be degraded by a re-attachment.
+
     Returns {order_id, status}. Raises OrderGateError on rejection or missing params.
     If stop attachment fails after a confirmed entry fill, the caller must escalate
     immediately to a Tier 2 alert (see prime_stop_monitor.py Part B).
@@ -367,6 +373,23 @@ def attach_stop_order(
     direction  = (direction or "LONG").upper()
     instruction = "BUY" if direction == "SHORT" else "SELL"
     stop_price  = round(float(stop_price), 2)
+
+    # Addendum to WO-PRIME-SCENARIO-EXECUTE-01: stop escalation guard.
+    # Never submit a stop that degrades a trailing stop already at a better level.
+    if min_stop_price is not None and float(min_stop_price) > 0:
+        _floor = round(float(min_stop_price), 2)
+        if direction == "LONG" and stop_price < _floor:
+            raise OrderGateError(
+                "STOP_ESCALATION",
+                f"attach_stop_order: proposed stop {stop_price:.2f} < high-water floor "
+                f"{_floor:.2f} for LONG {symbol} — would degrade escalated trailing stop",
+            )
+        elif direction == "SHORT" and stop_price > _floor:
+            raise OrderGateError(
+                "STOP_ESCALATION",
+                f"attach_stop_order: proposed stop {stop_price:.2f} > high-water ceiling "
+                f"{_floor:.2f} for SHORT {symbol} — would degrade escalated trailing stop",
+            )
 
     if not symbol or int(qty) <= 0 or stop_price <= 0 or not account_hash:
         raise OrderGateError(
@@ -419,3 +442,36 @@ def attach_stop_order(
         pass
 
     return {"order_id": stop_order_id, "status": "STOP_SUBMITTED"}
+
+
+def has_open_stop_order(
+    symbol: str,
+    account_hash: str,
+    schwab_client,
+) -> bool:
+    """Return True if an open STOP order already exists for symbol on this account.
+
+    Addendum to WO-PRIME-SCENARIO-EXECUTE-01: pre-attachment guard prevents
+    duplicate stops. Fail-open — returns False on any API error so a transient
+    network blip never silently blocks stop attachment.
+    """
+    symbol = (symbol or "").upper().strip()
+    try:
+        resp = schwab_client.client.get_orders_for_account(account_hash)
+        if resp.status_code != 200:
+            return False
+        for o in (resp.json() or []):
+            if (o.get("status") or "").upper() not in (
+                "AWAITING_PARENT_ORDER", "AWAITING_CONDITION",
+                "PENDING_ACTIVATION", "QUEUED", "WORKING", "PENDING_REPLACE",
+            ):
+                continue
+            if (o.get("orderType") or "").upper() not in ("STOP", "STOP_LIMIT"):
+                continue
+            for leg in (o.get("orderLegCollection") or []):
+                if (leg.get("instrument", {}).get("symbol") or "").upper() == symbol:
+                    logger.debug("has_open_stop_order: existing stop found for %s", symbol)
+                    return True
+    except Exception as exc:
+        logger.debug("has_open_stop_order: check failed for %s: %s", symbol, exc)
+    return False

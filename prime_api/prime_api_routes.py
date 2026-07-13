@@ -294,6 +294,17 @@ def execute_signal_endpoint(signal_id):
     if user_qty < 0:
         user_qty = 0
 
+    # WO-PRIME-SCENARIO-EXECUTE-01: optional per-execution overrides (all backward-compatible).
+    target_account  = (payload.get("target_account") or "").strip()  # 4-char suffix; routes to this account only
+    direction_param = (payload.get("direction") or "LONG").strip().upper()
+    if direction_param not in ("LONG", "SHORT"):
+        direction_param = "LONG"
+    stop_type_param = (payload.get("stop_type") or "").strip().upper()
+    if stop_type_param not in ("FIXED", "TRAILING"):
+        stop_type_param = ""  # empty = no stop attachment requested
+    stop_pct_raw  = payload.get("stop_pct")
+    trail_pct_raw = payload.get("trailing_stop_pct")
+
     if not confirmed:
         return jsonify({"error": "confirmed is required to execute a signal"}), 400
 
@@ -357,6 +368,29 @@ def execute_signal_endpoint(signal_id):
     orders_placed = []
     total_allocated = 0
 
+    # WO-PRIME-SCENARIO-EXECUTE-01: pre-compute stop price when caller requests it.
+    _exec_stop_price = 0.0
+    _exec_trail_pct  = None
+    if stop_type_param:
+        try:
+            _sops: dict = {}
+            try:
+                import json as _jmod
+                with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as _sf:
+                    _sops = _jmod.load(_sf)
+            except Exception:
+                pass
+            _def_sp = float(_sops.get("default_stop_loss_pct", 3.0))
+            _sp_pct = float(stop_pct_raw) if stop_pct_raw is not None else _def_sp
+            _exec_stop_price = round(
+                execution_price * (1 + _sp_pct / 100.0) if direction_param == "SHORT"
+                else execution_price * (1 - _sp_pct / 100.0), 4,
+            )
+            if stop_type_param == "TRAILING" and trail_pct_raw is not None:
+                _exec_trail_pct = float(trail_pct_raw)
+        except (TypeError, ValueError):
+            pass
+
     try:
         from prime_trading.prime_mata import load_accounts
         mata_accounts = load_accounts()
@@ -385,6 +419,9 @@ def execute_signal_endpoint(signal_id):
                     if not _live_profile_all and mata_entry:
                         if mata_entry.get("name", "").strip().lower() != _live_profile:
                             continue
+                    # WO-PRIME-SCENARIO-EXECUTE-01: target_account overrides profile when set.
+                    if target_account and not suffix.endswith(target_account):
+                        continue
                     try:
                         bp_resp = schwab_client.client.get_account(hash_val)
                         if bp_resp.status_code == 200:
@@ -412,7 +449,7 @@ def execute_signal_endpoint(signal_id):
                         log_id = insert_trade(
                             strategy=strategy,
                             symbol=symbol,
-                            direction="LONG",
+                            direction=direction_param,
                             mode="LIVE",
                             order_type=order_type,
                             shares=shares,
@@ -427,6 +464,8 @@ def execute_signal_endpoint(signal_id):
                             signal_id=signal_id,
                             stage_number=1 if staged_entry_on else None,
                             stage_total=stage_count if staged_entry_on else None,
+                            stop_price=_exec_stop_price if _exec_stop_price > 0 else None,
+                            stop_type=stop_type_param if stop_type_param else None,
                         )
                         orders_placed.append({
                             "account": suffix,
@@ -436,6 +475,33 @@ def execute_signal_endpoint(signal_id):
                             "status": "SUBMITTED",
                         })
                         total_allocated += shares
+                        # WO-PRIME-SCENARIO-EXECUTE-01: attach protective stop after fill.
+                        if _exec_stop_price > 0:
+                            try:
+                                from prime_trading.prime_schwab_orders import (
+                                    attach_stop_order, has_open_stop_order,
+                                )
+                                if has_open_stop_order(symbol, hash_val, schwab_client):
+                                    logger.info(
+                                        "execute_signal: stop already on Schwab for %s/%s — skipping",
+                                        symbol, suffix,
+                                    )
+                                else:
+                                    attach_stop_order(
+                                        symbol=symbol, qty=shares,
+                                        direction=direction_param,
+                                        stop_price=_exec_stop_price,
+                                        account_hash=hash_val,
+                                        schwab_client=schwab_client,
+                                    )
+                                    if stop_type_param == "TRAILING" and _exec_trail_pct is not None and log_id:
+                                        from prime_data.prime_db import update_trailing_stop
+                                        update_trailing_stop(log_id, _exec_trail_pct)
+                            except Exception as _stop_err:
+                                logger.error(
+                                    "execute_signal: stop attachment failed for %s/%s: %s",
+                                    symbol, suffix, _stop_err,
+                                )
                     except Exception as order_err:
                         logger.error("execute_signal LIVE order failed for %s: %s", suffix, order_err)
                         orders_placed.append({
@@ -456,6 +522,11 @@ def execute_signal_endpoint(signal_id):
             paper_accounts = _filtered if _filtered else mata_accounts
         else:
             paper_accounts = mata_accounts if mata_accounts else [{"name": "PAPER", "buying_power": 100000}]
+        # WO-PRIME-SCENARIO-EXECUTE-01: target_account filters to a single account.
+        if target_account:
+            _ta_filtered = [a for a in paper_accounts if str(a.get("name", "")).endswith(target_account)]
+            if _ta_filtered:
+                paper_accounts = _ta_filtered
         for acct in paper_accounts:
             bp = float(acct.get("buying_power", 100000) or 100000)
             shares = user_qty if user_qty > 0 else int(bp * max_order_pct / execution_price)
@@ -466,7 +537,7 @@ def execute_signal_endpoint(signal_id):
                 log_id = insert_trade(
                     strategy=strategy,
                     symbol=symbol,
-                    direction="LONG",
+                    direction=direction_param,
                     mode="PAPER",
                     order_type=order_type,
                     shares=shares,
@@ -480,7 +551,12 @@ def execute_signal_endpoint(signal_id):
                     signal_id=signal_id,
                     stage_number=1 if staged_entry_on else None,
                     stage_total=stage_count if staged_entry_on else None,
+                    stop_price=_exec_stop_price if _exec_stop_price > 0 else None,
+                    stop_type=stop_type_param if stop_type_param else None,
                 )
+                if stop_type_param == "TRAILING" and _exec_trail_pct is not None and log_id:
+                    from prime_data.prime_db import update_trailing_stop
+                    update_trailing_stop(log_id, _exec_trail_pct)
                 orders_placed.append({
                     "account": acct_name,
                     "shares": shares,
@@ -545,6 +621,8 @@ def execute_signal_endpoint(signal_id):
         "staged_entry":    staged_entry_on,
         "stage_count":     stage_count if staged_entry_on else None,
         "stage_trigger":   stage_trigger if staged_entry_on else None,
+        "stop_price":      _exec_stop_price if _exec_stop_price > 0 else None,
+        "stop_type":       stop_type_param if stop_type_param else None,
     }), 200 if orders_placed else 400
 
 

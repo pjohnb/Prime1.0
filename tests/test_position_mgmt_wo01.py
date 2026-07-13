@@ -98,6 +98,67 @@ class TestAttachStopOrder(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Part A — stop escalation guard (addendum to WO-PRIME-SCENARIO-EXECUTE-01)
+# ---------------------------------------------------------------------------
+
+class TestStopEscalationGuard(unittest.TestCase):
+    """Addendum: min_stop_price guard prevents degrading an escalated trailing stop."""
+
+    def _mock_schwab(self):
+        client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.headers = {"Location": "https://api.schwab.com/orders/1"}
+        resp.json.return_value = {}
+        client.client.place_order.return_value = resp
+        return client
+
+    def test_long_stop_below_floor_raises(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order, OrderGateError
+        # Trailing stop has escalated: floor is $203.70; proposed $194 would degrade it.
+        with self.assertRaises(OrderGateError) as ctx:
+            attach_stop_order("AAPL", 10, "LONG", 194.0, "HASH", self._mock_schwab(),
+                              min_stop_price=203.70)
+        self.assertEqual(ctx.exception.gate, "STOP_ESCALATION")
+
+    def test_short_stop_above_ceiling_raises(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order, OrderGateError
+        # Trailing stop (for SHORT) has escalated down: ceiling is $96.30; $102 would degrade it.
+        with self.assertRaises(OrderGateError) as ctx:
+            attach_stop_order("TSLA", 5, "SHORT", 102.0, "HASH", self._mock_schwab(),
+                              min_stop_price=96.30)
+        self.assertEqual(ctx.exception.gate, "STOP_ESCALATION")
+
+    def test_long_stop_at_floor_passes(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        # Exactly at the floor — must be accepted (>= not >).
+        result = attach_stop_order("AAPL", 10, "LONG", 203.70, "HASH", self._mock_schwab(),
+                                   min_stop_price=203.70)
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+    def test_long_stop_above_floor_passes(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        # Better than the floor — accepted.
+        result = attach_stop_order("AAPL", 10, "LONG", 210.0, "HASH", self._mock_schwab(),
+                                   min_stop_price=203.70)
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+    def test_none_min_stop_price_skips_guard(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        # No floor provided — guard is disabled, any stop_price accepted.
+        result = attach_stop_order("SPY", 3, "LONG", 400.0, "HASH", self._mock_schwab(),
+                                   min_stop_price=None)
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+    def test_zero_min_stop_price_skips_guard(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        # Floor of 0 — guard is disabled (sentinel for "no known floor").
+        result = attach_stop_order("SPY", 3, "LONG", 400.0, "HASH", self._mock_schwab(),
+                                   min_stop_price=0.0)
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+
+# ---------------------------------------------------------------------------
 # Part A — LIVE create_trade wires stop params + attaches stop order
 # ---------------------------------------------------------------------------
 

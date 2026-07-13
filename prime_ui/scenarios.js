@@ -43,6 +43,16 @@ const _SCENARIO_MODAL_COPY = {
   }
 };
 
+// WO-PRIME-SCENARIO-EXECUTE-01: default budget by scenario type.
+const _SCENARIO_BUDGETS = {
+  "1": 500, "2": 500, "3": 750, "4": 1000, "4+": 1500,
+  "6": 500, "7": 500, "8": 500, "9": 750,
+};
+
+// Registry of rendered scenario objects (scenario_id → sc) for the Execute dialog.
+const _scenarioRegistry = {};
+let _pendingScenarioExec = null;
+
 function getScenarioMaxRows() {
   return parseInt(localStorage.getItem('prime_scenario_max_rows') || '20', 10);
 }
@@ -153,19 +163,61 @@ function _scExecuteArgs(sc) {
   };
 }
 
+function _scGetFillData(scenarioId) {
+  try {
+    const raw = sessionStorage.getItem('prime_scen_exec_' + scenarioId);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function _renderExecutedCard(sc, fill) {
+  const borderColor = '#22c55e';
+  const acctLabels  = { '926': 'Joint (...926)', '461': 'Custodial (...461)', '779': 'IRA (...779)' };
+  const acctLabel   = acctLabels[fill.account] || '...' + fill.account;
+  const stopLabel   = fill.stop_type === 'TRAILING'
+    ? 'Trailing ' + fill.stop_pct + '%'
+    : 'Fixed ' + fill.stop_pct + '%';
+  return `<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:6px;padding:14px 16px">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <span style="background:#14532d;color:#86efac;border:1px solid #16a34a;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;font-family:var(--mono)">EXECUTED</span>
+    <span style="font-weight:700;font-size:13px;color:var(--text)">${sc.type_name || '--'}</span>
+    ${_scDirTag(sc.direction)}
+    <span style="font-size:11px;color:var(--text3)">${fill.mode || 'PAPER'}</span>
+  </div>
+  <div style="display:flex;align-items:baseline;gap:20px;margin-bottom:10px;flex-wrap:wrap">
+    <span style="font-size:18px;font-weight:700;color:var(--text);font-family:var(--mono)">${sc.primary_symbol || '--'}</span>
+    <span style="font-size:12px;color:var(--text3)">Fill <span style="color:#86efac;font-weight:600;font-family:var(--mono)">$${Number(fill.fill_price || 0).toFixed(2)}</span></span>
+    <span style="font-size:12px;color:var(--text3)">Qty <span style="color:var(--text2);font-weight:600">${fill.qty}</span></span>
+    <span style="font-size:12px;color:var(--text3)">Acct <span style="color:var(--text2)">${acctLabel}</span></span>
+    <span style="font-size:12px;color:var(--text3)">Stop <span style="color:var(--amber)">${stopLabel}</span></span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button onclick="openScenarioInfo('${sc.type_num}')"
+      style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;min-width:32px"
+      title="Learn about this scenario type">ⓘ</button>
+    <button onclick="showView('portfolio')"
+      style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:4px 14px;border-radius:4px;font-size:12px;cursor:pointer">Close Position &rarr;</button>
+  </div>
+</div>`;
+}
+
 function _renderScenarioCard(sc) {
+  _scenarioRegistry[sc.scenario_id] = sc;
+
+  const fill = _scGetFillData(sc.scenario_id);
+  if (fill) return _renderExecutedCard(sc, fill);
+
   const constituents = sc.constituent_signals || [];
   const ep = _scEntryPrice(constituents);
   const entryStr = ep != null ? '$' + Number(ep).toFixed(2) : '—';
-  const exec = _scExecuteArgs(sc);
   const borderColor = _scBorderColor(sc.conviction);
+  const isWatch = String(sc.type_num) === '5';
 
-  // Escape strings used in onclick attributes
-  const safeId  = String(exec.signal_id).replace(/'/g, "\\'");
-  const safeSym = String(exec.symbol).replace(/'/g, "\\'");
-  const safeTier = String(exec.tier).replace(/'/g, "\\'");
+  const execBtn = isWatch ? '' :
+    `<button onclick="openScenarioExecute('${sc.scenario_id}')"
+      style="background:#14532d;border:1px solid #16a34a;color:#86efac;padding:4px 14px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer">Execute &#9654;</button>`;
 
-  return `<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:6px;padding:14px 16px;margin-bottom:12px">
+  return `<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:6px;padding:14px 16px">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
     ${_scTypeBadge(sc.type_num)}
     <span style="font-weight:700;font-size:13px;color:var(--text)">${sc.type_name || '--'}</span>
@@ -185,8 +237,7 @@ function _renderScenarioCard(sc) {
     <button onclick="openScenarioInfo('${sc.type_num}')"
       style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;min-width:32px"
       title="Learn about this scenario type">ⓘ</button>
-    <button onclick="openBuySignalConfirm('${safeId}','${safeSym}','${safeTier}',${exec.entry_price})"
-      style="background:#14532d;border:1px solid #16a34a;color:#86efac;padding:4px 14px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer">Execute &#9654;</button>
+    ${execBtn}
   </div>
 </div>`;
 }
@@ -227,4 +278,166 @@ function openScenarioInfo(typeNum) {
 function closeScenarioInfo() {
   const modal = document.getElementById('scen-info-modal');
   if (modal) modal.style.display = 'none';
+}
+
+// ── WO-PRIME-SCENARIO-EXECUTE-01: Execute dialog ─────────────────────────────
+
+function openScenarioExecute(scenarioId) {
+  const sc = _scenarioRegistry[scenarioId];
+  if (!sc) return;
+  _pendingScenarioExec = sc;
+
+  const constituents   = sc.constituent_signals || [];
+  const ep             = _scEntryPrice(constituents) || 0;
+  const dir            = sc.direction || 'LONG';
+  const typeNum        = String(sc.type_num);
+  const defaultBudget  = _SCENARIO_BUDGETS[typeNum] || 500;
+
+  document.getElementById('scen-exec-badge').innerHTML =
+    _scTypeBadge(typeNum) +
+    '<span style="font-size:12px;color:var(--text2);margin-left:8px">' + (sc.type_name || '') + '</span>';
+  document.getElementById('scen-exec-symbol').textContent = sc.primary_symbol || '--';
+  document.getElementById('scen-exec-dir').innerHTML      = _scDirTag(dir);
+  document.getElementById('scen-exec-price').textContent  = ep ? '$' + Number(ep).toFixed(2) : '--';
+
+  document.getElementById('scen-exec-budget').value     = defaultBudget;
+  document.getElementById('scen-exec-account').value    = '';
+  document.getElementById('scen-exec-stop-type').value  = 'TRAILING';
+  document.getElementById('scen-exec-stop-pct').value   = '3';
+
+  // Rollover IRA cannot hold short positions.
+  const iraOpt = document.getElementById('scen-exec-ira-opt');
+  if (iraOpt) iraOpt.disabled = (dir === 'SHORT');
+
+  const msgEl = document.getElementById('scen-exec-msg');
+  if (msgEl) { msgEl.textContent = ''; }
+
+  _scExecUpdate();
+  document.getElementById('scen-exec-modal').style.display = 'flex';
+}
+
+function closeScenarioExecute() {
+  _pendingScenarioExec = null;
+  const modal = document.getElementById('scen-exec-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function _scExecUpdate() {
+  if (!_pendingScenarioExec) return;
+  const sc  = _pendingScenarioExec;
+  const ep  = _scEntryPrice(sc.constituent_signals || []) || 0;
+  const dir = sc.direction || 'LONG';
+
+  const budget  = parseFloat(document.getElementById('scen-exec-budget').value) || 0;
+  const qty     = (ep > 0 && budget > 0) ? Math.floor(budget / ep) : 0;
+  const stopPct = parseFloat(document.getElementById('scen-exec-stop-pct').value) || 3;
+
+  const qtyEl = document.getElementById('scen-exec-qty');
+  if (qtyEl) qtyEl.textContent = qty > 0 ? String(qty) : '—';
+
+  let stopPrice = 0;
+  if (ep > 0 && stopPct > 0) {
+    stopPrice = dir === 'SHORT' ? ep * (1 + stopPct / 100) : ep * (1 - stopPct / 100);
+  }
+  const stopEl = document.getElementById('scen-exec-stop-price');
+  if (stopEl) stopEl.textContent = stopPrice > 0 ? '$' + stopPrice.toFixed(2) : '—';
+
+  const acct       = (document.getElementById('scen-exec-account').value || '').trim();
+  const confirmBtn = document.getElementById('scen-exec-confirm-btn');
+  if (confirmBtn) confirmBtn.disabled = !acct;
+}
+
+async function submitScenarioExecute() {
+  if (!_pendingScenarioExec) return;
+
+  // Addendum: debounce — disable immediately; re-enable only on error or after close.
+  const confirmBtn = document.getElementById('scen-exec-confirm-btn');
+  if (confirmBtn) confirmBtn.disabled = true;
+
+  const sc           = _pendingScenarioExec;
+  const constituents = sc.constituent_signals || [];
+  const ep           = _scEntryPrice(constituents) || 0;
+  const dir          = sc.direction || 'LONG';
+  const msgEl        = document.getElementById('scen-exec-msg');
+
+  // Prefer PSA signal as execution anchor; fall back to first constituent.
+  const psa      = constituents.find(c => c.strategy === 'PSA');
+  const anchor   = psa || constituents[0] || {};
+  const signalId = anchor.signal_id || sc.scenario_id || '';
+
+  const budget   = parseFloat(document.getElementById('scen-exec-budget').value) || 0;
+  const qty      = (ep > 0 && budget > 0) ? Math.floor(budget / ep) : 0;
+  const acct     = (document.getElementById('scen-exec-account').value || '').trim();
+  const stopType = document.getElementById('scen-exec-stop-type').value || 'TRAILING';
+  const stopPct  = parseFloat(document.getElementById('scen-exec-stop-pct').value) || 3;
+  const rth      = typeof _isRTH === 'function' ? _isRTH() : true;
+
+  if (!acct) {
+    if (msgEl) { msgEl.textContent = 'Account selection is required.'; msgEl.style.color = 'var(--red)'; }
+    if (confirmBtn) confirmBtn.disabled = false;
+    return;
+  }
+  if (qty <= 0) {
+    if (msgEl) { msgEl.textContent = 'Budget too low — cannot purchase one share at this price.'; msgEl.style.color = 'var(--red)'; }
+    if (confirmBtn) confirmBtn.disabled = false;
+    return;
+  }
+
+  const API     = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
+  const token   = typeof _sigToken === 'function' ? _sigToken() : '';
+  const payload = {
+    confirmed:      true,
+    qty,
+    order_type:     rth ? 'MARKET' : 'LIMIT',
+    direction:      dir,
+    target_account: acct,
+    stop_type:      stopType,
+    stop_pct:       stopPct,
+  };
+  if (stopType === 'TRAILING') payload.trailing_stop_pct = stopPct / 100.0;
+  if (!rth && ep > 0) payload.limit_price = ep;
+
+  try {
+    const resp = await fetch(API + '/signals/' + encodeURIComponent(signalId) + '/execute', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body:    JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.ok) {
+      const mode       = data.mode || 'PAPER';
+      const fillPrice  = data.execution_price || ep;
+      const acctLabels = { '926': 'Joint (...926)', '461': 'Custodial (...461)', '779': 'IRA (...779)' };
+      if (msgEl) {
+        msgEl.textContent = mode + ': ' + qty + ' shares @ $' + Number(fillPrice).toFixed(2) +
+          ' — ' + (acctLabels[acct] || '...' + acct);
+        msgEl.style.color = 'var(--green)';
+      }
+      _scExecMarkExecuted(sc.scenario_id, {
+        mode, qty, fill_price: fillPrice, account: acct,
+        stop_type: stopType, stop_pct: stopPct,
+      });
+      setTimeout(() => closeScenarioExecute(), 1800);
+    } else if ((data.error || '') === 'after_hours') {
+      if (msgEl) {
+        msgEl.textContent = 'After-hours — limit order required. Scan price pre-filled.';
+        msgEl.style.color = 'var(--amber)';
+      }
+      if (confirmBtn) confirmBtn.disabled = false;
+    } else {
+      if (msgEl) { msgEl.textContent = 'Error: ' + (data.error || resp.status); msgEl.style.color = 'var(--red)'; }
+      if (confirmBtn) confirmBtn.disabled = false;
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = 'Network error: ' + e.message; msgEl.style.color = 'var(--red)'; }
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+function _scExecMarkExecuted(scenarioId, fillData) {
+  try {
+    sessionStorage.setItem('prime_scen_exec_' + scenarioId, JSON.stringify(fillData));
+  } catch (e) {}
+  loadScenarios();
 }
