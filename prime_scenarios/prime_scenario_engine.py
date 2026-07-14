@@ -5,15 +5,17 @@ Detects convergence events across scanner signals. Reads scanner output
 but never modifies signal records. Engine failure does not affect individual
 signal delivery.
 
-Scenario types (Types 4+ and 9 deferred — require MTFA scanner):
-  1  Sniper — Pure             IDX STRONG (volume confirmed)
-  2  Sniper — Confirmed        IDX (any) + PSA APPROVED
-  3  Sniper — Institutional    IDX (any) + UOA/PEAD + PSA APPROVED
-  4  Sniper — Trifecta         IDX STRONG + UOA/PEAD + PSA APPROVED
-  5  Watch                     Any single signal alone (monitor for convergence)
-  6  Sniper — Anomalous        UOA/PEAD + PSA APPROVED (no IDX)
-  7  Sniper — Sector Phase     SRS + PSA APPROVED (same symbol)
-  8  Sniper — Metals MR        MMR TRANCHE_2 + PSA APPROVED (same symbol)
+Scenario types:
+  1   Sniper — Pure             IDX STRONG (volume confirmed)
+  2   Sniper — Confirmed        IDX (any) + PSA APPROVED
+  3   Sniper — Institutional    IDX (any) + UOA/PEAD + PSA APPROVED
+  4   Sniper — Trifecta         IDX STRONG + UOA/PEAD + PSA APPROVED
+  5   Watch                     Any single signal alone (monitor for convergence)
+  6   Sniper — Anomalous        UOA/PEAD + PSA APPROVED (no IDX)
+  7   Sniper — Sector Phase     SRS + PSA APPROVED (same symbol)
+  8   Sniper — Metals MR        MMR TRANCHE_2 + PSA APPROVED (same symbol)
+  9   Timeframe Confluence      MTFA STRONG + any confirming signal (IDX/UOA/PSA/PEAD)
+  10  Sniper — Ultimate         IDX STRONG + UOA/PEAD + PSA APPROVED + MTFA STRONG
 
 Staleness framework:
   - PEAD: EXEMPT (always eligible, multi-session drift play)
@@ -43,20 +45,23 @@ _ET = pytz.timezone("America/New_York")
 # ---------------------------------------------------------------------------
 
 SCENARIO_TYPES: Dict[str, Dict[str, str]] = {
-    "1": {"name": "Sniper — Pure",             "conviction": "HIGH"},
-    "2": {"name": "Sniper — Confirmed",         "conviction": "HIGH"},
-    "3": {"name": "Sniper — Institutional",     "conviction": "HIGH"},
-    "4": {"name": "Sniper — Trifecta",          "conviction": "HIGHEST"},
-    "5": {"name": "Watch",                       "conviction": "LOW"},
-    "6": {"name": "Sniper — Anomalous",         "conviction": "HIGH"},
-    "7": {"name": "Sniper — Sector Phase",      "conviction": "HIGH"},
-    "8": {"name": "Sniper — Metals MR",         "conviction": "HIGH"},
+    "1":  {"name": "Sniper — Pure",              "conviction": "HIGH"},
+    "2":  {"name": "Sniper — Confirmed",          "conviction": "HIGH"},
+    "3":  {"name": "Sniper — Institutional",      "conviction": "HIGH"},
+    "4":  {"name": "Sniper — Trifecta",           "conviction": "HIGHEST"},
+    "5":  {"name": "Watch",                        "conviction": "LOW"},
+    "6":  {"name": "Sniper — Anomalous",          "conviction": "HIGH"},
+    "7":  {"name": "Sniper — Sector Phase",       "conviction": "HIGH"},
+    "8":  {"name": "Sniper — Metals MR",          "conviction": "HIGH"},
+    "9":  {"name": "Timeframe Confluence",         "conviction": "HIGH"},
+    "10": {"name": "Sniper — Ultimate",           "conviction": "HIGHEST"},
 }
 
 # Soft windows per scanner (beyond this → SOFT_STALE, still eligible)
 _SOFT_WINDOWS: Dict[str, timedelta] = {
     "UOA":  timedelta(hours=1),
     "PSA":  timedelta(hours=1),
+    "MTFA": timedelta(hours=1),
     "IDX":  timedelta(hours=8),
     "MMR":  timedelta(hours=8),
     "SRS":  timedelta(hours=8),
@@ -168,6 +173,8 @@ def _is_strong(signal: Dict[str, Any]) -> bool:
         return "STRONG" in tier
     if strategy in ("UOA", "PEAD"):
         return tier == "STRONG" or signal.get("status", "") == "APPROVED"
+    if strategy == "MTFA":
+        return tier == "STRONG"
     return False
 
 
@@ -271,17 +278,29 @@ def detect_scenarios(
     for direction in ("LONG", "SHORT"):
         dir_sigs = [s for s in eligible if s["_direction"] == direction]
 
-        idx_all   = [s for s in dir_sigs if s["strategy"] == "IDX"]
+        idx_all    = [s for s in dir_sigs if s["strategy"] == "IDX"]
         idx_strong = [s for s in idx_all if _is_strong(s)]
-        uoa_pead  = [s for s in dir_sigs if s["strategy"] in ("UOA", "PEAD")]
-        psa       = [s for s in dir_sigs if s["strategy"] == "PSA"
-                     and s.get("status") == "APPROVED"]
-        srs       = [s for s in dir_sigs if s["strategy"] == "SRS"]
-        mmr_t2    = [s for s in dir_sigs if s["strategy"] == "MMR" and _is_tranche2(s)]
+        uoa_pead   = [s for s in dir_sigs if s["strategy"] in ("UOA", "PEAD")]
+        psa        = [s for s in dir_sigs if s["strategy"] == "PSA"
+                      and s.get("status") == "APPROVED"]
+        srs        = [s for s in dir_sigs if s["strategy"] == "SRS"]
+        mmr_t2     = [s for s in dir_sigs if s["strategy"] == "MMR" and _is_tranche2(s)]
+        mtfa_strong = [s for s in dir_sigs if s["strategy"] == "MTFA" and _is_strong(s)]
 
-        # --- IDX-based types (Types 1-4): PSA anchors the individual-stock symbol ---
+        # --- IDX-based types (Types 1-4, 10): PSA anchors the individual-stock symbol ---
         for psa_sig in psa:
             sym = psa_sig["symbol"]
+            mtfa_sym = [s for s in mtfa_strong if s["symbol"] == sym]
+
+            if idx_strong and uoa_pead and mtfa_sym:
+                # Type 10: IDX STRONG + UOA/PEAD + PSA APPROVED + MTFA STRONG (Ultimate)
+                constituents = [psa_sig, idx_strong[0], uoa_pead[0], mtfa_sym[0]]
+                st = _overall_staleness(constituents)
+                sc = _build_scenario("10", direction, sym, constituents, st, detected_at)
+                scenarios.append(sc)
+                for s in constituents:
+                    anchored_ids.add(s.get("signal_id"))
+                continue
 
             if idx_strong and uoa_pead:
                 # Type 4: IDX STRONG + UOA/PEAD + PSA
@@ -353,6 +372,32 @@ def detect_scenarios(
                 constituents = [mmr_sig, matching_psa[0]]
                 st = _overall_staleness(constituents)
                 sc = _build_scenario("8", direction, sym, constituents, st, detected_at)
+                scenarios.append(sc)
+                for s in constituents:
+                    anchored_ids.add(s.get("signal_id"))
+
+        # --- Type 9: Timeframe Confluence — MTFA STRONG + any one confirming signal ---
+        # MTFA anchors the individual-stock symbol.  Confirming signals (in priority):
+        #   IDX (market-level, any symbol), UOA/PEAD (same symbol), PSA (same symbol).
+        for mtfa_sig in mtfa_strong:
+            if mtfa_sig.get("signal_id") in anchored_ids:
+                continue  # already part of a higher-conviction scenario
+            sym = mtfa_sig["symbol"]
+            confirming: Optional[Dict] = None
+            if idx_all:
+                confirming = idx_all[0]
+            else:
+                matching_inst = [s for s in uoa_pead if s["symbol"] == sym]
+                if matching_inst:
+                    confirming = matching_inst[0]
+                else:
+                    matching_psa = [s for s in psa if s["symbol"] == sym]
+                    if matching_psa:
+                        confirming = matching_psa[0]
+            if confirming:
+                constituents = [mtfa_sig, confirming]
+                st = _overall_staleness(constituents)
+                sc = _build_scenario("9", direction, sym, constituents, st, detected_at)
                 scenarios.append(sc)
                 for s in constituents:
                     anchored_ids.add(s.get("signal_id"))

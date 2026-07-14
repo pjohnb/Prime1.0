@@ -259,7 +259,7 @@ class TestIngestLatest(_BridgeTestBase):
     def test_ingest_all_scanners(self):
         results = bridge.ingest_latest(
             scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
-        self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MMR": 2, "SRS": 1})
+        self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MMR": 2, "SRS": 1, "MTFA": 0})
         self.assertEqual(len(self._signals()), 6)
         strategies = {s["strategy"] for s in self._signals()}
         self.assertEqual(strategies, {"UOA", "PSA", "PEAD", "MMR", "SRS"})

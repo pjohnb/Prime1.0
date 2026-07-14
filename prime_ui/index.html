@@ -292,6 +292,11 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
               title="SHORT — Short Selling Scanner: signal-led short candidates using put-volume surge, borrow availability, and DK nullifying signals.">Run SHORT</button>
       <span id="scan-msg-short" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+      <button id="scan-btn-mtfa" class="btn-refresh" onclick="triggerScan('mtfa','scan-btn-mtfa')" style="min-width:90px"
+              title="MTFA — Multi-Timeframe Analysis: scores trend alignment across intraday (5-min), weekly (5 sessions), and annual (252 sessions) timeframes. Score 100 = all 3 aligned (STRONG). Uses same universe as PSA.">Run MTFA</button>
+      <span id="scan-msg-mtfa" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
+    </div>
   </div>
   <!-- Sprint 28 Item 4: Polygon rate limit indicator -->
   <div id="polygon-rate-indicator" style="display:none;font-family:var(--mono);font-size:12px;color:var(--amber);margin-bottom:14px"></div>
@@ -433,6 +438,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
       <option value="SRS">SRS</option><option value="PSA">PSA</option>
       <option value="MMR">MMR</option><option value="IDX">IDX</option>
       <option value="UOA_INDEX">UOA_INDEX</option>
+      <option value="MTFA">MTFA</option>
     </select>
     <select id="sig-type" onchange="loadSignals()">
       <option value="">All Types</option>
@@ -452,6 +458,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
     <button class="strat-info-btn" onclick="toggleStrategyInfo('IDX', this)">IDX ⓘ</button>
     <button class="strat-info-btn" onclick="toggleStrategyInfo('DK', this)">DK ⓘ</button>
     <button class="strat-info-btn" onclick="toggleStrategyInfo('SHORT', this)">SHORT ⓘ</button>
+    <button class="strat-info-btn" onclick="toggleStrategyInfo('MTFA', this)">MTFA ⓘ</button>
   </div>
   <table id="sig-table">
     <!-- Sprint 22 Item 1: Score hidden, trigger_source column added -->

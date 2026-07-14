@@ -19,6 +19,7 @@ const _SCANNER_TOOLTIPS = {
   IDX:   'IDX: Index &amp; Sector — tracks relative strength across sector ETFs vs. S&amp;P 500. Provides market regime context.',
   SHORT: 'SHORT: Short-Selling — identifies bearish setups combining put-heavy UOA with borrow availability and DK nullification confirmation.',
   SRS:   'SRS: Short-Squeeze &amp; Reversal — targets heavily shorted stocks showing early reversal signals. Generates long squeeze and short continuation entries.',
+  MTFA:  'MTFA: Multi-Timeframe Analysis — scores trend alignment across intraday (5-min), weekly (5 sessions), and annual (252 sessions) timeframes. Score 100 = all 3 aligned (STRONG). Also flags proximity to 52-week and session high/low.',
 };
 
 // ── Scan trigger buttons ─────────────────────────────────────────────────────

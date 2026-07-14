@@ -295,6 +295,41 @@ def bridge_srs_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
     return count
 
 
+def bridge_mtfa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> int:
+    """MTFA scan JSON.  Approved = tier STRONG or WEAK (WATCH is excluded)."""
+    count = 0
+    scan_ts = (data.get("scan_time") or "").strip()
+    for sig in (data.get("signals") or []):
+        tier = (sig.get("tier") or "").strip().upper()
+        if tier not in ("STRONG", "WEAK"):
+            continue
+        direction = (sig.get("direction") or "LONG").strip().upper()
+        signal = {
+            "symbol": (sig.get("symbol") or "").strip(),
+            "strategy": "MTFA",
+            "scan_ts": sig.get("scan_ts") or scan_ts,
+            "entry_price": _to_float(sig.get("entry_price")),
+            "score": _to_float(sig.get("score")),
+            "tier": tier,
+            "direction": direction,
+            "status": "APPROVED",
+            "trigger_source": f"MTFA_{tier}",
+            "factors": {
+                "intraday_trend": sig.get("intraday_trend"),
+                "weekly_trend": sig.get("weekly_trend"),
+                "annual_trend": sig.get("annual_trend"),
+                "aligned_count": sig.get("aligned_count"),
+                "near_52w_high": sig.get("near_52w_high"),
+                "near_52w_low": sig.get("near_52w_low"),
+                "near_session_high": sig.get("near_session_high"),
+                "near_session_low": sig.get("near_session_low"),
+            },
+        }
+        if signal["symbol"] and _insert(signal, db_path):
+            count += 1
+    return count
+
+
 # ---------------------------------------------------------------------------
 # File / DB discovery helpers
 # ---------------------------------------------------------------------------
@@ -354,7 +389,7 @@ def ingest_latest(
     """
     init_signals_table(db_path)
     scan_dir = Path(scan_dir)
-    results: Dict[str, int] = {"UOA": 0, "PSA": 0, "PEAD": 0, "MMR": 0, "SRS": 0}
+    results: Dict[str, int] = {"UOA": 0, "PSA": 0, "PEAD": 0, "MMR": 0, "SRS": 0, "MTFA": 0}
 
     def _try(name: str, fn):
         try:
@@ -382,6 +417,11 @@ def ingest_latest(
 
     if Path(monitoring_db).exists():
         _try("PEAD", lambda: bridge_pead_rows(_read_pead_latest(Path(monitoring_db)), db_path))
+
+    mtfa = _latest(scan_dir, "mtfa_scan_*.json")
+    if mtfa:
+        _try("MTFA", lambda: bridge_mtfa_result(
+            json.loads(mtfa.read_text(encoding="utf-8")), db_path))
 
     return results
 
