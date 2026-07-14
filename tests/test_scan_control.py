@@ -68,7 +68,7 @@ def test_trigger_scan_already_running(client, monkeypatch):
 
 
 def test_scan_status_returns_all_scanners(client, monkeypatch):
-    """GET /scans/status lists all 7 scanners."""
+    """GET /scans/status lists all registered scanners."""
     monkeypatch.setattr(
         "prime_data.prime_db.get_ops_events",
         lambda **kwargs: [],
@@ -81,7 +81,8 @@ def test_scan_status_returns_all_scanners(client, monkeypatch):
     assert "PEAD" in names
     assert "UOA" in names
     assert "SHORT" in names
-    assert len(data["scanners"]) == 7
+    import prime_api.prime_api_routes as routes
+    assert len(data["scanners"]) == len(routes._SCANNER_MAP)
 
 
 def test_scan_status_reflects_state(client, monkeypatch):

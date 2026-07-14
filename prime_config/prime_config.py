@@ -171,6 +171,18 @@ class OpsConfig:
     exit_day_count_action: str = "ALERT"
     # Sprint 26 Item 6: monthly AI budget alert threshold (USD).
     monthly_ai_budget: float = 10.0
+    # WO-PRIME-PSA-UNIVERSE-01: configurable scan + alert universes.
+    # psa_universe: predefined key (sp500 | mag7 | sp500_ex_mag7 | russell2000 |
+    #               all_sectors | sector | custom) — defaults to full S&P 500.
+    # psa_universe_custom: comma-separated tickers used when mode=custom.
+    # psa_universe_sector: sector ETF ticker used when mode=sector (XLK, XLF, ...).
+    # alert_universe: same options, independently configurable.
+    psa_universe: str = "sp500"
+    psa_universe_custom: str = ""
+    psa_universe_sector: str = "XLK"
+    alert_universe: str = "sp500"
+    alert_universe_custom: str = ""
+    alert_universe_sector: str = "XLK"
     # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
     # Defaults are the working values from sprint history; users can tune in Settings UI.
     strategy_thresholds: Any = field(default_factory=lambda: {

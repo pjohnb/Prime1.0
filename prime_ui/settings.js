@@ -358,6 +358,75 @@ function _renderSettings() {
     </div>
 
     <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">PSA UNIVERSE</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
+        <label style="display:flex;flex-direction:column;gap:4px" title="The ticker universe the PSA scanner runs against. Change takes effect on the next scheduled scan.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">PSA Universe</span>
+          <select id="sett-psa_universe"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px"
+            onchange="_onUniverseChange('psa')">
+            ${['sp500','mag7','sp500_ex_mag7','russell2000','all_sectors','sector','custom'].map(o =>
+              `<option value="${o}"${(d.psa_universe||'sp500')===o?' selected':''}>${{
+                sp500:'S&P 500 (~503)',mag7:'Mag 7',sp500_ex_mag7:'S&P 500 ex-Mag7',
+                russell2000:'Russell 2000',all_sectors:'All Sectors',sector:'Sector (choose below)',custom:'Custom'
+              }[o]||o}</option>`).join('')}
+          </select>
+        </label>
+        <label id="sett-psa_universe_sector-wrap" style="display:flex;flex-direction:column;gap:4px;${(d.psa_universe||'sp500')==='sector'?'':'display:none'}" title="Sector ETF to scan when Universe = Sector">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">PSA Sector</span>
+          <select id="sett-psa_universe_sector"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">
+            ${['XLK','XLF','XLV','XLI','XLC','XLY','XLP','XLE','XLB','XLRE','XLU'].map(o =>
+              `<option value="${o}"${(d.psa_universe_sector||'XLK')===o?' selected':''}>${o}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div id="sett-psa_universe_custom-wrap" style="${(d.psa_universe||'sp500')==='custom'?'':'display:none'};margin-top:12px">
+        <label style="display:flex;flex-direction:column;gap:4px" title="Comma-separated list of tickers, e.g. AAPL,MSFT,NVDA">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Custom Tickers (comma-separated)</span>
+          <textarea id="sett-psa_universe_custom" rows="3"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;font-family:var(--mono);width:100%;resize:vertical"
+            >${d.psa_universe_custom||''}</textarea>
+        </label>
+      </div>
+
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--text3);font-family:var(--mono);margin-bottom:8px">ALERT UNIVERSE</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px">
+          <label style="display:flex;flex-direction:column;gap:4px" title="The ticker universe for alert filtering. Defaults to match PSA Universe.">
+            <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Alert Universe</span>
+            <select id="sett-alert_universe"
+              style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px"
+              onchange="_onUniverseChange('alert')">
+              ${['sp500','mag7','sp500_ex_mag7','russell2000','all_sectors','sector','custom'].map(o =>
+                `<option value="${o}"${(d.alert_universe||'sp500')===o?' selected':''}>${{
+                  sp500:'S&P 500 (~503)',mag7:'Mag 7',sp500_ex_mag7:'S&P 500 ex-Mag7',
+                  russell2000:'Russell 2000',all_sectors:'All Sectors',sector:'Sector (choose below)',custom:'Custom'
+                }[o]||o}</option>`).join('')}
+            </select>
+          </label>
+          <label id="sett-alert_universe_sector-wrap" style="display:flex;flex-direction:column;gap:4px;${(d.alert_universe||'sp500')==='sector'?'':'display:none'}" title="Sector ETF for alert filtering when Universe = Sector">
+            <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Alert Sector</span>
+            <select id="sett-alert_universe_sector"
+              style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">
+              ${['XLK','XLF','XLV','XLI','XLC','XLY','XLP','XLE','XLB','XLRE','XLU'].map(o =>
+                `<option value="${o}"${(d.alert_universe_sector||'XLK')===o?' selected':''}>${o}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+        <div id="sett-alert_universe_custom-wrap" style="${(d.alert_universe||'sp500')==='custom'?'':'display:none'};margin-top:12px">
+          <label style="display:flex;flex-direction:column;gap:4px" title="Comma-separated list of tickers">
+            <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Custom Tickers (comma-separated)</span>
+            <textarea id="sett-alert_universe_custom" rows="3"
+              style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:13px;font-family:var(--mono);width:100%;resize:vertical"
+              >${d.alert_universe_custom||''}</textarea>
+          </label>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">PSA Universe: tickers scanned each cycle. Alert Universe: filters which alerts surface in the topbar. Changes take effect on next scan.</div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">SCENARIOS</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
         <label style="display:flex;flex-direction:column;gap:4px" title="Maximum number of scenario cards shown in the Scenarios tab. FIFO — newest first. Stored locally in this browser.">
@@ -432,6 +501,15 @@ function _actionField(id, label, val, options, tooltip) {
     <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">${label}${tip}</span>
     <select id="sett-${id}" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">${opts}</select>
   </label>`;
+}
+
+// WO-PRIME-PSA-UNIVERSE-01: show/hide sub-fields when universe mode changes.
+function _onUniverseChange(prefix) {
+  const val = document.getElementById('sett-' + prefix + '_universe').value;
+  const sectorWrap = document.getElementById('sett-' + prefix + '_universe_sector-wrap');
+  const customWrap = document.getElementById('sett-' + prefix + '_universe_custom-wrap');
+  if (sectorWrap) sectorWrap.style.display = val === 'sector' ? '' : 'none';
+  if (customWrap) customWrap.style.display = val === 'custom' ? '' : 'none';
 }
 
 // ── Sprint 27 Item 5: MATA Profile Distribution Editor ────────────────────────
@@ -597,6 +675,13 @@ async function saveSettings() {
   payload.exit_day_count_action = _v('exit_day_count_action');
   // Sprint 32 Thread 2 (PM-HEALTH-04): position monitor action (ALERT_ONLY | AUTO_SELL)
   payload.position_monitor_action = _v('position_monitor_action');
+  // WO-PRIME-PSA-UNIVERSE-01: scan + alert universes
+  payload.psa_universe = _v('psa_universe');
+  payload.psa_universe_custom = _v('psa_universe_custom') || '';
+  payload.psa_universe_sector = _v('psa_universe_sector');
+  payload.alert_universe = _v('alert_universe');
+  payload.alert_universe_custom = _v('alert_universe_custom') || '';
+  payload.alert_universe_sector = _v('alert_universe_sector');
 
   // Strategy thresholds
   const thresholds = {};

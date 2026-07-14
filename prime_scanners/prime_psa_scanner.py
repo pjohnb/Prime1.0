@@ -68,7 +68,7 @@ BREAKOUT_LOOKBACK = 10
 HIGHER_HIGHS_BARS = 4
 VOLUME_EXPANSION_MULT = 1.20
 
-# Default universe (S&P top 50 for fast scans)
+# Default universe (S&P top 50 for fast scans — used as fallback only)
 DEFAULT_UNIVERSE = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
     "V", "JNJ", "WMT", "PG", "MA", "UNH", "HD", "DIS", "BAC", "XOM",
@@ -77,6 +77,62 @@ DEFAULT_UNIVERSE = [
     "LRCX", "MU", "ADI", "MRVL", "KLAC", "CDNS", "SNPS", "FTNT",
     "PANW", "CRWD", "ZS", "DDOG", "NET", "MDB", "SNOW", "NOW",
 ]
+
+_MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META"]
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+def resolve_psa_universe(mode: str = "sp500",
+                         custom: str = "",
+                         sector: str = "XLK") -> List[str]:
+    """Resolve a universe mode string into a flat ticker list.
+
+    mode values:
+      sp500         — full S&P 500 from data/sp500_constituents.json
+      mag7          — AAPL MSFT GOOGL AMZN NVDA TSLA META
+      sp500_ex_mag7 — S&P 500 minus Mag7
+      russell2000   — small-cap list from data/russell2000_constituents.json
+      all_sectors   — union of all sector ETF constituents
+      sector        — single sector ETF constituents (uses `sector` param)
+      custom        — comma-separated tickers from `custom` param
+    Falls back to DEFAULT_UNIVERSE on any file-load error.
+    """
+    if mode == "mag7":
+        return list(_MAG7)
+
+    if mode == "custom":
+        symbols = [s.strip().upper() for s in custom.split(",") if s.strip()]
+        return symbols if symbols else list(DEFAULT_UNIVERSE)
+
+    try:
+        if mode == "sp500":
+            return json.loads((_DATA_DIR / "sp500_constituents.json").read_text())
+
+        if mode == "sp500_ex_mag7":
+            sp500 = json.loads((_DATA_DIR / "sp500_constituents.json").read_text())
+            mag7_set = set(_MAG7)
+            return [s for s in sp500 if s not in mag7_set]
+
+        if mode == "russell2000":
+            return json.loads((_DATA_DIR / "russell2000_constituents.json").read_text())
+
+        if mode in ("all_sectors", "sector"):
+            data: dict = json.loads((_DATA_DIR / "sectors_constituents.json").read_text())
+            if mode == "sector":
+                return data.get(sector, list(DEFAULT_UNIVERSE))
+            seen: set = set()
+            result: List[str] = []
+            for syms in data.values():
+                for s in syms:
+                    if s not in seen:
+                        seen.add(s)
+                        result.append(s)
+            return result
+
+    except Exception as e:
+        logger.warning("PSA: universe data unavailable for mode=%s: %s — using DEFAULT_UNIVERSE", mode, e)
+
+    return list(DEFAULT_UNIVERSE)
 
 INTERVAL_MINUTES = {
     "1min": 1, "5min": 5, "15min": 15, "30min": 30, "1hour": 60,
@@ -550,7 +606,15 @@ def run_psa_scan(
         }
 
     if universe is None:
-        universe = DEFAULT_UNIVERSE
+        try:
+            cfg = get_config()
+            universe = resolve_psa_universe(
+                mode=cfg.ops.psa_universe,
+                custom=cfg.ops.psa_universe_custom,
+                sector=cfg.ops.psa_universe_sector,
+            )
+        except Exception:
+            universe = list(DEFAULT_UNIVERSE)
     if thresholds is None:
         thresholds = {
             "momentum": DEFAULT_MOMENTUM_THRESHOLD,
@@ -711,8 +775,14 @@ def main():
 
     log_ops_event("SCAN_START", "psa_scanner", detail=f"interval={args.interval}")
 
+    universe = resolve_psa_universe(
+        mode=cfg.ops.psa_universe,
+        custom=cfg.ops.psa_universe_custom,
+        sector=cfg.ops.psa_universe_sector,
+    )
     scan_data = run_psa_scan(
         api_key=api_key,
+        universe=universe,
         thresholds={
             "momentum": args.momentum,
             "volume": args.volume,

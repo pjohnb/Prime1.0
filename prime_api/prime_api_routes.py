@@ -1434,6 +1434,9 @@ _SETTINGS_FIELDS = [
     # Sprint 30 PM-04: automated exit management
     "exit_gain_trigger_pct", "exit_trail_pct",
     "exit_day_count_max", "exit_day_count_action",
+    # WO-PRIME-PSA-UNIVERSE-01: configurable scan + alert universes
+    "psa_universe", "psa_universe_custom", "psa_universe_sector",
+    "alert_universe", "alert_universe_custom", "alert_universe_sector",
 ]
 
 
@@ -2378,6 +2381,7 @@ _SCANNER_MAP: Dict[str, str] = {
     "mmr":   "prime_scanners.prime_mmr_scanner",
     "idx":   "prime_intelligence.prime_index_scanner",
     "short": "prime_intelligence.prime_short_scanner",
+    "mtfa":  "prime_scanners.prime_mtfa_scanner",
 }
 
 # Per-scanner run state: {scanner: {status, last_run, signals, pid}}
@@ -2441,7 +2445,7 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
         # After scanner completes, run bridge to ingest new signals.
         # Suppressed in parallel batch mode (skip_bridge=True); coordinator
         # runs two consolidated bridge passes instead.
-        if not skip_bridge and scanner in ("psa", "pead", "uoa", "srs", "mmr"):
+        if not skip_bridge and scanner in ("psa", "pead", "uoa", "srs", "mmr", "mtfa"):
             bridge_proc = _subprocess.run(
                 [_sys.executable, "-m", "prime_bridge.prime_signal_bridge", "--ingest-latest"],
                 cwd=str(_PROJECT_ROOT_PATH),
@@ -2550,6 +2554,7 @@ def _run_parallel_deep_scan() -> None:
         "mmr":   "schwab",
         "idx":   "polygon",
         "short": "schwab",
+        "mtfa":  "polygon",
     }
 
     uoa_done: threading.Event = threading.Event()
@@ -2584,7 +2589,7 @@ def _run_parallel_deep_scan() -> None:
 
     # Stage 1: five scanners concurrent, PSA submitted after bridge pass 1.
     # max_workers = Stage-1 count + 1 so PSA always has a free slot.
-    stage1 = ["idx", "uoa", "mmr", "pead", "srs"]
+    stage1 = ["idx", "uoa", "mmr", "pead", "srs", "mtfa"]
     with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 1,
                                 thread_name_prefix="deepscan") as pool:
         for s in stage1:
