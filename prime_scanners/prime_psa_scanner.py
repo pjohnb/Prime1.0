@@ -169,7 +169,10 @@ def fetch_bars(
 
     data = _polygon_get(
         f"/v2/aggs/ticker/{symbol}/range/{multiplier}/{timespan}/{from_date}/{today}",
-        {"adjusted": "true", "sort": "asc", "limit": total_bars + 20},
+        # desc = newest bars first; reversed below to restore chronological order.
+        # asc + limit would return the OLDEST bars (pre-market from days ago),
+        # causing stale A-B-C-D analysis and severe volume underestimation.
+        {"adjusted": "true", "sort": "desc", "limit": total_bars + 20},
         api_key,
     )
     if not data or not data.get("results"):
@@ -186,6 +189,7 @@ def fetch_bars(
             "timestamp": r.get("t", 0),
         })
 
+    bars.reverse()  # restore chronological (oldest → newest) after desc fetch
     return bars[-total_bars:] if len(bars) >= total_bars else bars
 
 
@@ -750,10 +754,18 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="PRIME v1.0 PSA Momentum Scanner")
-    parser.add_argument("--momentum", type=float, default=DEFAULT_MOMENTUM_THRESHOLD)
-    parser.add_argument("--volume", type=float, default=DEFAULT_VOLUME_THRESHOLD)
-    parser.add_argument("--volatility", type=float, default=DEFAULT_VOLATILITY_THRESHOLD)
+    # Stage 1 thresholds — None means "read from ops_config"
+    parser.add_argument("--momentum", type=float, default=None)
+    parser.add_argument("--volume", type=float, default=None)
+    parser.add_argument("--volatility", type=float, default=None)
     parser.add_argument("--interval", type=str, default=DEFAULT_INTERVAL)
+    # Stage 0 thresholds — None means "read from ops_config"
+    parser.add_argument("--min-price", type=float, default=None, dest="min_price")
+    parser.add_argument("--max-price", type=float, default=None, dest="max_price")
+    parser.add_argument("--min-volume", type=float, default=None, dest="min_volume")
+    # Per-role drawdown: 'primary' (strict 3%) or 'confirmation' (loose 5%)
+    parser.add_argument("--role", type=str, default="primary",
+                        choices=["primary", "confirmation"])
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -780,15 +792,35 @@ def main():
         custom=cfg.ops.psa_universe_custom,
         sector=cfg.ops.psa_universe_sector,
     )
+
+    # Stage 1 thresholds: CLI args override ops_config values
+    momentum_t = args.momentum if args.momentum is not None else cfg.ops.psa_stage1_momentum
+    volume_t = args.volume if args.volume is not None else cfg.ops.psa_stage1_volume
+    volatility_t = args.volatility if args.volatility is not None else cfg.ops.psa_stage1_volatility
+
+    # Stage 0 thresholds: CLI args override ops_config values
+    min_price = args.min_price if args.min_price is not None else cfg.ops.psa_min_price
+    max_price = args.max_price if args.max_price is not None else cfg.ops.psa_max_price
+    min_vol = args.min_volume if args.min_volume is not None else cfg.ops.psa_min_daily_volume
+
+    # Per-role drawdown: confirmation mode uses looser BC/CD drawdown tolerance
+    if args.role == "confirmation":
+        bc_dd = cfg.ops.psa_confirmation_bc_drawdown
+        cd_dd = cfg.ops.psa_confirmation_cd_drawdown
+    else:
+        bc_dd = cfg.ops.psa_stage1_bc_drawdown
+        cd_dd = cfg.ops.psa_stage1_cd_drawdown
+
     scan_data = run_psa_scan(
         api_key=api_key,
         universe=universe,
-        thresholds={
-            "momentum": args.momentum,
-            "volume": args.volume,
-            "volatility": args.volatility,
-        },
+        thresholds={"momentum": momentum_t, "volume": volume_t, "volatility": volatility_t},
         interval=args.interval,
+        min_price=min_price,
+        max_price=max_price,
+        min_daily_volume=min_vol,
+        bc_max_drawdown=bc_dd,
+        cd_max_drawdown=cd_dd,
     )
 
     print(f"\nPSA Scan: analyzed={scan_data['analyzed']} "

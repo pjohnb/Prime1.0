@@ -189,6 +189,25 @@ class OpsConfig:
     #   to symbols already APPROVED by Stage-1 scanners (post bridge-pass-2).
     mtfa_workers: int = 10
     mtfa_mode: str = "full"
+    # WO-PRIME-PSA-CALIBRATION-01: Stage 0 filters (price + volume screen).
+    # psa_max_price raised from 500 → 10000 to cover all S&P 500 stocks
+    # (NVR ~$7k+, AZO ~$3k+, BKNG ~$3.5k+). The old 500 cap pre-dated the
+    # S&P 500 universe expansion and was calibrated for post-split Mag-7 only.
+    psa_min_price: float = 5.0
+    psa_max_price: float = 10000.0
+    psa_min_daily_volume: float = 500_000.0
+    # Stage 1 A-B-C-D thresholds exposed as flat fields so the Settings API
+    # can read/write them without nested-dict path gymnastics.
+    psa_stage1_momentum: float = 55.0
+    psa_stage1_volume: float = 50.0
+    psa_stage1_volatility: float = 50.0
+    psa_stage1_bc_drawdown: float = 3.0
+    psa_stage1_cd_drawdown: float = 3.0
+    # Phase 3: confirmation-role PSA uses looser drawdown tolerance so Type-2/3/4
+    # signals (already confirmed by a primary scanner) are not suppressed by
+    # intraday noise in the narrow CD window.
+    psa_confirmation_bc_drawdown: float = 5.0
+    psa_confirmation_cd_drawdown: float = 5.0
     # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
     # Defaults are the working values from sprint history; users can tune in Settings UI.
     strategy_thresholds: Any = field(default_factory=lambda: {

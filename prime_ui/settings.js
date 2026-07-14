@@ -449,6 +449,89 @@ function _renderSettings() {
     </div>
 
     <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">PSA STAGE 0 FILTERS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
+        <label style="display:flex;flex-direction:column;gap:4px" title="Minimum share price for a symbol to enter Stage 1 analysis. Stocks below this are micro-caps or penny stocks unlikely to produce institutional signals.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Min Price ($)</span>
+          <input type="number" id="sett-psa_min_price" min="0" step="0.5"
+            value="${d.psa_min_price != null ? d.psa_min_price : 5}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: $5. Filter penny stocks.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Maximum share price. Raised from $500 to $10,000 for S&P 500 coverage — NVR (~$7k), AZO (~$3k), BKNG (~$3.5k) were all being rejected by the old cap.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Max Price ($)</span>
+          <input type="number" id="sett-psa_max_price" min="500" step="500"
+            value="${d.psa_max_price != null ? d.psa_max_price : 10000}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: $10,000. Covers full S&P 500.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Minimum extrapolated daily share volume. Symbols below this threshold lack the liquidity for reliable PSA momentum signals.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Min Daily Volume</span>
+          <input type="number" id="sett-psa_min_daily_volume" min="10000" step="50000"
+            value="${d.psa_min_daily_volume != null ? d.psa_min_daily_volume : 500000}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 500,000 shares/day.</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">PSA STAGE 1 THRESHOLDS</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
+        <label style="display:flex;flex-direction:column;gap:4px" title="Minimum momentum ratio: current CD-window avg return ÷ baseline AB-window avg return, as a percentage. Requires CD momentum to be at least this fraction of baseline.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Momentum (%)</span>
+          <input type="number" id="sett-psa_stage1_momentum" min="0" max="200" step="5"
+            value="${d.psa_stage1_momentum != null ? d.psa_stage1_momentum : 55}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 55%. CD/AB return ratio.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Minimum volume ratio: CD-window avg volume ÷ AB baseline avg volume, as a percentage. Values below 100% mean volume is contracting vs baseline — acceptable down to this floor.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Volume (%)</span>
+          <input type="number" id="sett-psa_stage1_volume" min="0" max="200" step="5"
+            value="${d.psa_stage1_volume != null ? d.psa_stage1_volume : 50}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 50%. CD/AB volume ratio.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Minimum volatility ratio: CD-window return std-dev ÷ AB baseline std-dev, as a percentage. Requires the current window to show at least this fraction of baseline volatility (filters dead-quiet stocks).">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">Volatility (%)</span>
+          <input type="number" id="sett-psa_stage1_volatility" min="0" max="200" step="5"
+            value="${d.psa_stage1_volatility != null ? d.psa_stage1_volatility : 50}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 50%. CD/AB vol ratio.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Max drawdown allowed in the BC (long) window before a signal is rejected. Primary signals use this strict gate; confirmation signals use the looser setting below.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">BC Drawdown — Primary (%)</span>
+          <input type="number" id="sett-psa_stage1_bc_drawdown" min="0.5" max="15" step="0.5"
+            value="${d.psa_stage1_bc_drawdown != null ? d.psa_stage1_bc_drawdown : 3}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 3%. Max BC pullback.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Max drawdown allowed in the CD (short) window. Primary signals use this strict gate.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">CD Drawdown — Primary (%)</span>
+          <input type="number" id="sett-psa_stage1_cd_drawdown" min="0.5" max="15" step="0.5"
+            value="${d.psa_stage1_cd_drawdown != null ? d.psa_stage1_cd_drawdown : 3}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 3%. Max CD pullback.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Looser BC drawdown tolerance for confirmation-role PSA signals (Types 2/3/4/4+). These signals are already supported by a primary scanner so a wider CD noise allowance is appropriate.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">BC Drawdown — Confirmation (%)</span>
+          <input type="number" id="sett-psa_confirmation_bc_drawdown" min="0.5" max="15" step="0.5"
+            value="${d.psa_confirmation_bc_drawdown != null ? d.psa_confirmation_bc_drawdown : 5}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 5%. Looser for Types 2/3/4.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Looser CD drawdown tolerance for confirmation-role PSA signals (Types 2/3/4/4+).">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">CD Drawdown — Confirmation (%)</span>
+          <input type="number" id="sett-psa_confirmation_cd_drawdown" min="0.5" max="15" step="0.5"
+            value="${d.psa_confirmation_cd_drawdown != null ? d.psa_confirmation_cd_drawdown : 5}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 5%. Looser for Types 2/3/4.</span>
+        </label>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">Stage 1 gates apply after price/volume filter. Changes take effect on next scan. Confirmation thresholds apply when --role=confirmation is passed to the PSA subprocess.</div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">SCENARIOS</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
         <label style="display:flex;flex-direction:column;gap:4px" title="Maximum number of scenario cards shown in the Scenarios tab. FIFO — newest first. Stored locally in this browser.">
@@ -706,6 +789,17 @@ async function saveSettings() {
   payload.alert_universe_sector = _v('alert_universe_sector');
   payload.mtfa_mode = _v('mtfa_mode') || 'full';
   payload.mtfa_workers = parseInt(_v('mtfa_workers'), 10) || 10;
+  // WO-PRIME-PSA-CALIBRATION-01: PSA Stage 0 + Stage 1 thresholds
+  payload.psa_min_price = parseFloat(_v('psa_min_price')) || 5.0;
+  payload.psa_max_price = parseFloat(_v('psa_max_price')) || 10000.0;
+  payload.psa_min_daily_volume = parseFloat(_v('psa_min_daily_volume')) || 500000;
+  payload.psa_stage1_momentum = parseFloat(_v('psa_stage1_momentum')) || 55.0;
+  payload.psa_stage1_volume = parseFloat(_v('psa_stage1_volume')) || 50.0;
+  payload.psa_stage1_volatility = parseFloat(_v('psa_stage1_volatility')) || 50.0;
+  payload.psa_stage1_bc_drawdown = parseFloat(_v('psa_stage1_bc_drawdown')) || 3.0;
+  payload.psa_stage1_cd_drawdown = parseFloat(_v('psa_stage1_cd_drawdown')) || 3.0;
+  payload.psa_confirmation_bc_drawdown = parseFloat(_v('psa_confirmation_bc_drawdown')) || 5.0;
+  payload.psa_confirmation_cd_drawdown = parseFloat(_v('psa_confirmation_cd_drawdown')) || 5.0;
 
   // Strategy thresholds
   const thresholds = {};
