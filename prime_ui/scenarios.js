@@ -92,12 +92,16 @@ function _scStaleDot(status) {
   return '<span style="color:#22c55e;font-size:10px" title="FRESH">&#9679;</span>';
 }
 
-function _scTypeBadge(typeNum) {
-  const isHighest = typeNum === '4' || typeNum === '4+';
-  const bg = isHighest ? '#14532d' : '#78350f';
-  const fg = isHighest ? '#86efac' : '#fcd34d';
-  const br = isHighest ? '#16a34a' : '#d97706';
-  return `<span style="background:${bg};color:${fg};border:1px solid ${br};padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.05em;font-family:var(--mono)">TYPE ${typeNum}</span>`;
+// WO-PRIME-SCENARIOS-BADGE-01: show scenario name on badge, not type number.
+// Colors follow conviction level: green=HIGHEST, gray=Watch(LOW), amber=HIGH.
+function _scTypeBadge(typeNum, typeName, conviction) {
+  const isHighest = conviction === 'HIGHEST' || typeNum === '4' || typeNum === '4+' || typeNum === '10';
+  const isLow = conviction === 'LOW' || String(typeNum) === '5';
+  const bg = isHighest ? '#14532d' : (isLow ? '#1e2128' : '#78350f');
+  const fg = isHighest ? '#86efac' : (isLow ? '#9ba8c4' : '#fcd34d');
+  const br = isHighest ? '#16a34a' : (isLow ? '#374151' : '#d97706');
+  const label = typeName || 'TYPE ' + typeNum;
+  return `<span style="background:${bg};color:${fg};border:1px solid ${br};padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.05em;font-family:var(--mono)">${label}</span>`;
 }
 
 function _scConvictionBadge(conviction) {
@@ -219,8 +223,7 @@ function _renderScenarioCard(sc) {
 
   return `<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:6px;padding:14px 16px">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-    ${_scTypeBadge(sc.type_num)}
-    <span style="font-weight:700;font-size:13px;color:var(--text)">${sc.type_name || '--'}</span>
+    ${_scTypeBadge(sc.type_num, sc.type_name, sc.conviction)}
     ${_scDirTag(sc.direction)}
     ${_scConvictionBadge(sc.conviction)}
     <span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text3)">${_scStaleDot(sc.staleness_status)} ${sc.staleness_status || ''}</span>
@@ -293,9 +296,7 @@ function openScenarioExecute(scenarioId) {
   const typeNum        = String(sc.type_num);
   const defaultBudget  = _SCENARIO_BUDGETS[typeNum] || 500;
 
-  document.getElementById('scen-exec-badge').innerHTML =
-    _scTypeBadge(typeNum) +
-    '<span style="font-size:12px;color:var(--text2);margin-left:8px">' + (sc.type_name || '') + '</span>';
+  document.getElementById('scen-exec-badge').innerHTML = _scTypeBadge(typeNum, sc.type_name, sc.conviction);
   document.getElementById('scen-exec-symbol').textContent = sc.primary_symbol || '--';
   document.getElementById('scen-exec-dir').innerHTML      = _scDirTag(dir);
   document.getElementById('scen-exec-price').textContent  = ep ? '$' + Number(ep).toFixed(2) : '--';
@@ -440,4 +441,73 @@ function _scExecMarkExecuted(scenarioId, fillData) {
     sessionStorage.setItem('prime_scen_exec_' + scenarioId, JSON.stringify(fillData));
   } catch (e) {}
   loadScenarios();
+}
+
+// ── WO-PRIME-SCENARIOS-REFRESH-01: two-mode status poller ────────────────────
+// Idle:       poll /scenarios/status every 60 s
+// Aggressive: poll every 3 s for 30 s after a detection fires (or while scan running)
+// On timestamp change: immediately fetch /scenarios and re-render cards
+
+let _scenDetectionTs  = null;
+let _scenPollTimer    = null;
+let _scenAggrUntil    = 0;         // epoch ms — aggressive polling until this time
+
+const _SCEN_AGGR_MS   = 3000;     // 3 s aggressive interval
+const _SCEN_IDLE_MS   = 60000;    // 60 s idle interval
+const _SCEN_AGGR_DUR  = 30000;    // 30 s aggressive window duration
+
+async function _checkScenarioStatus() {
+  try {
+    const resp = await fetch(API + '/scenarios/status');
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    // Scan running → extend aggressive window so we're ready when detection fires
+    if (data.scan_running) {
+      if (Date.now() >= _scenAggrUntil) {
+        // Transition to aggressive mode
+        _scenAggrUntil = Date.now() + _SCEN_AGGR_DUR;
+        _reschedScenPoll();
+      } else {
+        // Already aggressive — just extend the window
+        _scenAggrUntil = Date.now() + _SCEN_AGGR_DUR;
+      }
+      return;
+    }
+
+    // Detection timestamp changed → load immediately and go aggressive
+    const newTs = data.last_detection_completed_at;
+    if (newTs && newTs !== _scenDetectionTs) {
+      _scenDetectionTs = newTs;
+      _scenAggrUntil   = Date.now() + _SCEN_AGGR_DUR;
+      _reschedScenPoll();
+      loadScenarios();
+    }
+  } catch(e) { /* API offline — keep current interval */ }
+}
+
+async function _scenPollTick() {
+  await _checkScenarioStatus();
+  // Revert to idle once aggressive window expires
+  if (_scenPollTimer !== null && Date.now() >= _scenAggrUntil) {
+    clearInterval(_scenPollTimer);
+    _scenPollTimer = setInterval(_scenPollTick, _SCEN_IDLE_MS);
+  }
+}
+
+function _reschedScenPoll() {
+  clearInterval(_scenPollTimer);
+  const ms = Date.now() < _scenAggrUntil ? _SCEN_AGGR_MS : _SCEN_IDLE_MS;
+  _scenPollTimer = setInterval(_scenPollTick, ms);
+}
+
+function startScenarioPoll() {
+  if (_scenPollTimer) return;            // already running
+  _checkScenarioStatus();                // immediate check on tab activation
+  _scenPollTimer = setInterval(_scenPollTick, _SCEN_IDLE_MS);
+}
+
+function stopScenarioPoll() {
+  clearInterval(_scenPollTimer);
+  _scenPollTimer = null;
 }

@@ -859,6 +859,23 @@ def advisory_rebalance():
         return jsonify({"error": str(e), "suggestions": []}), 500
 
 
+@api_bp.route("/scenarios/status", methods=["GET"])
+def scenarios_status_endpoint():
+    """GET /api/v1/scenarios/status -- lightweight detection freshness check.
+
+    Returns the UTC timestamp of the last completed auto-detect run and whether
+    any scanner is currently running.  The Scenarios tab polls this at 2-3 s
+    (aggressive) or 60 s (idle) and triggers a full scenario fetch only when
+    last_detection_completed_at changes — avoiding redundant full fetches.
+    """
+    with _scan_lock:
+        scan_running = any(st.get("status") == "running" for st in _scan_state.values())
+    return jsonify({
+        "last_detection_completed_at": _last_detection_ts,
+        "scan_running": scan_running,
+    }), 200
+
+
 @api_bp.route("/scenarios", methods=["GET"])
 def get_scenarios_endpoint():
     """GET /api/v1/scenarios -- detected convergence scenarios (WO-PRIME-SCENARIOS-01).
@@ -2390,6 +2407,10 @@ _SCANNER_MAP: Dict[str, str] = {
 _scan_state: Dict[str, Any] = {}
 _scan_lock = threading.Lock()
 
+# WO-PRIME-SCENARIOS-REFRESH-01: UTC timestamp of the last completed run_detection()
+# call.  Polled by GET /api/v1/scenarios/status for near-instant UI refresh.
+_last_detection_ts: str = ""
+
 
 def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> None:
     """Background thread: run scanner subprocess, append output to dated scan log.
@@ -2546,6 +2567,25 @@ def _run_bridge(label: str) -> None:
         logger.error("Bridge pass %s error: %s", label, exc)
 
 
+def _auto_detect_scenarios() -> None:
+    """Run scenario detection in-process and stamp _last_detection_ts.
+
+    Called at the end of the parallel scan pipeline and after targeted MTFA runs
+    so the Scenarios tab can poll /api/v1/scenarios/status and trigger an instant
+    UI refresh without waiting for the 60-second idle poll.
+    """
+    global _last_detection_ts
+    try:
+        from prime_analytics.prime_signals_db import get_signals as _gs
+        from prime_scenarios.prime_scenario_engine import run_detection as _rd
+        approved = [s for s in _gs(limit=1000) if s.get("status") == "APPROVED"]
+        _rd(approved)
+        _last_detection_ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        logger.info("Auto scenario detection complete: %d APPROVED signals processed", len(approved))
+    except Exception as exc:
+        logger.error("Auto scenario detection failed: %s", exc)
+
+
 def _run_targeted_mtfa(symbols: List[str]) -> None:
     """Factor D: single-symbol MTFA check for newly APPROVED symbols.
 
@@ -2576,6 +2616,7 @@ def _run_targeted_mtfa(symbols: List[str]) -> None:
             env=_env,
         )
         logger.info("MTFA targeted: ingested %d signals", scan_data.get("signals_found", 0))
+        _auto_detect_scenarios()
     except Exception as exc:
         logger.error("MTFA targeted run failed: %s", exc)
 
@@ -2713,6 +2754,10 @@ def _run_parallel_deep_scan() -> None:
         with _scan_lock:
             if _scan_state.get("short", {}).get("status") != "running":
                 _run_scanner_bg("short", short_mod, skip_bridge=False)
+
+    # WO-PRIME-SCENARIOS-REFRESH-01: auto-detect scenarios at pipeline end so
+    # the Scenarios tab sees the new timestamp within 5 s of detection.
+    _auto_detect_scenarios()
 
 
 @api_bp.route("/scans/all", methods=["POST"])

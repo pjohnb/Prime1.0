@@ -995,11 +995,13 @@ function showView(id) {
   event.target.classList.add('active');
   // PM-HEALTH-04: stop the Health auto-refresh whenever we leave the tab.
   if (typeof _stopHealthAutoRefresh === 'function') _stopHealthAutoRefresh();
+  // WO-PRIME-SCENARIOS-REFRESH-01: stop dedicated scenario poller when leaving tab.
+  if (id !== 'scenarios' && typeof stopScenarioPoll === 'function') stopScenarioPoll();
   if (id === 'dashboard') loadDashboard();
   if (id === 'scans') loadScans();
   if (id === 'positions') loadPositions();
   if (id === 'signals') loadSignals();
-  if (id === 'scenarios') loadScenarios();
+  if (id === 'scenarios') { loadScenarios(); startScenarioPoll(); }
   if (id === 'settings') loadSettings();
   if (id === 'portfolio') loadPortfolio();
   if (id === 'history') loadHistory();
@@ -1061,7 +1063,7 @@ function refreshActiveView() {
   if (active.id === 'view-dashboard') loadDashboard();
   else if (active.id === 'view-positions') loadPositions();
   else if (active.id === 'view-signals') loadSignals();
-  else if (active.id === 'view-scenarios') loadScenarios();
+  // view-scenarios omitted: WO-PRIME-SCENARIOS-REFRESH-01 dedicated poller handles it
   else if (active.id === 'view-portfolio') loadPortfolio();
 }
 
