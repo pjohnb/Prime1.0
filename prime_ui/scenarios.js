@@ -255,7 +255,7 @@ async function loadScenarios() {
     if (!scenarios.length) {
       container.innerHTML = `<div style="padding:48px 0;text-align:center;color:var(--text3)">
         <div style="font-size:15px;margin-bottom:6px">No active scenarios detected.</div>
-        <div style="font-size:12px">Run a scan to detect signal convergence, then POST to /api/v1/scenarios/detect.</div>
+        <div style="font-size:12px">Scenarios will appear here automatically after the next scan run.</div>
       </div>`;
       return;
     }

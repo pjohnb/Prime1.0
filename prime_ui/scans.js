@@ -94,8 +94,7 @@ async function runAllScans() {
       return;
     }
     if (!resp.ok) {
-      const d = await resp.json().catch(() => ({}));
-      if (prog) prog.textContent = d.error || 'Error starting scan.';
+      if (prog) prog.textContent = 'Error starting scan — check API.';
       if (btn) btn.disabled = false;
       _runAllActive = false;
       return;
@@ -107,7 +106,7 @@ async function runAllScans() {
     return;
   }
 
-  if (prog) prog.textContent = 'Parallel scan running…';
+  if (prog) prog.textContent = 'Running: All Scanners…';
 
   // Poll until all scanners are idle (complete or error); timeout at ~10 min
   for (let i = 0; i < 240; i++) {
@@ -117,7 +116,7 @@ async function runAllScans() {
       const sd = await sr.json();
       const running = (sd.scanners || []).filter(x => x.status === 'running');
       if (running.length === 0) break;
-      if (prog) prog.textContent = `Running: ${running.map(x => x.scanner.toUpperCase()).join(', ')}…`;
+      if (prog) prog.textContent = 'Running: All Scanners…';
     } catch (e) { break; }
   }
 
