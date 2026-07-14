@@ -2543,7 +2543,9 @@ def _run_parallel_deep_scan() -> None:
     except Exception:
         polygon_plan = "free"
 
-    polygon_sem = threading.Semaphore(1 if polygon_plan == "free" else 3)
+    polygon_sem = threading.Semaphore(
+        1 if polygon_plan == "free" else (10 if polygon_plan == "unlimited" else 3)
+    )
     schwab_sem = threading.Semaphore(3)
 
     _SCANNER_API_CLASS: Dict[str, str] = {

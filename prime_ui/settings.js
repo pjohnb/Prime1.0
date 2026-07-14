@@ -351,7 +351,7 @@ function _renderSettings() {
     <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">POLYGON DATA FEED</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
-        ${_field('polygon_plan', 'Polygon Plan', d.polygon_plan || 'free', 'select', ['free', 'paid'], 'free = 5 req/min (13s delay); paid = unlimited (no enforced delay)')}
+        ${_field('polygon_plan', 'Polygon Plan', d.polygon_plan || 'free', 'select', ['free', 'paid', 'unlimited'], 'free = 5 req/min, Semaphore(1); paid = higher rate limit, Semaphore(3); unlimited = no rate limit, Semaphore(10)')}
         ${_field('polygon_rate_limit_delay_ms', 'Rate Limit Delay (ms)', d.polygon_rate_limit_delay_ms != null ? d.polygon_rate_limit_delay_ms : 13000, 'number', null, 'Delay between Polygon API calls in milliseconds. 13000 = 13s (free tier); 100 = paid tier. Ignored when plan = paid.')}
       </div>
       <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">IDX and SHORT scanners use Polygon for daily price bars. Change takes effect on next scan.</div>
