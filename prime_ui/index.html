@@ -256,44 +256,44 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
     </div>
   </div>
   <!-- Scanner trigger buttons -->
-  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px">
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-psa" class="btn-refresh" onclick="triggerScan('psa','scan-btn-psa')" style="min-width:90px"
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-psa" class="btn-refresh" onclick="triggerScan('psa','scan-btn-psa')" style="font-size:12px;padding:4px 10px"
               title="PSA — Prime Segment Analysis: technical momentum scan across S&P 500 universe. Produces WATCH/STRONG long candidates.">Run PSA</button>
       <span id="scan-msg-psa" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-pead" class="btn-refresh" onclick="triggerScan('pead','scan-btn-pead')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-pead" class="btn-refresh" onclick="triggerScan('pead','scan-btn-pead')" style="font-size:12px;padding:4px 10px"
               title="PEAD — Post-Earnings Announcement Drift: scans for earnings beats/misses with guidance flags. Produces PEAD long/short candidates.">Run PEAD</button>
       <span id="scan-msg-pead" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-uoa" class="btn-refresh" onclick="triggerScan('uoa','scan-btn-uoa')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-uoa" class="btn-refresh" onclick="triggerScan('uoa','scan-btn-uoa')" style="font-size:12px;padding:4px 10px"
               title="UOA — Unusual Options Activity: detects call/put volume surges (sizzle index &ge;4x). Triggers PSA long or SHORT candidates.">Run UOA</button>
       <span id="scan-msg-uoa" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-srs" class="btn-refresh" onclick="triggerScan('srs','scan-btn-srs')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-srs" class="btn-refresh" onclick="triggerScan('srs','scan-btn-srs')" style="font-size:12px;padding:4px 10px"
               title="SRS — Short Reversal Scanner: identifies over-shorted names with reversal patterns. Produces short-squeeze long candidates.">Run SRS</button>
       <span id="scan-msg-srs" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-mmr" class="btn-refresh" onclick="triggerScan('mmr','scan-btn-mmr')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-mmr" class="btn-refresh" onclick="triggerScan('mmr','scan-btn-mmr')" style="font-size:12px;padding:4px 10px"
               title="Metals Mean-Reversion Scanner. Monitors 10 precious metals instruments for oversold bounce (LONG) and overbought reversal (SHORT) conditions. Two-phase gate: TRANCHE_1 sets up the condition, TRANCHE_2 confirms directional turn. Score = RSI(14), continuous 0–100. Not comparable to IDX or PSA scores.">Run MMR</button>
       <span id="scan-msg-mmr" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-idx" class="btn-refresh" onclick="triggerScan('idx','scan-btn-idx')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-idx" class="btn-refresh" onclick="triggerScan('idx','scan-btn-idx')" style="font-size:12px;padding:4px 10px"
               title="IDX — Index Trader: scans SPY/QQQ/IWM relative-strength signals using daily bars from Polygon. Rate-limited on free tier.">Run IDX</button>
       <span id="scan-msg-idx" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-short" class="btn-refresh" onclick="triggerScan('short','scan-btn-short')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-short" class="btn-refresh" onclick="triggerScan('short','scan-btn-short')" style="font-size:12px;padding:4px 10px"
               title="SHORT — Short Selling Scanner: signal-led short candidates using put-volume surge, borrow availability, and DK nullifying signals.">Run SHORT</button>
       <span id="scan-msg-short" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
-      <button id="scan-btn-mtfa" class="btn-refresh" onclick="triggerScan('mtfa','scan-btn-mtfa')" style="min-width:90px"
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+      <button id="scan-btn-mtfa" class="btn-refresh" onclick="triggerScan('mtfa','scan-btn-mtfa')" style="font-size:12px;padding:4px 10px"
               title="MTFA — Multi-Timeframe Analysis: scores trend alignment across intraday (5-min), weekly (5 sessions), and annual (252 sessions) timeframes. Score 100 = all 3 aligned (STRONG). Uses same universe as PSA.">Run MTFA</button>
       <span id="scan-msg-mtfa" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
