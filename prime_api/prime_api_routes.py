@@ -1095,6 +1095,7 @@ def create_trade():
     if order_type not in ("MARKET", "LIMIT"):
         order_type = "MARKET"
     confirmed  = bool(payload.get("confirmed", False))
+    signal_id_val = str(payload.get("signal_id") or "").strip() or None
 
     try:
         qty   = int(payload.get("qty"))
@@ -1256,6 +1257,7 @@ def create_trade():
                 stop_price=live_stop_price,
                 target_price=live_target_price,
                 stop_type=live_stop_type,
+                signal_id=signal_id_val,
             )
             # Wire trailing stop pct if TRAILING mode
             if live_stop_type == "TRAILING" and live_trail_pct is not None and log_id:
@@ -1371,6 +1373,7 @@ def create_trade():
             time_stop_minutes=time_stop_min_val,
             stop_type=stop_type_val,
             limit_price=limit_price_val,
+            signal_id=signal_id_val,
         )
 
         # For TRAILING stop: wire trailing_stop_pct to the new trade

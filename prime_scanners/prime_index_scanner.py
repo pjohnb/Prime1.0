@@ -325,7 +325,7 @@ def _write_index_signal(signal: Dict[str, Any], db_path: Optional[Path] = None) 
     from prime_intelligence.prime_portfolio_factor import sector_map
 
     init_signals_table(db_path)
-    insert_signal(
+    sid = insert_signal(
         symbol=signal["symbol"],
         strategy="UOA_INDEX",
         scan_ts=datetime.now().isoformat(),
@@ -337,6 +337,9 @@ def _write_index_signal(signal: Dict[str, Any], db_path: Optional[Path] = None) 
         factors=json.dumps(signal.get("factors", {})),
         db_path=db_path,
     )
+    # Stamp the persisted signal_id back onto the dict so capture_ml_event
+    # uses the same UUID4 key that prime_signals now holds (Fix 1a).
+    signal["signal_id"] = sid
 
 
 def main():

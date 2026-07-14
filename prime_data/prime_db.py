@@ -85,7 +85,11 @@ CREATE TABLE IF NOT EXISTS prime_ml_dataset (
     pnl_pct             REAL,
     hold_minutes        INTEGER,
     exit_reason         TEXT,
-    outcome_captured_at TEXT
+    outcome_captured_at TEXT,
+    scenario_type       INTEGER,
+    constituent_signals TEXT,
+    psa_norm_vol        REAL,
+    staleness_seconds   INTEGER
 )
 """
 
@@ -178,6 +182,11 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     _migrate_add_column_ml_dataset(db_path, "dnow_score", "REAL")
     # Sprint 33 Thread 2 / CIL-040: ab_volume_raw (call-minus-put side volume).
     _migrate_add_column_ml_dataset(db_path, "ab_volume_raw", "REAL")
+    # WO-PRIME-ML-DATABASE-01: scenario linkage + PSA/staleness features.
+    _migrate_add_column_ml_dataset(db_path, "scenario_type", "INTEGER")
+    _migrate_add_column_ml_dataset(db_path, "constituent_signals", "TEXT")
+    _migrate_add_column_ml_dataset(db_path, "psa_norm_vol", "REAL")
+    _migrate_add_column_ml_dataset(db_path, "staleness_seconds", "INTEGER")
     # Sprint 35 CIL-NEW-08: staged entry tranche tracking.
     _migrate_add_column_trade_log(db_path, "stage_number", "INTEGER")
     _migrate_add_column_trade_log(db_path, "stage_total", "INTEGER")

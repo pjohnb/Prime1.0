@@ -76,10 +76,20 @@ class PrimeMLEvent:
     exit_reason: Optional[str] = None
     outcome_captured_at: Optional[str] = None
 
+    # --- scenario linkage + PSA/staleness features (WO-PRIME-ML-DATABASE-01) ---
+    scenario_type: Optional[int] = None
+    constituent_signals: Optional[str] = None  # JSON array of signal_ids
+    psa_norm_vol: Optional[float] = None
+    staleness_seconds: Optional[int] = None
+
 
 # Column names in table order, derived once from the dataclass so the INSERT
 # and the table DDL cannot drift apart in their ordering.
 ML_COLUMNS = [f.name for f in fields(PrimeMLEvent)]
+
+# Fields that every scanner signal should carry; None at capture time means
+# the scanner dict is missing keys — a WARNING is logged so gaps are visible.
+_REQUIRED_CAPTURE_FIELDS = ("direction", "tier", "dk_status", "entry_price")
 
 
 # ---------------------------------------------------------------------------
@@ -110,37 +120,94 @@ def _fetch_spy_closes(schwab_client) -> list:
     return [c.get("close", 0) for c in data.get("candles", []) if c.get("close")]
 
 
+def _fetch_spy_closes_polygon() -> list:
+    """Return SPY daily closes (oldest first) via Polygon. Returns [] on any failure."""
+    try:
+        from prime_config.prime_config import get_config
+        api_key = get_config().polygon_api_key
+        if not api_key:
+            return []
+        import requests
+        today = datetime.now().date()
+        from_date = today - timedelta(days=_REGIME_SMA_PERIOD + 30)
+        r = requests.get(
+            f"https://api.polygon.io/v2/aggs/ticker/{_REGIME_SYMBOL}/range/1/day"
+            f"/{from_date}/{today}",
+            params={"adjusted": "true", "sort": "asc", "limit": 5000, "apiKey": api_key},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return [c["c"] for c in r.json().get("results", []) if c.get("c")]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Polygon SPY fetch failed: %s", e)
+    return []
+
+
+def _compute_regime(closes: list) -> str:
+    """Compute BULL/BEAR/NEUTRAL from a series of daily closes. Returns UNKNOWN if too short."""
+    if len(closes) < _REGIME_SMA_PERIOD:
+        return "UNKNOWN"
+    sma = sum(closes[-_REGIME_SMA_PERIOD:]) / _REGIME_SMA_PERIOD
+    last = closes[-1]
+    if last > sma:
+        return "BULL"
+    if last < sma * _REGIME_BEAR_FACTOR:
+        return "BEAR"
+    return "NEUTRAL"
+
+
+def _last_known_regime() -> str:
+    """Return the most recent non-UNKNOWN market_regime from prime_ml_dataset."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT market_regime FROM prime_ml_dataset "
+                "WHERE market_regime NOT IN ('UNKNOWN', '') "
+                "AND market_regime IS NOT NULL "
+                "ORDER BY capture_ts DESC LIMIT 1"
+            ).fetchone()
+        return row[0] if row else "UNKNOWN"
+    except Exception:
+        return "UNKNOWN"
+
+
 def _get_market_regime(schwab_client=None) -> str:
     """Classify the broad-market regime from SPY vs its 50-day SMA.
 
-    BULL if SPY close > SMA50; BEAR if SPY close < SMA50 * 0.97; else NEUTRAL.
-    Returns 'UNKNOWN' when SPY data is unavailable. The result is cached per
-    calendar day (module-level dict) so only one Schwab call happens per day;
-    pass an explicit schwab_client to reuse an authenticated session.
+    Primary source: Polygon daily bars (no auth required at scan time).
+    Legacy path: explicit schwab_client (used by tests and callers that already
+    hold an authenticated Schwab session).
+    DB fallback: if both sources return insufficient data, returns the last
+    non-UNKNOWN regime persisted in prime_ml_dataset. Logs WARNING when the
+    fallback fires. Caches the result per calendar day so only one external call
+    happens per day.
     """
     day = datetime.now().strftime("%Y-%m-%d")
     if day in _REGIME_CACHE:
         return _REGIME_CACHE[day]
 
     regime = "UNKNOWN"
-    try:
-        client = schwab_client
-        if client is None:
-            from prime_trading.prime_schwab import SchwabClient
-            client = SchwabClient()
-        closes = _fetch_spy_closes(client)
-        if len(closes) >= _REGIME_SMA_PERIOD:
-            sma = sum(closes[-_REGIME_SMA_PERIOD:]) / _REGIME_SMA_PERIOD
-            last = closes[-1]
-            if last > sma:
-                regime = "BULL"
-            elif last < sma * _REGIME_BEAR_FACTOR:
-                regime = "BEAR"
-            else:
-                regime = "NEUTRAL"
-    except Exception as e:  # noqa: BLE001 - regime is best-effort
-        logger.debug("Market regime unavailable: %s", e)
-        regime = "UNKNOWN"
+    if schwab_client is not None:
+        # Explicit Schwab client injected — use it as the fetch source (tests, callers
+        # that already hold an authenticated session).
+        try:
+            closes = _fetch_spy_closes(schwab_client)
+            regime = _compute_regime(closes)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Market regime (Schwab) unavailable: %s", e)
+    else:
+        # Primary production path: Polygon (available without Schwab auth at scan time).
+        closes = _fetch_spy_closes_polygon()
+        if closes:
+            regime = _compute_regime(closes)
+        if regime == "UNKNOWN":
+            last_known = _last_known_regime()
+            if last_known != "UNKNOWN":
+                logger.warning(
+                    "market_regime: using last known DB regime (%s) — Polygon unavailable",
+                    last_known,
+                )
+                regime = last_known
 
     _REGIME_CACHE[day] = regime
     return regime
@@ -200,6 +267,10 @@ def build_ml_event(signal: Dict[str, Any],
         borrow_rate=signal.get("borrow_rate"),
         market_regime=market_regime,
         capture_ts=capture_ts,
+        scenario_type=signal.get("scenario_type"),
+        constituent_signals=signal.get("constituent_signals"),
+        psa_norm_vol=signal.get("psa_norm_vol"),
+        staleness_seconds=signal.get("staleness_seconds"),
     )
 
 
@@ -213,6 +284,13 @@ def capture_ml_event(signal: Dict[str, Any],
     """
     try:
         event = build_ml_event(signal)
+        for fname in _REQUIRED_CAPTURE_FIELDS:
+            if getattr(event, fname) is None:
+                logger.warning(
+                    "capture_ml_event: required field '%s' is None "
+                    "for signal_id=%s symbol=%s",
+                    fname, event.signal_id, event.symbol,
+                )
         values = [getattr(event, col) for col in ML_COLUMNS]
         placeholders = ",".join("?" for _ in ML_COLUMNS)
         columns = ",".join(ML_COLUMNS)
