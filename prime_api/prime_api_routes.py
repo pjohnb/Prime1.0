@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from flask import Blueprint, jsonify, request
 
@@ -1437,6 +1437,8 @@ _SETTINGS_FIELDS = [
     # WO-PRIME-PSA-UNIVERSE-01: configurable scan + alert universes
     "psa_universe", "psa_universe_custom", "psa_universe_sector",
     "alert_universe", "alert_universe_custom", "alert_universe_sector",
+    # WO-PRIME-MTFA-PERF-01: MTFA performance controls
+    "mtfa_workers", "mtfa_mode",
 ]
 
 
@@ -2460,6 +2462,33 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
                 if bridge_proc.stderr:
                     lf.write(bridge_proc.stderr)
 
+            # Factor D: after PSA bridge writes APPROVED signals, spawn a
+            # targeted single-symbol MTFA check for any APPROVED symbol that
+            # MTFA has not yet analysed today.  Runs in a daemon thread so
+            # the individual scan response returns immediately.
+            if scanner == "psa" and proc.returncode == 0:
+                try:
+                    from prime_analytics.prime_signals_db import get_signals as _gs
+                    _today = datetime.now().strftime("%Y-%m-%d")
+                    _approved = {
+                        r["symbol"] for r in _gs(status="APPROVED", limit=1000)
+                        if r.get("scan_ts", "").startswith(_today)
+                    }
+                    _mtfa_today = {
+                        r["symbol"] for r in _gs(strategy="MTFA", limit=1000)
+                        if r.get("scan_ts", "").startswith(_today)
+                    }
+                    _need = sorted(_approved - _mtfa_today)
+                    if _need:
+                        _t = threading.Thread(
+                            target=_run_targeted_mtfa, args=(_need,), daemon=True
+                        )
+                        _t.name = "mtfa-targeted"
+                        _t.start()
+                        logger.info("MTFA targeted: spawned for %d symbol(s)", len(_need))
+                except Exception as _exc:
+                    logger.warning("MTFA targeted trigger failed: %s", _exc)
+
         # Count new signals from bridge output
         signals = 0
         for line in output_lines:
@@ -2517,6 +2546,40 @@ def _run_bridge(label: str) -> None:
         logger.error("Bridge pass %s error: %s", label, exc)
 
 
+def _run_targeted_mtfa(symbols: List[str]) -> None:
+    """Factor D: single-symbol MTFA check for newly APPROVED symbols.
+
+    Runs in a daemon thread after PSA bridge.  Saves results and re-runs the
+    bridge so scenario detection picks up the targeted MTFA signals within ~5s.
+    """
+    import sys as _sys
+    import os as _os
+    try:
+        from prime_scanners.prime_mtfa_scanner import (
+            run_mtfa_scan as _mtfa_run,
+            save_results as _mtfa_save,
+        )
+        from prime_config.prime_config import get_config as _get_cfg
+        api_key = _get_cfg().polygon_api_key or ""
+        if not api_key:
+            return
+        logger.info("MTFA targeted: %d symbol(s): %s", len(symbols), symbols)
+        scan_data = _mtfa_run(api_key=api_key, universe=symbols)
+        _mtfa_save(scan_data)
+        _env = dict(_os.environ)
+        _env["PYTHONPATH"] = str(_PROJECT_ROOT_PATH)
+        _env["PYTHONIOENCODING"] = "utf-8"
+        _subprocess.run(
+            [_sys.executable, "-m", "prime_bridge.prime_signal_bridge", "--ingest-latest"],
+            cwd=str(_PROJECT_ROOT_PATH),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=_env,
+        )
+        logger.info("MTFA targeted: ingested %d signals", scan_data.get("signals_found", 0))
+    except Exception as exc:
+        logger.error("MTFA targeted run failed: %s", exc)
+
+
 def _run_parallel_deep_scan() -> None:
     """WO-PRIME-PARALLEL-SCANS-01: concurrent deep-scan coordinator.
 
@@ -2540,8 +2603,12 @@ def _run_parallel_deep_scan() -> None:
     try:
         ops = json.loads(open(_OPS_CONFIG_PATH, encoding="utf-8").read())
         polygon_plan = ops.get("polygon_plan", "free")
+        mtfa_mode = ops.get("mtfa_mode", "full")
+        mtfa_workers = int(ops.get("mtfa_workers", 10))
     except Exception:
         polygon_plan = "free"
+        mtfa_mode = "full"
+        mtfa_workers = 10
 
     polygon_sem = threading.Semaphore(
         1 if polygon_plan == "free" else (10 if polygon_plan == "unlimited" else 3)
@@ -2589,10 +2656,15 @@ def _run_parallel_deep_scan() -> None:
             elif scanner == "pead":
                 pead_done.set()
 
-    # Stage 1: five scanners concurrent, PSA submitted after bridge pass 1.
-    # max_workers = Stage-1 count + 1 so PSA always has a free slot.
+    # Stage 1: scanners run concurrently; PSA submitted after bridge pass 1.
+    # max_workers = Stage-1 count + 2: PSA gets its own slot, one spare.
+    # In 'confirmation' mode MTFA is deferred until after bridge pass 2 so it
+    # can restrict its universe to symbols already APPROVED by Stage-1 scanners.
     stage1 = ["idx", "uoa", "mmr", "pead", "srs", "mtfa"]
-    with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 1,
+    if mtfa_mode == "confirmation":
+        stage1 = ["idx", "uoa", "mmr", "pead", "srs"]
+
+    with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 2,
                                 thread_name_prefix="deepscan") as pool:
         for s in stage1:
             pool.submit(_guarded_run, s)
@@ -2611,6 +2683,29 @@ def _run_parallel_deep_scan() -> None:
 
     # Bridge pass 2: consolidate PSA + SRS + IDX output into prime_signals.
     _run_bridge("2")
+
+    # Factor C — Confirmation mode: MTFA runs here (post bridge-2) with a
+    # universe restricted to symbols already APPROVED by Stage-1 + PSA.
+    if mtfa_mode == "confirmation":
+        try:
+            from prime_analytics.prime_signals_db import get_signals
+            from prime_scanners.prime_mtfa_scanner import (
+                run_mtfa_scan as _mtfa_run,
+                save_results as _mtfa_save,
+            )
+            from prime_config.prime_config import get_config as _get_cfg
+            _api_key = _get_cfg().polygon_api_key or ""
+            _approved = get_signals(status="APPROVED", limit=1000)
+            _syms = sorted({r["symbol"] for r in _approved if r.get("symbol")})
+            if _syms:
+                logger.info("MTFA confirmation mode: %d symbols from Stage-1 APPROVED", len(_syms))
+                _mtfa_data = _mtfa_run(api_key=_api_key, universe=_syms)
+                _mtfa_save(_mtfa_data)
+                _run_bridge("3")
+            else:
+                logger.info("MTFA confirmation mode: no APPROVED symbols — skipping")
+        except Exception as _exc:
+            logger.error("MTFA confirmation mode failed: %s", _exc)
 
     # Short scanner: reads UOA/PEAD/PSA signals from DB after bridge pass 2.
     short_mod = _SCANNER_MAP.get("short")

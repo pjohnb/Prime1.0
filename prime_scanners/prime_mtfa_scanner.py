@@ -23,10 +23,10 @@ Standalone: python prime_scanners/prime_mtfa_scanner.py
 import json
 import logging
 import sys
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -206,6 +206,49 @@ def analyze_symbol(
 
 
 # ---------------------------------------------------------------------------
+# Per-symbol worker (called from ThreadPoolExecutor)
+# ---------------------------------------------------------------------------
+
+_STAGE0  = "stage0"
+_FETCH   = "fetch"
+_SIGNAL  = "signal"
+_NOSIG   = "nosig"
+
+
+def _scan_one(
+    symbol: str,
+    api_key: str,
+    min_price: float,
+    min_daily_volume: float,
+    scan_ts: str,
+) -> Tuple[str, Optional[Dict[str, Any]], str]:
+    """Fetch + analyse one symbol. Returns (symbol, signal_dict_or_None, outcome).
+
+    outcome values: 'stage0' | 'fetch' | 'nosig' | 'signal'
+    """
+    daily_bars = fetch_daily_bars(symbol, ANNUAL_BARS, api_key)
+    if not daily_bars:
+        return symbol, None, _FETCH
+
+    last_close = daily_bars[-1]["close"]
+    last_volume = daily_bars[-1]["volume"]
+    if last_close < min_price or last_volume < min_daily_volume:
+        logger.debug("MTFA stage0 rejected %s: price=%.2f vol=%.0f",
+                     symbol, last_close, last_volume)
+        return symbol, None, _STAGE0
+
+    intraday_bars = fetch_intraday_bars(symbol, api_key)
+    if not intraday_bars:
+        return symbol, None, _FETCH
+
+    result = analyze_symbol(daily_bars, intraday_bars)
+    if result is None:
+        return symbol, None, _NOSIG
+
+    return symbol, {"symbol": symbol, "scan_ts": scan_ts, **result}, _SIGNAL
+
+
+# ---------------------------------------------------------------------------
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
@@ -253,40 +296,32 @@ def run_mtfa_scan(
     analyzed = 0
     scan_ts = scan_time.strftime("%Y-%m-%d %H:%M")
 
-    for symbol in universe:
-        time.sleep(0.15)
+    try:
+        workers = get_config().ops.mtfa_workers
+    except Exception:
+        workers = 10
 
-        # One daily-bar fetch covers both annual and weekly windows.
-        daily_bars = fetch_daily_bars(symbol, ANNUAL_BARS, api_key)
-        if not daily_bars:
-            fetch_failures += 1
-            continue
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mtfa") as pool:
+        futures = {
+            pool.submit(_scan_one, sym, api_key, min_price, min_daily_volume, scan_ts): sym
+            for sym in universe
+        }
+        for fut in as_completed(futures):
+            try:
+                _sym, sig, outcome = fut.result()
+            except Exception as exc:
+                logger.warning("MTFA worker error: %s", exc)
+                fetch_failures += 1
+                continue
 
-        # Stage 0: price + volume screen using most-recent daily bar.
-        last_close = daily_bars[-1]["close"]
-        last_volume = daily_bars[-1]["volume"]
-        if last_close < min_price or last_volume < min_daily_volume:
-            stage0_rejected += 1
-            logger.debug(
-                "MTFA stage0 rejected %s: price=%.2f vol=%.0f",
-                symbol, last_close, last_volume,
-            )
-            continue
-
-        time.sleep(0.15)
-
-        intraday_bars = fetch_intraday_bars(symbol, api_key)
-        if not intraday_bars:
-            # No intraday data — market closed or pre-market.
-            fetch_failures += 1
-            continue
-
-        analyzed += 1
-        result = analyze_symbol(daily_bars, intraday_bars)
-        if result is None:
-            continue
-
-        signals.append({"symbol": symbol, "scan_ts": scan_ts, **result})
+            if outcome == _FETCH:
+                fetch_failures += 1
+            elif outcome == _STAGE0:
+                stage0_rejected += 1
+            else:
+                analyzed += 1
+                if sig is not None:
+                    signals.append(sig)
 
     signals.sort(key=lambda s: s["score"], reverse=True)
 

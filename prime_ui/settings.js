@@ -427,6 +427,28 @@ function _renderSettings() {
     </div>
 
     <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">MTFA PERFORMANCE</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
+        <label style="display:flex;flex-direction:column;gap:4px" title="full: MTFA runs over the entire PSA universe each scan. confirmation: MTFA runs only on symbols already APPROVED by Stage-1 scanners — much faster when the universe is large.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">MTFA Mode</span>
+          <select id="sett-mtfa_mode"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px">
+            ${['full','confirmation'].map(o =>
+              `<option value="${o}"${(d.mtfa_mode||'full')===o?' selected':''}>${{full:'Full Universe',confirmation:'Confirmation Only'}[o]}</option>`).join('')}
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Number of parallel threads inside the MTFA scanner (1–20). Higher values reduce wall-clock time but increase concurrent Polygon API load. Default 10 suits the Unlimited plan.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">MTFA Workers</span>
+          <input type="number" id="sett-mtfa_workers" min="1" max="20"
+            value="${d.mtfa_workers != null ? d.mtfa_workers : 10}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 10. Range 1–20.</span>
+        </label>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">Full mode: 503-symbol run (~2 min with 10 workers). Confirmation mode: runs MTFA only on Stage-1 APPROVED symbols — typically under 30 s.</div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
       <div class="panel-title">SCENARIOS</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:8px">
         <label style="display:flex;flex-direction:column;gap:4px" title="Maximum number of scenario cards shown in the Scenarios tab. FIFO — newest first. Stored locally in this browser.">
@@ -682,6 +704,8 @@ async function saveSettings() {
   payload.alert_universe = _v('alert_universe');
   payload.alert_universe_custom = _v('alert_universe_custom') || '';
   payload.alert_universe_sector = _v('alert_universe_sector');
+  payload.mtfa_mode = _v('mtfa_mode') || 'full';
+  payload.mtfa_workers = parseInt(_v('mtfa_workers'), 10) || 10;
 
   // Strategy thresholds
   const thresholds = {};

@@ -76,28 +76,34 @@ class TestParallelScansStructure(unittest.TestCase):
                       "Parallel coordinator must use threading.Semaphore")
 
     def test_uoa_and_pead_events_gate_psa(self):
-        """uoa_done and pead_done events must be waited before PSA is submitted."""
+        """uoa_done event must be waited before PSA is submitted.
+
+        Note: pead_done.wait() was intentionally removed (Sprint BUG-PSA-SHORT-NOOP):
+        PEAD contends for polygon_sem with IDX/SRS (free plan cap=1), which blocks the
+        coordinator indefinitely. Gating is now on uoa_done only; PEAD signals reach
+        prime_signals via bridge pass 2.
+        """
         start = ROUTES_SRC.index("def _run_parallel_deep_scan(")
         end = ROUTES_SRC.index("\n@api_bp.route", start)
         body = ROUTES_SRC[start:end]
         self.assertIn("uoa_done.wait()", body,
                       "Coordinator must wait for uoa_done before PSA")
-        self.assertIn("pead_done.wait()", body,
-                      "Coordinator must wait for pead_done before PSA")
-        # PSA pool submission must come AFTER the wait calls
+        # PSA pool submission must come AFTER the uoa_done wait
         uoa_wait_pos = body.index("uoa_done.wait()")
         psa_submit_pos = body.index('pool.submit(_guarded_run, "psa")')
         self.assertGreater(psa_submit_pos, uoa_wait_pos,
                            "PSA must be submitted after uoa_done.wait()")
 
     def test_two_bridge_passes(self):
-        """Coordinator must run exactly two named bridge passes."""
+        """Coordinator must run at least bridge passes '1' and '2'; a third pass ('3')
+        is permitted in confirmation mode (post-MTFA ingestion).
+        """
         start = ROUTES_SRC.index("def _run_parallel_deep_scan(")
         end = ROUTES_SRC.index("\n@api_bp.route", start)
         body = ROUTES_SRC[start:end]
         bridge_calls = re.findall(r'_run_bridge\("(\w+)"\)', body)
-        self.assertEqual(len(bridge_calls), 2,
-                         f"Expected 2 bridge passes, found {len(bridge_calls)}: {bridge_calls}")
+        self.assertGreaterEqual(len(bridge_calls), 2,
+                                f"Expected at least 2 bridge passes, found {len(bridge_calls)}: {bridge_calls}")
         self.assertIn("1", bridge_calls, "Bridge pass '1' not found")
         self.assertIn("2", bridge_calls, "Bridge pass '2' not found")
         # Pass 1 must precede PSA pool submission

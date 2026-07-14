@@ -183,6 +183,12 @@ class OpsConfig:
     alert_universe: str = "sp500"
     alert_universe_custom: str = ""
     alert_universe_sector: str = "XLK"
+    # WO-PRIME-MTFA-PERF-01: MTFA parallelism + confirmation mode.
+    # mtfa_workers: ThreadPoolExecutor size inside run_mtfa_scan (default 10).
+    # mtfa_mode: 'full' runs entire PSA universe; 'confirmation' restricts MTFA
+    #   to symbols already APPROVED by Stage-1 scanners (post bridge-pass-2).
+    mtfa_workers: int = 10
+    mtfa_mode: str = "full"
     # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
     # Defaults are the working values from sprint history; users can tune in Settings UI.
     strategy_thresholds: Any = field(default_factory=lambda: {
