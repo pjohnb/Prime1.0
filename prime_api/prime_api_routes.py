@@ -2414,6 +2414,10 @@ _SCANNER_MAP: Dict[str, str] = {
 _scan_state: Dict[str, Any] = {}
 _scan_lock = threading.Lock()
 
+# WO-PRIME-PSA-CALIBRATION-02 Phase 2: PSA diagnostic scan state
+_diag_state: Dict[str, Any] = {"status": "idle", "last_run": None, "error": None}
+_diag_lock = threading.Lock()
+
 # WO-PRIME-SCENARIOS-REFRESH-01: UTC timestamp of the last completed run_detection()
 # call.  Polled by GET /api/v1/scenarios/status for near-instant UI refresh.
 _last_detection_ts: str = ""
@@ -2847,6 +2851,159 @@ def get_scan_status():
         })
 
     return jsonify({"scanners": rows, "count": len(rows)}), 200
+
+
+def _run_psa_diagnostic_bg() -> None:
+    """Background thread: run full diagnostic scan and update _diag_state."""
+    global _diag_state
+    with _diag_lock:
+        _diag_state = {"status": "running", "last_run": datetime.utcnow().isoformat(), "error": None}
+    try:
+        from prime_config.prime_config import get_config
+        from prime_scanners.prime_psa_diagnostic import run_psa_diagnostic_scan
+        cfg = get_config()
+        api_key = cfg.polygon_api_key
+        workers = int(cfg.ops.psa_workers)
+        run_psa_diagnostic_scan(
+            api_key=api_key,
+            workers=workers,
+            scan_results_dir=cfg.scan_results_dir,
+        )
+        with _diag_lock:
+            _diag_state["status"] = "complete"
+    except Exception as exc:
+        logger.exception("PSA diagnostic scan failed")
+        with _diag_lock:
+            _diag_state["status"] = "error"
+            _diag_state["error"] = str(exc)
+
+
+@api_bp.route("/psa/optimizer/run-diagnostic", methods=["POST"])
+def psa_run_diagnostic():
+    """POST /api/v1/psa/optimizer/run-diagnostic -- start diagnostic scan in background.
+
+    WO-PRIME-PSA-CALIBRATION-02 Phase 2. Returns 409 if already running.
+    """
+    with _diag_lock:
+        if _diag_state.get("status") == "running":
+            return jsonify({"error": "Diagnostic scan already running"}), 409
+    t = threading.Thread(target=_run_psa_diagnostic_bg, daemon=True, name="psa-diag")
+    t.start()
+    return jsonify({"status": "started"}), 202
+
+
+@api_bp.route("/psa/optimizer/status", methods=["GET"])
+def psa_diagnostic_status():
+    """GET /api/v1/psa/optimizer/status -- poll diagnostic scan progress.
+
+    WO-PRIME-PSA-CALIBRATION-02 Phase 2.
+    """
+    with _diag_lock:
+        state = dict(_diag_state)
+    return jsonify(state), 200
+
+
+@api_bp.route("/psa/optimizer/results", methods=["GET"])
+def psa_optimizer_results():
+    """GET /api/v1/psa/optimizer/results?target_n=20 -- PCA scores, thresholds, gap analysis.
+
+    WO-PRIME-PSA-CALIBRATION-02 Phase 2. Loads psa_diagnostic_latest.json,
+    computes PCA + recommended thresholds + gap analysis, returns combined JSON.
+    """
+    try:
+        from prime_config.prime_config import get_config
+        from prime_scanners.prime_psa_diagnostic import (
+            load_diagnostic_results, compute_pca_scores,
+            compute_recommended_thresholds, compute_gap_analysis,
+        )
+        cfg = get_config()
+        diag = load_diagnostic_results(cfg.scan_results_dir)
+        if not diag:
+            return jsonify({"status": "no_data"}), 200
+
+        target_n = max(1, int(request.args.get("target_n", 20)))
+
+        pca_result = compute_pca_scores(diag.get("factors", []))
+        weights = pca_result["weights"]
+        ranked = pca_result["ranked"]
+
+        recommended = compute_recommended_thresholds(ranked, target_n)
+
+        top_n_symbols = [r["symbol"] for r in ranked[:target_n]]
+        gap = compute_gap_analysis(top_n_symbols, scan_results_dir=cfg.scan_results_dir)
+
+        # Current threshold values for comparison
+        current = {
+            "psa_min_price": cfg.ops.psa_min_price,
+            "psa_max_price": cfg.ops.psa_max_price,
+            "psa_min_daily_volume": cfg.ops.psa_min_daily_volume,
+            "psa_stage1_momentum": cfg.ops.psa_stage1_momentum,
+            "psa_stage1_volume": cfg.ops.psa_stage1_volume,
+            "psa_stage1_volatility": cfg.ops.psa_stage1_volatility,
+            "psa_stage1_bc_drawdown": cfg.ops.psa_stage1_bc_drawdown,
+            "psa_stage1_cd_drawdown": cfg.ops.psa_stage1_cd_drawdown,
+        }
+
+        return jsonify({
+            "status": "ok",
+            "run_timestamp": diag.get("run_timestamp"),
+            "universe_size": diag.get("universe_size", 0),
+            "factor_rows": diag.get("factor_rows", 0),
+            "target_n": target_n,
+            "weights": weights,
+            "top_n": ranked[:target_n],
+            "gap": gap,
+            "recommended": recommended,
+            "current": current,
+        }), 200
+    except Exception as e:
+        logger.exception("PSA optimizer results failed")
+        return jsonify({"error": str(e)}), 500
+
+
+# Allowed fields for the optimizer apply endpoint — Stage 0 and Stage 1 only.
+_OPTIMIZER_APPLY_FIELDS = [
+    "psa_min_price", "psa_max_price", "psa_min_daily_volume",
+    "psa_stage1_momentum", "psa_stage1_volume", "psa_stage1_volatility",
+    "psa_stage1_bc_drawdown", "psa_stage1_cd_drawdown",
+]
+
+
+@api_bp.route("/psa/optimizer/apply", methods=["POST"])
+def psa_optimizer_apply():
+    """POST /api/v1/psa/optimizer/apply -- write approved thresholds to ops_config.json.
+
+    WO-PRIME-PSA-CALIBRATION-02 Phase 2.
+    Payload: {thresholds: {psa_min_price, psa_max_price, ...}}.
+    Only Stage 0 and Stage 1 fields are written; strategy_thresholds is never touched.
+    Does NOT trigger a scan — operator initiates scan manually.
+    """
+    payload = request.get_json(silent=True) or {}
+    thresholds = payload.get("thresholds", {})
+    if not thresholds:
+        return jsonify({"error": "No thresholds provided"}), 400
+
+    try:
+        with open(_OPS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        updated_keys = []
+        for key in _OPTIMIZER_APPLY_FIELDS:
+            if key in thresholds:
+                raw[key] = thresholds[key]
+                updated_keys.append(key)
+
+        with open(_OPS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2)
+
+        from prime_config.prime_config import reload_config
+        reload_config()
+
+        logger.info("PSA optimizer applied thresholds: %s", updated_keys)
+        return jsonify({"status": "applied", "updated": updated_keys}), 200
+    except Exception as e:
+        logger.exception("PSA optimizer apply failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @api_bp.route("/psa/stage0-distribution", methods=["GET"])

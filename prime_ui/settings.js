@@ -288,6 +288,7 @@ async function loadSettings() {
     _renderSettings();
     loadSchwabStatus();
     loadAiUsageTable();
+    loadPsaOptimizerResults();
   } catch (e) {
     console.error('loadSettings:', e);
     document.getElementById('settings-body').innerHTML =
@@ -531,6 +532,25 @@ function _renderSettings() {
         </label>
       </div>
       <div style="font-size:12px;color:var(--text3);margin-top:8px;font-family:var(--mono)">Stage 1 gates apply after price/volume filter. Changes take effect on next scan. Confirmation thresholds apply when --role=confirmation is passed to the PSA subprocess.</div>
+    </div>
+
+    <div class="order-panel" style="margin-bottom:20px">
+      <div class="panel-title">PSA SETTINGS OPTIMIZER</div>
+      <div style="font-size:12px;color:var(--text3);font-family:var(--mono);margin:8px 0 12px">
+        Diagnostic scan runs all universe symbols with gates suspended, builds a factor matrix, and uses PCA to rank symbols and back-calculate recommended Stage 0 and Stage 1 thresholds.
+        Typical runtime: ~2 min. Does NOT trigger a live scan or affect scenario detection.
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2)">
+          Capture top
+          <input type="number" id="opt-target-n" min="1" max="100" value="20"
+            style="width:60px;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:13px;font-family:var(--mono);text-align:center"/>
+          symbols
+        </label>
+        <button id="opt-run-btn" class="btn-confirm" onclick="runPsaDiagnostic()" style="font-size:12px;padding:5px 14px">Run Diagnostic Scan</button>
+        <span id="opt-status-msg" style="font-family:var(--mono);font-size:12px;color:var(--text3)"></span>
+      </div>
+      <div id="opt-results-panel"></div>
     </div>
 
     <div class="order-panel" style="margin-bottom:20px">
@@ -815,4 +835,214 @@ function resetSettings() {
   if (!confirm('Reset all settings to defaults? This cannot be undone.')) return;
   // Re-render with empty data to trigger defaults on next load
   loadSettings();
+}
+
+// ── PSA Settings Optimizer (WO-PRIME-PSA-CALIBRATION-02 Phase 2) ─────────────
+
+let _optPollTimer = null;
+
+async function runPsaDiagnostic() {
+  const btn = document.getElementById('opt-run-btn');
+  const msg = document.getElementById('opt-status-msg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+  if (msg) { msg.style.color = 'var(--amber)'; msg.textContent = 'Starting diagnostic scan...'; }
+
+  try {
+    const resp = await fetch(_settApi() + '/psa/optimizer/run-diagnostic', { method: 'POST' });
+    if (resp.status === 409) {
+      if (msg) { msg.style.color = 'var(--amber)'; msg.textContent = 'Diagnostic already running — polling...'; }
+    } else if (!resp.ok) {
+      const d = await resp.json();
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = d.error || 'Failed to start'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Run Diagnostic Scan'; }
+      return;
+    }
+    _startOptPoll();
+  } catch (e) {
+    if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'API offline'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Run Diagnostic Scan'; }
+  }
+}
+
+function _startOptPoll() {
+  if (_optPollTimer) clearInterval(_optPollTimer);
+  _optPollTimer = setInterval(_pollOptStatus, 4000);
+}
+
+async function _pollOptStatus() {
+  const btn = document.getElementById('opt-run-btn');
+  const msg = document.getElementById('opt-status-msg');
+  try {
+    const resp = await fetch(_settApi() + '/psa/optimizer/status');
+    const d = await resp.json();
+    if (d.status === 'running') {
+      if (msg) { msg.style.color = 'var(--amber)'; msg.textContent = 'Diagnostic scan running...'; }
+    } else if (d.status === 'complete') {
+      clearInterval(_optPollTimer); _optPollTimer = null;
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = 'Complete — loading results...'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Run Diagnostic Scan'; }
+      await loadPsaOptimizerResults();
+      if (msg) msg.textContent = '';
+    } else if (d.status === 'error') {
+      clearInterval(_optPollTimer); _optPollTimer = null;
+      if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'Diagnostic scan error — check API log'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Run Diagnostic Scan'; }
+    }
+  } catch (e) {}
+}
+
+async function loadPsaOptimizerResults() {
+  const panel = document.getElementById('opt-results-panel');
+  if (!panel) return;
+  const n = parseInt((document.getElementById('opt-target-n') || {}).value || '20', 10);
+  try {
+    const resp = await fetch(_settApi() + '/psa/optimizer/results?target_n=' + n);
+    const d = await resp.json();
+    if (!resp.ok || d.status === 'no_data') {
+      panel.innerHTML = '<div style="font-size:12px;color:var(--text3);font-family:var(--mono)">No diagnostic results yet — run the diagnostic scan first.</div>';
+      return;
+    }
+    panel.innerHTML = _renderOptResults(d);
+  } catch (e) {
+    panel.innerHTML = '<div style="font-size:12px;color:var(--red);font-family:var(--mono)">Failed to load results — check API connection.</div>';
+  }
+}
+
+function _renderOptResults(d) {
+  const ts = d.run_timestamp ? (typeof formatET === 'function' ? formatET(d.run_timestamp, true) : d.run_timestamp) : '';
+  const n = d.target_n || 20;
+  const gap = d.gap || {};
+  const weights = d.weights || {};
+  const recommended = d.recommended || {};
+  const current = d.current || {};
+  const topN = d.top_n || [];
+
+  // Factor weights table
+  const FACTOR_LABELS = {
+    momentum_pct: 'Momentum %', volume_pct: 'Volume %', volatility_pct: 'Volatility %',
+    bc_drawdown: 'BC Drawdown', cd_drawdown: 'CD Drawdown',
+    price: 'Price', daily_volume: 'Daily Volume',
+  };
+  const wtRows = Object.entries(weights).map(([k, v]) =>
+    `<tr><td style="font-family:var(--mono);color:var(--text2)">${FACTOR_LABELS[k]||k}</td>
+         <td style="font-family:var(--mono);text-align:right;color:${v>=0?'var(--green)':'var(--red)'}">${v>=0?'+':''}${v.toFixed(4)}</td></tr>`
+  ).join('');
+
+  // Gap analysis
+  const gapColor = (s) => s === 'approved' ? 'var(--green)' : s === 'blocked_stage0' ? 'var(--amber)' : 'var(--text3)';
+  const gapLabel = (s) => s === 'approved' ? 'Approved' : s === 'blocked_stage0' ? 'Blocked — Stage 0' : 'Blocked — Stage 1 / No data';
+  const gapRows = (gap.symbols || []).slice(0, n).map(r =>
+    `<tr><td style="font-family:var(--mono)">${r.symbol}</td>
+         <td style="color:${gapColor(r.live_scan_status)};font-family:var(--mono);font-size:12px">${gapLabel(r.live_scan_status)}</td></tr>`
+  ).join('');
+
+  // Recommended thresholds editor
+  const THRESH_DEFS = [
+    { key: 'psa_min_price',         label: 'Min Price ($)',           min: 0,     step: 0.5  },
+    { key: 'psa_max_price',         label: 'Max Price ($)',           min: 500,   step: 500  },
+    { key: 'psa_min_daily_volume',  label: 'Min Daily Volume',        min: 10000, step: 50000 },
+    { key: 'psa_stage1_momentum',   label: 'Stage 1 Momentum (%)',    min: 0,     step: 5    },
+    { key: 'psa_stage1_volume',     label: 'Stage 1 Volume (%)',      min: 0,     step: 5    },
+    { key: 'psa_stage1_volatility', label: 'Stage 1 Volatility (%)',  min: 0,     step: 5    },
+    { key: 'psa_stage1_bc_drawdown','label': 'Stage 1 BC Drawdown (%)', min: 0.5, step: 0.5 },
+    { key: 'psa_stage1_cd_drawdown','label': 'Stage 1 CD Drawdown (%)', min: 0.5, step: 0.5 },
+  ];
+  const threshRows = THRESH_DEFS.map(def => {
+    const rec = recommended[def.key];
+    const cur = current[def.key];
+    const diff = rec != null && cur != null ? rec - cur : null;
+    const diffStr = diff != null ? (diff > 0 ? `<span style="color:var(--amber)">+${diff.toFixed(1)}</span>` : diff < 0 ? `<span style="color:var(--green)">${diff.toFixed(1)}</span>` : '<span style="color:var(--text3)">0</span>') : '';
+    return `<tr>
+      <td style="font-size:12px;color:var(--text2);font-family:var(--mono)">${def.label}</td>
+      <td style="font-family:var(--mono);font-size:12px;color:var(--text3)">${cur != null ? cur : '--'}</td>
+      <td>${diffStr}</td>
+      <td><input type="number" id="opt-thresh-${def.key}" value="${rec != null ? rec : (cur != null ? cur : '')}"
+           min="${def.min}" step="${def.step}"
+           style="width:100px;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:3px;font-size:12px;font-family:var(--mono)"/></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:12px">
+      Run: ${ts} &nbsp;|&nbsp; Universe: ${d.universe_size || 0} symbols &nbsp;|&nbsp; Factor rows: ${d.factor_rows || 0} &nbsp;|&nbsp; Target N: ${n}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px">
+        <div style="font-size:11px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">PC1 Factor Weights</div>
+        <table style="width:100%;border-collapse:collapse"><tbody>${wtRows}</tbody></table>
+      </div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px">
+        <div style="font-size:11px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Gap Analysis — Top ${n} vs Last Live Scan</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;font-family:var(--mono);font-size:12px;text-align:center">
+          <div><span style="color:var(--green);font-size:16px">${gap.currently_approved||0}</span><br><span style="color:var(--text3)">Approved</span></div>
+          <div><span style="color:var(--amber);font-size:16px">${gap.blocked_stage0||0}</span><br><span style="color:var(--text3)">Blocked S0</span></div>
+          <div><span style="color:var(--text3);font-size:16px">${gap.blocked_stage1_unknown||0}</span><br><span style="color:var(--text3)">Blocked S1+</span></div>
+        </div>
+        <div style="max-height:200px;overflow-y:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr><th style="text-align:left;font-size:11px;color:var(--text3);padding-bottom:4px">Symbol</th><th style="text-align:left;font-size:11px;color:var(--text3)">Status</th></tr></thead>
+            <tbody>${gapRows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px">
+      <div style="font-size:11px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">
+        Recommended Thresholds — editable before applying
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="text-align:left;font-size:11px;color:var(--text3);padding-bottom:6px;font-family:var(--mono)">Parameter</th>
+          <th style="text-align:right;font-size:11px;color:var(--text3);padding-bottom:6px;font-family:var(--mono)">Current</th>
+          <th style="text-align:right;font-size:11px;color:var(--text3);padding-bottom:6px;font-family:var(--mono)">Delta</th>
+          <th style="text-align:left;font-size:11px;color:var(--text3);padding-bottom:6px;font-family:var(--mono);padding-left:8px">Recommended (editable)</th>
+        </tr></thead>
+        <tbody>${threshRows}</tbody>
+      </table>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn-confirm" onclick="applyPsaThresholds()" style="font-size:12px">Apply Thresholds</button>
+      <span id="opt-apply-msg" style="font-family:var(--mono);font-size:12px;min-height:16px"></span>
+    </div>`;
+}
+
+async function applyPsaThresholds() {
+  const KEYS = [
+    'psa_min_price', 'psa_max_price', 'psa_min_daily_volume',
+    'psa_stage1_momentum', 'psa_stage1_volume', 'psa_stage1_volatility',
+    'psa_stage1_bc_drawdown', 'psa_stage1_cd_drawdown',
+  ];
+  const thresholds = {};
+  for (const k of KEYS) {
+    const el = document.getElementById('opt-thresh-' + k);
+    if (el && el.value !== '') thresholds[k] = parseFloat(el.value);
+  }
+  if (!Object.keys(thresholds).length) {
+    alert('No threshold values to apply.');
+    return;
+  }
+
+  const lines = Object.entries(thresholds).map(([k, v]) => `  ${k}: ${v}`).join('\n');
+  if (!confirm(`Apply these thresholds to ops_config.json?\n\n${lines}\n\nThis does NOT trigger a scan — run PSA manually after applying.`)) return;
+
+  const msgEl = document.getElementById('opt-apply-msg');
+  try {
+    const resp = await fetch(_settApi() + '/psa/optimizer/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thresholds }),
+    });
+    const d = await resp.json();
+    if (resp.ok) {
+      if (msgEl) { msgEl.style.color = 'var(--green)'; msgEl.textContent = 'Applied — reload Settings to confirm.'; }
+      setTimeout(() => loadSettings(), 1500);
+    } else {
+      if (msgEl) { msgEl.style.color = 'var(--red)'; msgEl.textContent = d.error || 'Apply failed'; }
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.style.color = 'var(--red)'; msgEl.textContent = 'API offline'; }
+  }
 }
