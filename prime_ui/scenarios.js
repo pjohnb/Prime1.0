@@ -1,6 +1,10 @@
 // WO-PRIME-SCENARIOS-01 Phase 2 — Scenarios Tab UI
 
 const _SCENARIO_MODAL_COPY = {
+  "0": {
+    title: "Unknown — Signal Combination Under Review",
+    body: "This symbol has multiple active signals that together do not match any of the 10 defined PRIME scenario types. The signals are listed below for manual review. If this convergence pattern repeats, it may represent a new scenario type worth defining. No trade action is recommended until the pattern is classified. Flag this for P review."
+  },
   "1": {
     title: "Type 1 — Sniper: Pure",
     body: "The sector this symbol belongs to is trending strongly in one direction AND trading volume confirms the move — institutional and retail participation both present. This is the cleanest single-signal setup PRIME produces. No individual stock confirmation required — the sector itself is the thesis. Enter in the direction of the IDX signal. Stop placement: 3% default trailing."
@@ -216,10 +220,15 @@ function _renderScenarioCard(sc) {
   const entryStr = ep != null ? '$' + Number(ep).toFixed(2) : '—';
   const borderColor = _scBorderColor(sc.conviction);
   const isWatch = String(sc.type_num) === '5';
+  const isUnknown = String(sc.type_num) === '0';
 
-  const execBtn = isWatch ? '' :
+  const execBtn = (isWatch || isUnknown) ? '' :
     `<button onclick="openScenarioExecute('${sc.scenario_id}')"
       style="background:#14532d;border:1px solid #16a34a;color:#86efac;padding:4px 14px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer">Execute &#9654;</button>`;
+
+  const unknownNote = isUnknown
+    ? `<div style="margin-bottom:12px;padding:8px 10px;background:var(--bg4);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--text3)">Signal combination not matching any defined scenario type — review for potential new scenario definition</div>`
+    : '';
 
   return `<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:6px;padding:14px 16px">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
@@ -236,7 +245,7 @@ function _renderScenarioCard(sc) {
   <div style="border-top:1px solid var(--border);padding-top:8px;margin-bottom:12px">
     ${_scConstituentRows(constituents)}
   </div>
-  <div style="display:flex;gap:8px;align-items:center">
+  ${unknownNote}<div style="display:flex;gap:8px;align-items:center">
     <button onclick="openScenarioInfo('${sc.type_num}')"
       style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;min-width:32px"
       title="Learn about this scenario type">ⓘ</button>
@@ -523,6 +532,7 @@ const _SCEN_FILTER_KEY = 'prime_scen_filters_v1';
 // Must match SCENARIO_TYPES["name"] values in prime_scenario_engine.py
 const _SCEN_TYPE_NAMES = [
   'Watch',
+  'Unknown',
   'Sniper — Pure',
   'Sniper — Confirmed',
   'Sniper — Institutional',

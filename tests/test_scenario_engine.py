@@ -21,6 +21,7 @@ from prime_analytics.prime_signals_db import init_signals_table, insert_signal
 from prime_scenarios.prime_scenarios_db import (
     init_scenarios_table,
     insert_scenario,
+    upsert_scenario,
     get_scenarios,
     expire_old_scenarios,
     make_scenario_id,
@@ -544,7 +545,7 @@ class TestNonInterference(unittest.TestCase):
         self.assertEqual(signals_before[0]["status"], signals_after[0]["status"])
 
     def test_scenario_type_registry_complete(self):
-        for t in ("1", "2", "3", "4", "5", "6", "7", "8"):
+        for t in ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
             self.assertIn(t, SCENARIO_TYPES)
             self.assertIn("name", SCENARIO_TYPES[t])
             self.assertIn("conviction", SCENARIO_TYPES[t])
@@ -628,6 +629,192 @@ class TestFivePerType(unittest.TestCase):
     def test_type8_short_tranche2(self):
         r = self._detect(_mmr("GLD", "SHORT_TRANCHE_2", "SHORT"), _psa("GLD", "SHORT"))
         self.assertTrue(any(s["type_num"] == "8" for s in r))
+
+
+# ---------------------------------------------------------------------------
+# Dedup and Upgrade Tests (WO-PRIME-SCENARIO-ENGINE-DEDUP-01)
+# ---------------------------------------------------------------------------
+
+class TestDedup(unittest.TestCase):
+    """Session-scoped dedup and upgrade logic."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_dedup.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _make_scenario(self, type_num="5", symbol="AAPL", direction="LONG", detected_at=None):
+        ts = detected_at or datetime.utcnow().isoformat()
+        return {
+            "type_num": type_num,
+            "type_name": SCENARIO_TYPES[type_num]["name"],
+            "direction": direction,
+            "conviction": SCENARIO_TYPES[type_num]["conviction"],
+            "primary_symbol": symbol,
+            "constituent_signals": [{"strategy": "IDX", "symbol": symbol}],
+            "staleness_status": "FRESH",
+            "detected_at": ts,
+        }
+
+    def test_same_symbol_same_type_updates_not_duplicates(self):
+        """IDX fires twice on same symbol → one card updated in place, not two cards."""
+        sc = self._make_scenario("5", "XLF")
+        sid1 = upsert_scenario(sc, self.db)
+        sc2 = self._make_scenario("5", "XLF")
+        sc2["constituent_signals"] = [{"strategy": "IDX", "symbol": "XLF", "note": "run2"}]
+        sid2 = upsert_scenario(sc2, self.db)
+        self.assertIsNotNone(sid1)
+        self.assertEqual(sid1, sid2)
+        rows = get_scenarios(db_path=self.db)
+        self.assertEqual(len(rows), 1, "Exactly one scenario card expected for XLF")
+
+    def test_higher_type_upgrades_existing(self):
+        """Watch → Confirmed: existing card is upgraded to the higher type, not duplicated."""
+        sid_watch = upsert_scenario(self._make_scenario("5", "XLF"), self.db)
+        sid_conf = upsert_scenario(self._make_scenario("2", "XLF"), self.db)
+        self.assertEqual(sid_watch, sid_conf, "Upgrade should reuse the existing scenario_id")
+        rows = get_scenarios(db_path=self.db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["type_num"], "2")
+
+    def test_lower_type_does_not_downgrade(self):
+        """A Confirmed Sniper must not be downgraded to Watch."""
+        upsert_scenario(self._make_scenario("2", "AAPL"), self.db)
+        upsert_scenario(self._make_scenario("5", "AAPL"), self.db)
+        rows = get_scenarios(db_path=self.db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["type_num"], "2")
+
+    def test_different_symbols_both_kept(self):
+        """Two different symbols each get their own card."""
+        upsert_scenario(self._make_scenario("5", "AAPL"), self.db)
+        upsert_scenario(self._make_scenario("5", "MSFT"), self.db)
+        rows = get_scenarios(db_path=self.db)
+        self.assertEqual(len(rows), 2)
+        symbols = {r["primary_symbol"] for r in rows}
+        self.assertIn("AAPL", symbols)
+        self.assertIn("MSFT", symbols)
+
+    def test_run_detection_deduplicates(self):
+        """Calling run_detection twice on the same signals yields one scenario per symbol."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        signals = [_idx("STRONG-LONG", "SPY", scan_ts=f"{today} 10:00")]
+        run_detection(signals, db_path=self.db)
+        run_detection(signals, db_path=self.db)
+        rows = get_scenarios(db_path=self.db, active_only=True)
+        spy_rows = [r for r in rows if r["primary_symbol"] == "SPY"]
+        self.assertEqual(len(spy_rows), 1, "SPY should have exactly one scenario card")
+
+    def test_watch_upgrades_to_trifecta_via_run_detection(self):
+        """Progressive signal arrival: Confirmed → Trifecta via two run_detection calls."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        # First run: IDX + PSA → Type 2 (Confirmed)
+        run_detection(
+            [_idx("WEAK-LONG", scan_ts=f"{today} 09:30"), _psa("AAPL", scan_ts=f"{today} 09:30")],
+            db_path=self.db,
+        )
+        rows_1 = [r for r in get_scenarios(db_path=self.db) if r["primary_symbol"] == "AAPL"]
+        self.assertEqual(len(rows_1), 1)
+        self.assertEqual(rows_1[0]["type_num"], "2")
+
+        # Second run: IDX STRONG + UOA + PSA → Type 4 (Trifecta)
+        run_detection(
+            [
+                _idx("STRONG-LONG", scan_ts=f"{today} 10:00"),
+                _uoa("AAPL", scan_ts=f"{today} 10:00"),
+                _psa("AAPL", scan_ts=f"{today} 10:00"),
+            ],
+            db_path=self.db,
+        )
+        rows_2 = [r for r in get_scenarios(db_path=self.db) if r["primary_symbol"] == "AAPL"]
+        self.assertEqual(len(rows_2), 1, "AAPL must have exactly one scenario card")
+        self.assertEqual(rows_2[0]["type_num"], "4", "AAPL must show highest type (4)")
+
+    def test_type4_never_shows_type2_for_same_symbol(self):
+        """A symbol qualifying for Type 4 must show Type 4, never Type 2."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        signals = [
+            _idx("STRONG-LONG", scan_ts=f"{today} 10:00"),
+            _uoa("NVDA", scan_ts=f"{today} 10:00"),
+            _psa("NVDA", scan_ts=f"{today} 10:00"),
+        ]
+        run_detection(signals, db_path=self.db)
+        rows = get_scenarios(db_path=self.db)
+        nvda_rows = [r for r in rows if r["primary_symbol"] == "NVDA"]
+        self.assertEqual(len(nvda_rows), 1)
+        self.assertEqual(nvda_rows[0]["type_num"], "4")
+        type2_nvda = [r for r in rows if r["primary_symbol"] == "NVDA" and r["type_num"] == "2"]
+        self.assertEqual(len(type2_nvda), 0, "Type 2 must not coexist with Type 4 for NVDA")
+
+
+# ---------------------------------------------------------------------------
+# Unknown Scenario Tests (WO-PRIME-SCENARIO-ENGINE-DEDUP-01)
+# ---------------------------------------------------------------------------
+
+class TestUnknown(unittest.TestCase):
+    """Unknown scenario detection for signal combos that match no defined type."""
+
+    def _detect(self, *signals):
+        return detect_scenarios(list(signals), now=_now())
+
+    def test_multi_signal_no_match_emits_unknown(self):
+        """SRS + UOA on same symbol (no PSA, no IDX) → Unknown, not two separate Watch cards."""
+        result = self._detect(_srs("XLRE"), _uoa("XLRE", tier="STRONG"))
+        unknown = [s for s in result if s["type_num"] == "0"]
+        watch_xlre = [s for s in result if s["type_num"] == "5" and s["primary_symbol"] == "XLRE"]
+        self.assertGreater(len(unknown), 0, "Expected Unknown scenario for SRS+UOA on XLRE")
+        self.assertEqual(len(watch_xlre), 0, "SRS+UOA should not produce separate Watch cards for XLRE")
+
+    def test_single_unanchored_signal_emits_watch_not_unknown(self):
+        """A single unanchored signal produces Watch (Type 5), never Unknown."""
+        result = self._detect(_uoa("TSLA", tier="STRONG"))
+        watch = [s for s in result if s["type_num"] == "5"]
+        unknown = [s for s in result if s["type_num"] == "0"]
+        self.assertGreater(len(watch), 0)
+        self.assertEqual(len(unknown), 0)
+
+    def test_known_combination_not_surfaced_as_unknown(self):
+        """SRS + PSA on same symbol = Type 7, not Unknown."""
+        result = self._detect(_srs("XLK"), _psa("XLK"))
+        t7 = [s for s in result if s["type_num"] == "7"]
+        unknown = [s for s in result if s["type_num"] == "0"]
+        self.assertGreater(len(t7), 0)
+        self.assertEqual(len(unknown), 0)
+
+    def test_idx_plus_uoa_same_symbol_no_psa_emits_unknown(self):
+        """IDX WEAK + UOA on the same symbol, no PSA → Unknown (not two separate Watch cards)."""
+        # IDX and UOA both on SPY with no matching PSA — doesn't satisfy any of Types 1-10.
+        result = self._detect(_idx("WEAK-LONG", "SPY"), _uoa("SPY", tier="STRONG"))
+        unknown = [s for s in result if s["type_num"] == "0" and s["primary_symbol"] == "SPY"]
+        self.assertGreater(len(unknown), 0, "IDX+UOA (same symbol, no PSA) should be Unknown")
+
+    def test_unknown_has_low_conviction(self):
+        """Unknown scenario conviction is LOW."""
+        result = self._detect(_srs("XLRE"), _uoa("XLRE", tier="STRONG"))
+        unknown = [s for s in result if s["type_num"] == "0"]
+        if unknown:
+            self.assertEqual(unknown[0]["conviction"], "LOW")
+
+    def test_unknown_lists_all_constituent_signals(self):
+        """Unknown scenario must include all unanchored signals as constituents."""
+        result = self._detect(_srs("XLRE"), _uoa("XLRE", tier="STRONG"))
+        unknown = [s for s in result if s["type_num"] == "0"]
+        if unknown:
+            self.assertGreaterEqual(
+                len(unknown[0]["constituent_signals"]), 2,
+                "Unknown scenario must list all constituent signals"
+            )
+
+    def test_unknown_in_scenario_types_registry(self):
+        """Type '0' (Unknown) is present in SCENARIO_TYPES."""
+        self.assertIn("0", SCENARIO_TYPES)
+        self.assertEqual(SCENARIO_TYPES["0"]["name"], "Unknown")
+        self.assertEqual(SCENARIO_TYPES["0"]["conviction"], "LOW")
 
 
 if __name__ == "__main__":

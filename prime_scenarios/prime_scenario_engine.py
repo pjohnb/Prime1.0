@@ -33,6 +33,7 @@ Signal direction matching:
 
 import logging
 import pytz
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +46,7 @@ _ET = pytz.timezone("America/New_York")
 # ---------------------------------------------------------------------------
 
 SCENARIO_TYPES: Dict[str, Dict[str, str]] = {
+    "0":  {"name": "Unknown",                      "conviction": "LOW"},
     "1":  {"name": "Sniper — Pure",              "conviction": "HIGH"},
     "2":  {"name": "Sniper — Confirmed",          "conviction": "HIGH"},
     "3":  {"name": "Sniper — Institutional",      "conviction": "HIGH"},
@@ -402,15 +404,28 @@ def detect_scenarios(
                 for s in constituents:
                     anchored_ids.add(s.get("signal_id"))
 
-    # --- Type 5: Watch — any single eligible signal not already in a scenario ---
+    # --- Types 0 (Unknown) and 5 (Watch) ---
+    # Group unanchored eligible signals by (symbol, direction).
+    # Multiple signals on the same symbol that don't match any defined type → Unknown.
+    # A single unanchored signal → Watch.
+    unanchored_by_sym_dir: Dict = defaultdict(list)
     for sig in eligible:
-        if sig.get("signal_id") not in anchored_ids:
-            direction = sig["_direction"]
-            if not direction:
-                continue
-            sym = sig["symbol"]
+        if sig.get("signal_id") in anchored_ids:
+            continue
+        dir_ = sig.get("_direction")
+        if not dir_:
+            continue
+        unanchored_by_sym_dir[(sig["symbol"].upper(), dir_)].append(sig)
+
+    for (sym, dir_), sigs in unanchored_by_sym_dir.items():
+        if len(sigs) > 1:
+            st = _overall_staleness(sigs)
+            sc = _build_scenario("0", dir_, sym, sigs, st, detected_at)
+            scenarios.append(sc)
+        else:
+            sig = sigs[0]
             st = sig["_staleness"]
-            sc = _build_scenario("5", direction, sym, [sig], st, detected_at)
+            sc = _build_scenario("5", dir_, sym, [sig], st, detected_at)
             scenarios.append(sc)
 
     # Remove internal annotation keys before returning
@@ -434,25 +449,25 @@ def run_detection(
     """
     from prime_scenarios.prime_scenarios_db import (
         init_scenarios_table,
-        insert_scenario,
+        upsert_scenario,
         expire_old_scenarios,
     )
     try:
         init_scenarios_table(db_path)
         expire_old_scenarios(db_path)
         scenarios = detect_scenarios(signals, now)
-        inserted = 0
+        upserted = 0
         for sc in scenarios:
-            sid = insert_scenario(sc, db_path)
+            sid = upsert_scenario(sc, db_path)
             if sid:
-                inserted += 1
+                upserted += 1
         logger.info(
-            "Scenario detection: %d candidates, %d new inserted",
-            len(scenarios), inserted,
+            "Scenario detection: %d candidates, %d upserted",
+            len(scenarios), upserted,
         )
         return {
             "scenarios_detected": len(scenarios),
-            "scenarios_inserted": inserted,
+            "scenarios_inserted": upserted,
             "breakdown": {
                 t: sum(1 for s in scenarios if s["type_num"] == t)
                 for t in SCENARIO_TYPES
