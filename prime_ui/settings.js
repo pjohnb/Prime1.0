@@ -472,6 +472,13 @@ function _renderSettings() {
             style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
           <span style="font-size:11px;color:var(--text3)">Default: 500,000 shares/day.</span>
         </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="Number of parallel threads inside the PSA scanner (1–20). Higher values reduce wall-clock time but increase concurrent Polygon API load. Default 10 suits the Unlimited plan.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">PSA Workers</span>
+          <input type="number" id="sett-psa_workers" min="1" max="20"
+            value="${d.psa_workers != null ? d.psa_workers : 10}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 10. Range 1–20.</span>
+        </label>
       </div>
     </div>
 
@@ -789,6 +796,7 @@ async function saveSettings() {
   payload.alert_universe_sector = _v('alert_universe_sector');
   payload.mtfa_mode = _v('mtfa_mode') || 'full';
   payload.mtfa_workers = parseInt(_v('mtfa_workers'), 10) || 10;
+  payload.psa_workers = parseInt(_v('psa_workers'), 10) || 10;
   // WO-PRIME-PSA-CALIBRATION-01: PSA Stage 0 + Stage 1 thresholds
   payload.psa_min_price = parseFloat(_v('psa_min_price')) || 5.0;
   payload.psa_max_price = parseFloat(_v('psa_max_price')) || 10000.0;

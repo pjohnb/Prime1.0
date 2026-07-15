@@ -1456,6 +1456,8 @@ _SETTINGS_FIELDS = [
     "alert_universe", "alert_universe_custom", "alert_universe_sector",
     # WO-PRIME-MTFA-PERF-01: MTFA performance controls
     "mtfa_workers", "mtfa_mode",
+    # WO-PRIME-PSA-PARALLEL-01: PSA parallelism
+    "psa_workers",
     # WO-PRIME-PSA-CALIBRATION-01: PSA Stage 0 + Stage 1 thresholds
     "psa_min_price", "psa_max_price", "psa_min_daily_volume",
     "psa_stage1_momentum", "psa_stage1_volume", "psa_stage1_volatility",

@@ -189,6 +189,8 @@ class OpsConfig:
     #   to symbols already APPROVED by Stage-1 scanners (post bridge-pass-2).
     mtfa_workers: int = 10
     mtfa_mode: str = "full"
+    # WO-PRIME-PSA-PARALLEL-01: PSA parallelism — ThreadPoolExecutor size inside run_psa_scan.
+    psa_workers: int = 10
     # WO-PRIME-PSA-CALIBRATION-01: Stage 0 filters (price + volume screen).
     # psa_max_price raised from 500 → 10000 to cover all S&P 500 stocks
     # (NVR ~$7k+, AZO ~$3k+, BKNG ~$3.5k+). The old 500 cap pre-dated the

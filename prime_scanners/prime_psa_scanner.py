@@ -15,7 +15,6 @@ Standalone: python prime_scanners/prime_psa_scanner.py
 import json
 import logging
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -67,6 +66,13 @@ MAX_REASONABLE_VOLATILITY = 2000.0
 BREAKOUT_LOOKBACK = 10
 HIGHER_HIGHS_BARS = 4
 VOLUME_EXPANSION_MULT = 1.20
+
+_FULL_DAY_BARS_5MIN = 78  # RTH session: 6.5 h × 12 bars/h
+
+_STAGE0 = "stage0"
+_STAGE1 = "stage1"
+_FETCH  = "fetch"
+_SIGNAL = "signal"
 
 # Default universe (S&P top 50 for fast scans — used as fallback only)
 DEFAULT_UNIVERSE = [
@@ -459,6 +465,71 @@ def stage0_filter(
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
+def _scan_one(
+    symbol: str,
+    interval: str,
+    total_bars: int,
+    api_key: str,
+    min_price: float,
+    max_price: float,
+    min_daily_volume: float,
+    baseline_periods: int,
+    long_periods: int,
+    short_periods: int,
+    required_positive: int,
+    thresholds: Dict[str, float],
+    bc_max_drawdown: float,
+    cd_max_drawdown: float,
+    scan_ts: str,
+) -> Tuple[str, Optional[Dict[str, Any]], str]:
+    """Fetch + analyse one PSA symbol. Returns (symbol, payload, outcome).
+
+    outcome: 'fetch' | 'stage0' | 'stage1' | 'signal'
+    payload for 'signal': signal dict
+    payload for 'stage0': rejection record {symbol, reason, scan_ts}
+    payload for 'stage1' or 'fetch': None
+    """
+    bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
+    if not bars:
+        return symbol, None, _FETCH
+
+    last_price = bars[-1]["close"]
+    _raw_vol = sum(b.get("volume", 0) for b in bars)
+    last_vol = _raw_vol * _FULL_DAY_BARS_5MIN / len(bars)
+
+    s0_reason = stage0_filter(
+        symbol, {"price": last_price, "volume": last_vol},
+        min_price, max_price, min_daily_volume,
+    )
+    if s0_reason:
+        logger.debug(
+            "Stage0 rejected %s: %s (price=%.2f vol=%.0f norm, raw=%.0f over %d bars)",
+            symbol, s0_reason, last_price, last_vol, _raw_vol, len(bars),
+        )
+        return symbol, {"symbol": symbol, "reason": s0_reason, "scan_ts": scan_ts}, _STAGE0
+
+    result = analyze_symbol(
+        bars, baseline_periods, long_periods, short_periods,
+        required_positive, thresholds, bc_max_drawdown, cd_max_drawdown,
+    )
+
+    if not result["approved"]:
+        return symbol, None, _STAGE1
+
+    return symbol, {
+        "symbol": symbol,
+        "price_at_scan": round(bars[-1]["close"], 2),
+        "direction": "LONG",
+        "score": round(result["momentum_pct"], 1),
+        "momentum_pct": result["momentum_pct"],
+        "volume_pct": result["volume_pct"],
+        "volatility_pct": result["volatility_pct"],
+        "trend_bc_drawdown": result["trend_bc_drawdown"],
+        "trend_cd_drawdown": result["trend_cd_drawdown"],
+        "patterns": result["patterns"],
+    }, _SIGNAL
+
+
 def _read_use_signal_led_psa(config_path: Optional[Path] = None) -> bool:
     """Read use_signal_led_psa from ops_config.json at runtime. Default True."""
     if config_path is None:
@@ -646,59 +717,43 @@ def run_psa_scan(
     analyzed = 0
     fetch_failures = 0
 
-    for symbol in universe:
-        time.sleep(0.15)
-        bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
-        if not bars:
-            fetch_failures += 1
-            continue
+    scan_ts = scan_time.isoformat()
+    try:
+        workers = int(get_config().ops.psa_workers)
+    except Exception:
+        workers = 10
 
-        last_price = bars[-1]["close"] if bars else 0
-        # Normalize bar-window volume to a full-day equivalent before comparing
-        # against the daily volume threshold. A complete RTH session is 78 × 5-min
-        # bars; the PSA window is 39 bars (~half day), so a raw sum would under-count
-        # by ~2x. Dividing by len(bars) and multiplying by 78 gives the equivalent
-        # daily pace regardless of how many bars the window actually contains.
-        _FULL_DAY_BARS_5MIN = 78
-        if bars:
-            _raw_vol = sum(b.get("volume", 0) for b in bars)
-            last_vol = _raw_vol * _FULL_DAY_BARS_5MIN / len(bars)
-        else:
-            last_vol = 0
-        s0_reason = stage0_filter(symbol, {"price": last_price, "volume": last_vol},
-                                   min_price, max_price, min_daily_volume)
-        if s0_reason:
-            logger.debug("Stage0 rejected %s: %s (price=%.2f vol=%.0f norm, raw=%.0f over %d bars)",
-                         symbol, s0_reason, last_price, last_vol, _raw_vol if bars else 0, len(bars))
-            stage0_rejected += 1
-            stage0_rejections.append({"symbol": symbol, "reason": s0_reason,
-                                      "scan_ts": scan_time.isoformat()})
-            continue
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="psa") as pool:
+        futures = {
+            pool.submit(
+                _scan_one,
+                sym, interval, total_bars, api_key,
+                min_price, max_price, min_daily_volume,
+                baseline_periods, long_periods, short_periods,
+                required_positive, thresholds, bc_max_drawdown, cd_max_drawdown,
+                scan_ts,
+            ): sym
+            for sym in universe
+        }
+        for fut in as_completed(futures):
+            try:
+                _sym, payload, outcome = fut.result()
+            except Exception as exc:
+                logger.warning("PSA worker error: %s", exc)
+                fetch_failures += 1
+                continue
 
-        analyzed += 1
-        result = analyze_symbol(
-            bars, baseline_periods, long_periods, short_periods,
-            required_positive, thresholds, bc_max_drawdown, cd_max_drawdown,
-        )
-
-        if not result["approved"]:
-            stage1_rejected += 1
-            continue
-
-        price_at_scan = bars[-1]["close"] if bars else 0.0
-
-        signals.append({
-            "symbol": symbol,
-            "price_at_scan": round(price_at_scan, 2),
-            "direction": "LONG",
-            "score": round(result["momentum_pct"], 1),
-            "momentum_pct": result["momentum_pct"],
-            "volume_pct": result["volume_pct"],
-            "volatility_pct": result["volatility_pct"],
-            "trend_bc_drawdown": result["trend_bc_drawdown"],
-            "trend_cd_drawdown": result["trend_cd_drawdown"],
-            "patterns": result["patterns"],
-        })
+            if outcome == _FETCH:
+                fetch_failures += 1
+            elif outcome == _STAGE0:
+                stage0_rejected += 1
+                stage0_rejections.append(payload)
+            elif outcome == _STAGE1:
+                analyzed += 1
+                stage1_rejected += 1
+            elif outcome == _SIGNAL:
+                analyzed += 1
+                signals.append(payload)
 
     signals.sort(key=lambda s: s["score"], reverse=True)
 
