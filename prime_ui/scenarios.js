@@ -248,21 +248,25 @@ function _renderScenarioCard(sc) {
 async function loadScenarios() {
   const container = document.getElementById('scen-cards');
   if (!container) return;
+  _scenRenderFilterBar();
   container.innerHTML = '<div class="empty-state" style="padding:24px 0;color:var(--text3)">Loading scenarios…</div>';
   try {
     const limit = getScenarioMaxRows();
     const resp = await fetch(API + '/scenarios?limit=' + limit);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
-    const scenarios = (data.scenarios || []).slice(0, limit);
-    if (!scenarios.length) {
+    _allScenarios = (data.scenarios || []).slice(0, limit);
+    const filtered = _applyScenarioFilters(_allScenarios);
+    _scenUpdateCount(filtered.length, _allScenarios.length);
+    if (!_allScenarios.length) {
       container.innerHTML = `<div style="padding:48px 0;text-align:center;color:var(--text3)">
         <div style="font-size:15px;margin-bottom:6px">No active scenarios detected.</div>
         <div style="font-size:12px">Scenarios will appear here automatically after the next scan run.</div>
       </div>`;
       return;
     }
-    container.innerHTML = scenarios.map(_renderScenarioCard).join('');
+    container.innerHTML = filtered.map(_renderScenarioCard).join('') ||
+      '<div style="padding:32px 0;text-align:center;color:var(--text3)">No scenarios match the current filters.</div>';
   } catch(e) {
     container.innerHTML = `<div style="color:var(--red);padding:16px 0">Error loading scenarios: ${e.message}</div>`;
   }
@@ -510,4 +514,198 @@ function startScenarioPoll() {
 function stopScenarioPoll() {
   clearInterval(_scenPollTimer);
   _scenPollTimer = null;
+}
+
+// ── WO-PRIME-SCENARIOS-FILTERS-01: filter bar ─────────────────────────────────
+
+const _SCEN_FILTER_KEY = 'prime_scen_filters_v1';
+
+// Must match SCENARIO_TYPES["name"] values in prime_scenario_engine.py
+const _SCEN_TYPE_NAMES = [
+  'Watch',
+  'Sniper — Pure',
+  'Sniper — Confirmed',
+  'Sniper — Institutional',
+  'Sniper — Trifecta',
+  'Sniper — Ultimate',
+  'Sniper — Anomalous',
+  'Sniper — Sector Phase',
+  'Sniper — Metals MR',
+  'Timeframe Confluence',
+];
+
+function _scenDefaultFilters() {
+  return {
+    staleness: 'All',
+    direction: 'Both',
+    conviction: 'All',
+    types: _SCEN_TYPE_NAMES.slice(),
+  };
+}
+
+// Initialise from localStorage on script load so filters survive refresh.
+let _scenFilters = (() => {
+  const d = _scenDefaultFilters();
+  try {
+    const raw = localStorage.getItem(_SCEN_FILTER_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s.staleness)           d.staleness = s.staleness;
+      if (s.direction)           d.direction  = s.direction;
+      if (s.conviction)          d.conviction = s.conviction;
+      if (Array.isArray(s.types)) d.types     = s.types;
+    }
+  } catch(e) {}
+  return d;
+})();
+
+let _allScenarios = [];
+
+function _scenSaveFilters() {
+  try { localStorage.setItem(_SCEN_FILTER_KEY, JSON.stringify(_scenFilters)); } catch(e) {}
+}
+
+function _applyScenarioFilters(scenarios) {
+  return scenarios.filter(sc => {
+    if (_scenFilters.staleness !== 'All' &&
+        (sc.staleness_status || 'FRESH') !== _scenFilters.staleness) return false;
+    if (_scenFilters.direction !== 'Both' &&
+        (sc.direction || 'LONG') !== _scenFilters.direction) return false;
+    if (_scenFilters.conviction !== 'All' &&
+        (sc.conviction || 'HIGH') !== _scenFilters.conviction) return false;
+    if (_scenFilters.types.length < _SCEN_TYPE_NAMES.length &&
+        !_scenFilters.types.includes(sc.type_name || '')) return false;
+    return true;
+  });
+}
+
+function _scenUpdateCount(filtered, total) {
+  const el = document.getElementById('scen-count');
+  if (el) el.textContent = total > 0 ? ' (' + filtered + ' of ' + total + ')' : '';
+}
+
+function _scenSetStaleness(val) { _scenFilters.staleness = val; _scenFilterChanged(); }
+function _scenSetDirection(val) { _scenFilters.direction = val; _scenFilterChanged(); }
+function _scenSetConviction(val) { _scenFilters.conviction = val; _scenFilterChanged(); }
+
+function _scenToggleType(name) {
+  const idx = _scenFilters.types.indexOf(name);
+  if (idx >= 0) _scenFilters.types.splice(idx, 1);
+  else _scenFilters.types.push(name);
+  _scenFilterChanged();
+}
+
+function clearScenarioFilters() {
+  _scenFilters = _scenDefaultFilters();
+  _scenSaveFilters();
+  _scenRenderFilterBar();
+  const filtered = _applyScenarioFilters(_allScenarios);
+  _scenUpdateCount(filtered.length, _allScenarios.length);
+  const container = document.getElementById('scen-cards');
+  if (container) container.innerHTML = filtered.map(_renderScenarioCard).join('') ||
+    '<div style="padding:32px 0;text-align:center;color:var(--text3)">No scenarios match the current filters.</div>';
+}
+
+function _scenFilterChanged() {
+  _scenSaveFilters();
+  _scenRenderFilterBar();
+  const filtered = _applyScenarioFilters(_allScenarios);
+  _scenUpdateCount(filtered.length, _allScenarios.length);
+  const container = document.getElementById('scen-cards');
+  if (container) container.innerHTML = filtered.map(_renderScenarioCard).join('') ||
+    '<div style="padding:32px 0;text-align:center;color:var(--text3)">No scenarios match the current filters.</div>';
+}
+
+function _scFiltBtn(label, active, onclick) {
+  const bg    = active ? 'var(--bg2)'  : 'var(--bg4)';
+  const bdr   = active ? '#4a9eff'     : 'var(--border)';
+  const color = active ? '#4a9eff'     : 'var(--text3)';
+  return '<button onclick="' + onclick + '" style="background:' + bg +
+    ';border:1px solid ' + bdr + ';color:' + color +
+    ';padding:3px 9px;border-radius:3px;font-size:11px;cursor:pointer;' +
+    'font-family:var(--mono);white-space:nowrap">' + label + '</button>';
+}
+
+function _scenRenderFilterBar() {
+  const bar = document.getElementById('scen-filter-bar');
+  if (!bar) return;
+
+  const grp = 'display:flex;align-items:center;gap:4px';
+  const lbl = 'font-size:10px;color:var(--text3);font-family:var(--mono);' +
+              'text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;margin-right:2px';
+
+  const stale = ['FRESH', 'SOFT_STALE', 'All'].map(v =>
+    _scFiltBtn(v === 'SOFT_STALE' ? 'SOFT' : v,
+               _scenFilters.staleness === v,
+               "_scenSetStaleness('" + v + "')")
+  ).join('');
+
+  const dirs = ['LONG', 'SHORT', 'Both'].map(v =>
+    _scFiltBtn(v, _scenFilters.direction === v, "_scenSetDirection('" + v + "')")
+  ).join('');
+
+  const convs = ['LOW', 'HIGH', 'HIGHEST', 'All'].map(v =>
+    _scFiltBtn(v, _scenFilters.conviction === v, "_scenSetConviction('" + v + "')")
+  ).join('');
+
+  const typeActive = _scenFilters.types.length < _SCEN_TYPE_NAMES.length;
+  const typesLabel = typeActive
+    ? 'Types (' + _scenFilters.types.length + '/' + _SCEN_TYPE_NAMES.length + ') ▾'
+    : 'All Types ▾';
+  const typeBg    = typeActive ? 'var(--bg2)'  : 'var(--bg4)';
+  const typeBdr   = typeActive ? '#4a9eff'     : 'var(--border)';
+  const typeColor = typeActive ? '#4a9eff'     : 'var(--text3)';
+
+  const typeCheckboxes = _SCEN_TYPE_NAMES.map(n => {
+    const checked = _scenFilters.types.includes(n);
+    const esc = n.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return '<label style="display:flex;align-items:center;gap:6px;padding:4px 8px;cursor:pointer;' +
+      'font-size:11px;font-family:var(--mono);color:var(--text2);white-space:nowrap;user-select:none">' +
+      '<input type="checkbox"' + (checked ? ' checked' : '') +
+      ' onchange="_scenToggleType(\'' + esc + '\')" style="accent-color:#4a9eff;cursor:pointer"> ' +
+      n + '</label>';
+  }).join('');
+
+  const typePanel =
+    '<div id="scen-type-panel" style="display:none;position:absolute;z-index:200;top:100%;left:0;' +
+    'margin-top:4px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;' +
+    'padding:4px 2px;min-width:210px;box-shadow:0 4px 14px rgba(0,0,0,.55)">' +
+    typeCheckboxes + '</div>';
+
+  const typeBtnStyle = 'background:' + typeBg + ';border:1px solid ' + typeBdr +
+    ';color:' + typeColor + ';padding:3px 9px;border-radius:3px;font-size:11px;' +
+    'cursor:pointer;font-family:var(--mono);white-space:nowrap';
+
+  const clearBtn =
+    '<button onclick="clearScenarioFilters()" style="background:transparent;border:none;' +
+    'color:var(--text3);font-size:11px;cursor:pointer;padding:3px 6px;font-family:var(--mono);' +
+    'text-decoration:underline;margin-left:4px">Clear filters</button>';
+
+  bar.innerHTML =
+    '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;' +
+    'padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px">' +
+    '<span style="' + grp + '"><span style="' + lbl + '">Staleness</span>' + stale + '</span>' +
+    '<span style="' + grp + '"><span style="' + lbl + '">Direction</span>' + dirs + '</span>' +
+    '<span style="' + grp + '"><span style="' + lbl + '">Conviction</span>' + convs + '</span>' +
+    '<span style="' + grp + ';position:relative">' +
+      '<span style="' + lbl + '">Type</span>' +
+      '<button style="' + typeBtnStyle + '" onclick="(function(){' +
+        'var p=document.getElementById(\'scen-type-panel\');' +
+        'if(p)p.style.display=p.style.display===\'none\'?\'block\':\'none\';})()">' +
+        typesLabel + '</button>' +
+      typePanel +
+    '</span>' +
+    clearBtn +
+    '</div>';
+
+  // Close type panel when clicking outside the filter bar
+  document.removeEventListener('click', _scenTypePanelClose);
+  document.addEventListener('click', _scenTypePanelClose);
+}
+
+function _scenTypePanelClose(e) {
+  const bar = document.getElementById('scen-filter-bar');
+  if (!bar || bar.contains(e.target)) return;
+  const panel = document.getElementById('scen-type-panel');
+  if (panel) panel.style.display = 'none';
 }

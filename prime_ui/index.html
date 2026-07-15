@@ -470,10 +470,11 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
 
 <!-- WO-PRIME-SCENARIOS-01 Phase 2: Scenarios tab -->
 <div class="view" id="view-scenarios">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-    <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Signal Convergence Scenarios</span>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+    <span style="font-size:13px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">Signal Convergence Scenarios<span id="scen-count"></span></span>
     <button class="btn-refresh" onclick="loadScenarios()" style="font-size:12px;padding:5px 14px">Refresh</button>
   </div>
+  <div id="scen-filter-bar" style="margin-bottom:12px"></div>
   <div id="scen-cards"></div>
 </div>
 
