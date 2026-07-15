@@ -397,6 +397,62 @@ async function loadPolygonPlanIndicator() {
   } catch (e) {}
 }
 
+// ── PSA Stage0 Rejection Distribution (WO-PRIME-PSA-CALIBRATION-02 Phase 1) ──
+
+async function loadPsaRejectionPanel() {
+  const el = document.getElementById('psa-rejection-panel');
+  if (!el) return;
+  try {
+    const resp = await fetch(_scansApi() + '/psa/stage0-distribution');
+    if (!resp.ok) { el.innerHTML = ''; return; }
+    const d = await resp.json();
+    if (!d.last_run) { el.innerHTML = ''; return; }
+
+    const ts = typeof formatET === 'function' ? formatET(d.last_run, true) : d.last_run;
+    const total = d.universe_size || 0;
+    const s0 = d.stage0_rejected || 0;
+    const s1 = d.stage1_rejected || 0;
+    const sig = d.signals_found || 0;
+    const by = d.by_criterion || {};
+
+    const _bar = (label, count, pct, color) => `
+      <div style="margin-bottom:5px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:2px">
+          <span>${label}</span><span style="font-family:var(--mono)">${count}</span>
+        </div>
+        <div style="background:var(--bg2);border-radius:3px;height:6px;overflow:hidden">
+          <div style="background:${color};height:6px;width:${Math.min(pct,100).toFixed(1)}%;transition:width .3s"></div>
+        </div>
+      </div>`;
+
+    const pctOf = (n) => total > 0 ? (n / total * 100) : 0;
+
+    el.innerHTML = `
+      <h3 style="font-size:12px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">
+        PSA Stage 0 Rejection Distribution
+        <span style="color:var(--text3);font-weight:400;font-size:11px;margin-left:8px">${ts}</span>
+      </h3>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px 16px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px 16px;margin-bottom:12px;font-family:var(--mono);font-size:12px">
+          <div><span style="color:var(--text3)">Universe</span><br><span style="font-size:16px;color:var(--text)">${total}</span></div>
+          <div><span style="color:var(--text3)">Stage 0 Rejected</span><br><span style="font-size:16px;color:var(--amber)">${s0}</span></div>
+          <div><span style="color:var(--text3)">Stage 1 Rejected</span><br><span style="font-size:16px;color:var(--text2)">${s1}</span></div>
+          <div><span style="color:var(--text3)">Approved</span><br><span style="font-size:16px;color:var(--green)">${sig}</span></div>
+        </div>
+        ${s0 > 0 ? `
+        <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+          <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Stage 0 breakdown (first-failing criterion)</div>
+          ${_bar('Price below minimum', by.min_price || 0, pctOf(by.min_price || 0), 'var(--amber)')}
+          ${_bar('Price above maximum', by.max_price || 0, pctOf(by.max_price || 0), '#c084fc')}
+          ${_bar('Volume below minimum', by.min_daily_volume || 0, pctOf(by.min_daily_volume || 0), 'var(--blue)')}
+        </div>` : ''}
+      </div>`;
+  } catch (e) {
+    const el2 = document.getElementById('psa-rejection-panel');
+    if (el2) el2.innerHTML = '';
+  }
+}
+
 // ── Tab initialisation ────────────────────────────────────────────────────────
 
 function loadScans() {
@@ -405,6 +461,7 @@ function loadScans() {
   loadScanSchedule();
   loadPastLogFiles();
   loadPolygonPlanIndicator();
+  loadPsaRejectionPanel();
   // Auto-refresh scan status every 30s
   if (!_scanStatusInterval) {
     _scanStatusInterval = setInterval(loadScanStatus, 30000);

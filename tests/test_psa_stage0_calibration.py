@@ -90,7 +90,7 @@ class TestPSAStage0VolumeAggregation(unittest.TestCase):
         result = stage0_filter("TEST", {"price": 50.0, "volume": single_bar_vol},
                                5.0, 500.0, DEFAULT_MIN_DAILY_VOLUME)
         self.assertIsNotNone(result, "Single bar volume must fail Stage0 (confirms the old bug)")
-        self.assertIn("volume", result)
+        self.assertEqual(result["criterion"], "min_daily_volume")
 
     # AC3b: normalization math — half-window that would fail without it
     def test_half_window_passes_after_normalization(self):

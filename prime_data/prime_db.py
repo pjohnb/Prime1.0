@@ -155,6 +155,7 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     init_signals_table(db_path)
     from prime_scenarios.prime_scenarios_db import init_scenarios_table
     init_scenarios_table(db_path)
+    init_psa_stage0_rejections_table(db_path)
 
     # Sprint 24 Item 4: trailing stop columns (idempotent migrations)
     _migrate_add_column_trade_log(db_path, "trailing_stop_pct", "REAL")
@@ -1137,6 +1138,136 @@ def get_latest_batch_summary(db_path: Optional[Path] = None) -> Optional[Dict[st
             "SELECT * FROM prime_batch_summary ORDER BY scan_ts DESC LIMIT 1"
         ).fetchone()
         return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# PSA Stage0 structured rejection logging (WO-PRIME-PSA-CALIBRATION-02 Phase 1)
+# ---------------------------------------------------------------------------
+
+_PSA_STAGE0_REJECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS psa_stage0_rejections (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_timestamp       TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    rejection_criterion TEXT NOT NULL,
+    symbol_value        REAL NOT NULL,
+    threshold_value     REAL NOT NULL
+)
+"""
+
+_PSA_SCAN_META_SCHEMA = """
+CREATE TABLE IF NOT EXISTS psa_scan_meta (
+    run_timestamp   TEXT PRIMARY KEY,
+    universe_size   INTEGER NOT NULL DEFAULT 0,
+    stage0_rejected INTEGER NOT NULL DEFAULT 0,
+    stage1_rejected INTEGER NOT NULL DEFAULT 0,
+    signals_found   INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+
+def init_psa_stage0_rejections_table(db_path: Optional[Path] = None) -> None:
+    """Create psa_stage0_rejections and psa_scan_meta tables if not present."""
+    with get_connection(db_path) as conn:
+        conn.execute(_PSA_STAGE0_REJECTIONS_SCHEMA)
+        conn.execute(_PSA_SCAN_META_SCHEMA)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_s0_ts "
+            "ON psa_stage0_rejections(run_timestamp)"
+        )
+        conn.commit()
+
+
+def write_psa_stage0_rejections(
+    rejections: List[Dict],
+    run_timestamp: str,
+    universe_size: int = 0,
+    stage0_rejected: int = 0,
+    stage1_rejected: int = 0,
+    signals_found: int = 0,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Batch-insert Stage0 rejections and write scan-level meta.
+
+    Retains data for the last 10 distinct run_timestamps, pruning older rows.
+    """
+    init_psa_stage0_rejections_table(db_path)
+    rows = [
+        (
+            run_timestamp,
+            r["symbol"],
+            r["criterion"],
+            r["symbol_value"],
+            r["threshold_value"],
+        )
+        for r in rejections
+    ]
+    with get_connection(db_path) as conn:
+        if rows:
+            conn.executemany(
+                """INSERT INTO psa_stage0_rejections
+                   (run_timestamp, symbol, rejection_criterion, symbol_value, threshold_value)
+                   VALUES (?,?,?,?,?)""",
+                rows,
+            )
+        conn.execute(
+            """INSERT OR REPLACE INTO psa_scan_meta
+               (run_timestamp, universe_size, stage0_rejected, stage1_rejected, signals_found)
+               VALUES (?,?,?,?,?)""",
+            (run_timestamp, universe_size, stage0_rejected, stage1_rejected, signals_found),
+        )
+        # Prune to last 10 distinct run_timestamps in each table.
+        conn.execute("""
+            DELETE FROM psa_stage0_rejections
+            WHERE run_timestamp NOT IN (
+                SELECT DISTINCT run_timestamp FROM psa_stage0_rejections
+                ORDER BY run_timestamp DESC LIMIT 10
+            )
+        """)
+        conn.execute("""
+            DELETE FROM psa_scan_meta
+            WHERE run_timestamp NOT IN (
+                SELECT run_timestamp FROM psa_scan_meta
+                ORDER BY run_timestamp DESC LIMIT 10
+            )
+        """)
+        conn.commit()
+
+
+def get_psa_stage0_distribution(db_path: Optional[Path] = None) -> Dict:
+    """Return Stage0 rejection distribution for the most recent PSA run."""
+    init_psa_stage0_rejections_table(db_path)
+    with get_connection(db_path) as conn:
+        meta_row = conn.execute(
+            "SELECT * FROM psa_scan_meta ORDER BY run_timestamp DESC LIMIT 1"
+        ).fetchone()
+        if not meta_row:
+            return {
+                "last_run": None,
+                "universe_size": 0,
+                "stage0_rejected": 0,
+                "stage1_rejected": 0,
+                "signals_found": 0,
+                "by_criterion": {},
+            }
+        meta = dict(meta_row)
+        last_run = meta["run_timestamp"]
+        crit_rows = conn.execute(
+            """SELECT rejection_criterion, COUNT(*) AS cnt
+               FROM psa_stage0_rejections
+               WHERE run_timestamp = ?
+               GROUP BY rejection_criterion""",
+            (last_run,),
+        ).fetchall()
+    by_criterion = {r[0]: r[1] for r in crit_rows}
+    return {
+        "last_run": last_run,
+        "universe_size": meta["universe_size"],
+        "stage0_rejected": meta["stage0_rejected"],
+        "stage1_rejected": meta["stage1_rejected"],
+        "signals_found": meta["signals_found"],
+        "by_criterion": by_criterion,
+    }
 
 
 # ---------------------------------------------------------------------------

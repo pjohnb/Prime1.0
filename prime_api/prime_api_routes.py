@@ -2849,6 +2849,22 @@ def get_scan_status():
     return jsonify({"scanners": rows, "count": len(rows)}), 200
 
 
+@api_bp.route("/psa/stage0-distribution", methods=["GET"])
+def get_psa_stage0_distribution():
+    """GET /api/v1/psa/stage0-distribution -- Stage0 rejection breakdown for last PSA run.
+
+    WO-PRIME-PSA-CALIBRATION-02 Phase 1.
+    Returns universe_size, stage0_rejected, stage1_rejected, signals_found, by_criterion dict.
+    """
+    from prime_data.prime_db import get_psa_stage0_distribution
+    try:
+        data = get_psa_stage0_distribution()
+        return jsonify(data), 200
+    except Exception as e:
+        logger.exception("PSA stage0 distribution query failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/scans/log", methods=["GET"])
 def get_scan_log():
     """GET /api/v1/scans/log -- last 50 lines of the scan log file.

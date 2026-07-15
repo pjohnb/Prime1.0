@@ -20,16 +20,19 @@ class TestStage0Filter(unittest.TestCase):
     def test_price_below_min(self):
         r = stage0_filter("TEST", {"price": 2.0, "volume": 500000}, 5.0, 500.0, 100000)
         self.assertIsNotNone(r)
-        self.assertIn("price", r.lower())
+        self.assertEqual(r["criterion"], "min_price")
+        self.assertIn("price", r["reason"].lower())
 
     def test_price_above_max(self):
         r = stage0_filter("TEST", {"price": 600.0, "volume": 500000}, 5.0, 500.0, 100000)
         self.assertIsNotNone(r)
+        self.assertEqual(r["criterion"], "max_price")
 
     def test_volume_below_min(self):
         r = stage0_filter("TEST", {"price": 50.0, "volume": 5000}, 5.0, 500.0, 100000)
         self.assertIsNotNone(r)
-        self.assertIn("volume", r.lower())
+        self.assertEqual(r["criterion"], "min_daily_volume")
+        self.assertIn("volume", r["reason"].lower())
 
     def test_passes_stage0(self):
         r = stage0_filter("TEST", {"price": 50.0, "volume": 500000}, 5.0, 500.0, 100000)

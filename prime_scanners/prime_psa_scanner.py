@@ -449,15 +449,31 @@ def stage0_filter(
     min_price: float,
     max_price: float,
     min_volume: float,
-) -> Optional[str]:
+) -> Optional[Dict[str, Any]]:
+    """Return a structured rejection dict, or None if the symbol passes Stage 0."""
     price = snapshot.get("price", 0)
     vol = snapshot.get("volume", 0)
     if price < min_price:
-        return f"price {price} < {min_price}"
+        return {
+            "criterion": "min_price",
+            "symbol_value": price,
+            "threshold_value": min_price,
+            "reason": f"price {price} < {min_price}",
+        }
     if price > max_price:
-        return f"price {price} > {max_price}"
+        return {
+            "criterion": "max_price",
+            "symbol_value": price,
+            "threshold_value": max_price,
+            "reason": f"price {price} > {max_price}",
+        }
     if vol < min_volume:
-        return f"volume {vol} < {min_volume}"
+        return {
+            "criterion": "min_daily_volume",
+            "symbol_value": vol,
+            "threshold_value": min_volume,
+            "reason": f"volume {vol} < {min_volume}",
+        }
     return None
 
 
@@ -497,16 +513,23 @@ def _scan_one(
     _raw_vol = sum(b.get("volume", 0) for b in bars)
     last_vol = _raw_vol * _FULL_DAY_BARS_5MIN / len(bars)
 
-    s0_reason = stage0_filter(
+    s0_dict = stage0_filter(
         symbol, {"price": last_price, "volume": last_vol},
         min_price, max_price, min_daily_volume,
     )
-    if s0_reason:
+    if s0_dict:
         logger.debug(
             "Stage0 rejected %s: %s (price=%.2f vol=%.0f norm, raw=%.0f over %d bars)",
-            symbol, s0_reason, last_price, last_vol, _raw_vol, len(bars),
+            symbol, s0_dict["reason"], last_price, last_vol, _raw_vol, len(bars),
         )
-        return symbol, {"symbol": symbol, "reason": s0_reason, "scan_ts": scan_ts}, _STAGE0
+        return symbol, {
+            "symbol": symbol,
+            "criterion": s0_dict["criterion"],
+            "symbol_value": s0_dict["symbol_value"],
+            "threshold_value": s0_dict["threshold_value"],
+            "reason": s0_dict["reason"],
+            "scan_ts": scan_ts,
+        }, _STAGE0
 
     result = analyze_symbol(
         bars, baseline_periods, long_periods, short_periods,
@@ -763,14 +786,20 @@ def run_psa_scan(
     )
     logger.info("APPROVED: %d stocks", len(signals))
 
-    # Persist Stage0 rejections to prime_signals
-    for rej in stage0_rejections:
-        try:
-            from prime_data.prime_db import write_stage0_rejection
-            write_stage0_rejection(rej["symbol"], rej["reason"], rej["scan_ts"],
-                                   strategy="PSA")
-        except Exception as e:
-            logger.debug("Stage0 rejection write failed for %s: %s", rej["symbol"], e)
+    # Persist Stage0 rejections + scan meta to psa_stage0_rejections table.
+    try:
+        from prime_data.prime_db import write_psa_stage0_rejections
+        write_psa_stage0_rejections(
+            rejections=stage0_rejections,
+            run_timestamp=scan_ts,
+            universe_size=len(universe),
+            stage0_rejected=stage0_rejected,
+            stage1_rejected=stage1_rejected,
+            signals_found=len(signals),
+            db_path=db_path,
+        )
+    except Exception as e:
+        logger.debug("Stage0 rejection batch write failed: %s", e)
 
     result = {
         "scan_time": scan_time.isoformat(),
