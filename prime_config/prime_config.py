@@ -210,8 +210,11 @@ class OpsConfig:
     # intraday noise in the narrow CD window.
     psa_confirmation_bc_drawdown: float = 5.0
     psa_confirmation_cd_drawdown: float = 5.0
-    # Sprint 23 Item 2: per-strategy threshold dicts (key = strategy name).
-    # Defaults are the working values from sprint history; users can tune in Settings UI.
+    # WO-PRIME-PSA-CALIBRATION-02 Phase 3: confirmed INERT for all six scanners.
+    # PSA, UOA, PEAD, DK, SHORT, IDX all use hardcoded module constants or
+    # dedicated cfg.ops.* flat fields — none reads strategy_thresholds at runtime.
+    # Retained in config for backwards compatibility with existing ops_config.json files.
+    # The Settings UI panel was removed in the same commit.
     strategy_thresholds: Any = field(default_factory=lambda: {
         "PSA": {
             "momentum_pct": 5.0,

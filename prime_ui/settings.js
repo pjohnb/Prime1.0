@@ -187,14 +187,11 @@ async function _applyMode(mode) {
 
 let _settingsData = {};
 
-const _STRATEGY_LABELS = {
-  PSA:   { label: 'PSA — Prime Segment Analysis',   fields: [['momentum_pct','Momentum %','number'],['volume_pct','Volume %','number'],['volatility_pct','Volatility %','number'],['max_drawdown_pct','Max Drawdown %','number']] },
-  UOA:   { label: 'UOA — Unusual Options Activity', fields: [['sizzle_index_min','Sizzle Index Min','number'],['put_call_ratio_max','Put/Call Ratio Max','number'],['min_premium','Min Premium ($)','number'],['max_dte','Max DTE','number']] },
-  PEAD:  { label: 'PEAD — Post-Earnings Drift',     fields: [['earnings_window_days','Earnings Window (days)','number'],['beat_pct_min','Beat % Min','number'],['miss_pct_max','Miss % Max','number'],['drift_days','Drift Window (days)','number']] },
-  DK:    { label: 'DK — Dark Pool',                 fields: [['volume_ratio_min','Volume Ratio Min','number'],['price_proximity_pct','Price Proximity %','number'],['conviction_min','Conviction Min','number']] },
-  SHORT: { label: 'SHORT — Short Selling',          fields: [['borrow_rate_max_pct','Borrow Rate Max %','number'],['put_volume_surge','Put Volume Surge x','number']] },
-  IDX:   { label: 'IDX — Index Trader',             fields: [['rs_vs_spy_min','RS vs SPY Min','number'],['sma_short','SMA Short Period','number'],['sma_long','SMA Long Period','number']] },
-};
+// WO-PRIME-PSA-CALIBRATION-02 Phase 3: _STRATEGY_LABELS and the STRATEGY THRESHOLDS
+// UI panel removed. Confirmed INERT for all six scanners (PSA, UOA, PEAD, DK, SHORT, IDX):
+// none reads ops_config.strategy_thresholds at runtime. All scanners use either hardcoded
+// module-level constants or dedicated cfg.ops.* flat fields. The key is retained in the
+// settings API _SETTINGS_FIELDS for backwards compatibility with existing ops_config.json files.
 
 async function loadAiUsageTable() {
   const el = document.getElementById('ai-usage-table');
@@ -302,8 +299,6 @@ function _renderSettings() {
   const d = _settingsData;
   const body = document.getElementById('settings-body');
   if (!body) return;
-
-  const thresholds = d.strategy_thresholds || {};
 
   body.innerHTML = `
     <div class="order-panel" style="margin-bottom:20px">
@@ -552,9 +547,6 @@ function _renderSettings() {
       </div>
     </div>
 
-    <div class="panel-title" style="margin-bottom:10px">STRATEGY THRESHOLDS</div>
-    ${Object.entries(_STRATEGY_LABELS).map(([key, meta]) => _stratCard(key, meta, thresholds[key] || {})).join('')}
-
     <div style="display:flex;gap:12px;margin-top:20px;align-items:center">
       <button class="btn-confirm" onclick="saveSettings()">Save</button>
       <button class="btn-cancel" onclick="resetSettings()">Reset to Defaults</button>
@@ -728,23 +720,6 @@ async function saveMataDistribution() {
   }
 }
 
-function _stratCard(stratKey, meta, vals) {
-  const rows = meta.fields.map(([fk, fl]) =>
-    `<label style="display:flex;flex-direction:column;gap:4px;min-width:160px">
-      <span style="font-size:11px;color:var(--text3);font-family:var(--mono)">${fl}</span>
-      <input id="sett-strat-${stratKey}-${fk}" type="number" value="${vals[fk] != null ? vals[fk] : ''}"
-        style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:13px;font-family:var(--mono);width:110px"/>
-    </label>`
-  ).join('');
-  return `<div class="order-panel" style="margin-bottom:8px">
-    <div style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none"
-         onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'flex':'none'">
-      <span class="panel-title" style="margin:0">${meta.label}</span>
-      <span style="font-size:11px;color:var(--text3)">▼</span>
-    </div>
-    <div style="display:none;flex-wrap:wrap;gap:12px;margin-top:12px">${rows}</div>
-  </div>`;
-}
 
 async function saveSettings() {
   const payload = {};
@@ -808,17 +783,6 @@ async function saveSettings() {
   payload.psa_stage1_cd_drawdown = parseFloat(_v('psa_stage1_cd_drawdown')) || 3.0;
   payload.psa_confirmation_bc_drawdown = parseFloat(_v('psa_confirmation_bc_drawdown')) || 5.0;
   payload.psa_confirmation_cd_drawdown = parseFloat(_v('psa_confirmation_cd_drawdown')) || 5.0;
-
-  // Strategy thresholds
-  const thresholds = {};
-  for (const [stratKey, meta] of Object.entries(_STRATEGY_LABELS)) {
-    thresholds[stratKey] = {};
-    for (const [fk] of meta.fields) {
-      const el = document.getElementById(`sett-strat-${stratKey}-${fk}`);
-      if (el && el.value !== '') thresholds[stratKey][fk] = Number(el.value);
-    }
-  }
-  payload.strategy_thresholds = thresholds;
 
   // Remove null values
   Object.keys(payload).forEach(k => { if (payload[k] === null) delete payload[k]; });
