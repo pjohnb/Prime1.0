@@ -2574,6 +2574,10 @@ _SCANNER_MAP: Dict[str, str] = {
 _scan_state: Dict[str, Any] = {}
 _scan_lock = threading.Lock()
 
+# Hard limit for subprocess lifetime in parallel deep-scan mode.  A hung scanner
+# would otherwise hold its semaphore slot forever, blocking PSA via uoa_done.wait().
+_SCANNER_TIMEOUT = 900  # 15 minutes
+
 # WO-PRIME-PSA-CALIBRATION-02 Phase 2: PSA diagnostic scan state
 _diag_state: Dict[str, Any] = {"status": "idle", "last_run": None, "error": None}
 _diag_lock = threading.Lock()
@@ -2629,11 +2633,42 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
         with _scan_lock:
             _scan_state[scanner]["pid"] = proc.pid
 
-        output_lines = []
-        with open(scan_log, "a", encoding="utf-8") as lf:
-            for line in proc.stdout:
-                lf.write(line)
-                output_lines.append(line)
+        output_lines: list = []
+        if skip_bridge:
+            # Parallel deep-scan path: run the stdout reader in a daemon thread
+            # so we can enforce a hard timeout.  A hung subprocess (e.g. UOA
+            # waiting forever on a Schwab call) would otherwise keep the thread
+            # alive indefinitely, preventing _guarded_run's finally block from
+            # releasing the semaphore and blocking PSA via uoa_done.wait().
+            def _stream_output() -> None:
+                with open(scan_log, "a", encoding="utf-8") as _lf:
+                    for _ln in proc.stdout:
+                        _lf.write(_ln)
+                        output_lines.append(_ln)
+
+            _rt = threading.Thread(
+                target=_stream_output, daemon=True, name=f"scanread-{scanner}"
+            )
+            _rt.start()
+            _rt.join(timeout=_SCANNER_TIMEOUT)
+            if _rt.is_alive():
+                logger.error(
+                    "scan runner %s: subprocess timed out (%ds) — killing",
+                    scanner, _SCANNER_TIMEOUT,
+                )
+                _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(scan_log, "a", encoding="utf-8") as _lf:
+                    _lf.write(
+                        f"--- {_ts} TIMEOUT {scanner.upper()} killed"
+                        f" after {_SCANNER_TIMEOUT}s ---\n"
+                    )
+                proc.kill()
+                _rt.join(timeout=5)
+        else:
+            with open(scan_log, "a", encoding="utf-8") as lf:
+                for line in proc.stdout:
+                    lf.write(line)
+                    output_lines.append(line)
         proc.wait()
 
         # WO-PRIME-CANCEL-SCAN-01: if operator cancelled, mark and return early.
