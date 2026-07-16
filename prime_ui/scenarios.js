@@ -744,9 +744,16 @@ function _scenRenderFilterBar() {
   const bar = document.getElementById('scen-filter-bar');
   if (!bar) return;
 
-  const grp = 'display:flex;align-items:center;gap:4px';
+  // Group label: 10px monospace uppercase muted text above the button row
   const lbl = 'font-size:10px;color:var(--text3);font-family:var(--mono);' +
-              'text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;margin-right:2px';
+              'text-transform:uppercase;letter-spacing:.05em;white-space:nowrap';
+  // Each group: column flex so label sits above its buttons; flex-shrink:0 keeps
+  // the group intact when the bar wraps to a second line (AC5).
+  const grp = 'display:flex;flex-direction:column;gap:3px;flex-shrink:0';
+  const row = 'display:flex;gap:4px;align-items:center';
+  // Thin vertical rule drawn via border-left on groups 2-4 to separate them from
+  // the preceding group without creating orphaned divider elements during wrap.
+  const grpDiv = grp + ';border-left:1px solid var(--border);padding-left:12px';
 
   const stale = ['FRESH', 'All'].map(v =>
     _scFiltBtn(v, _scenFilters.staleness === v, "_scenSetStaleness('" + v + "')")
@@ -791,22 +798,33 @@ function _scenRenderFilterBar() {
   const clearBtn =
     '<button onclick="clearScenarioFilters()" style="background:transparent;border:none;' +
     'color:var(--text3);font-size:11px;cursor:pointer;padding:3px 6px;font-family:var(--mono);' +
-    'text-decoration:underline;margin-left:4px">Clear filters</button>';
+    'text-decoration:underline;align-self:flex-end">Clear filters</button>';
 
   bar.innerHTML =
-    '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:flex-end;' +
     'padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px">' +
-    '<span style="' + grp + '"><span style="' + lbl + '">Staleness</span>' + stale + '</span>' +
-    '<span style="' + grp + '"><span style="' + lbl + '">Direction</span>' + dirs + '</span>' +
-    '<span style="' + grp + '"><span style="' + lbl + '">Conviction</span>' + convs + '</span>' +
-    '<span style="' + grp + ';position:relative">' +
+    '<div style="' + grp + '">' +
+      '<span style="' + lbl + '">Staleness</span>' +
+      '<div style="' + row + '">' + stale + '</div>' +
+    '</div>' +
+    '<div style="' + grpDiv + '">' +
+      '<span style="' + lbl + '">Direction</span>' +
+      '<div style="' + row + '">' + dirs + '</div>' +
+    '</div>' +
+    '<div style="' + grpDiv + '">' +
+      '<span style="' + lbl + '">Conviction</span>' +
+      '<div style="' + row + '">' + convs + '</div>' +
+    '</div>' +
+    '<div style="' + grpDiv + ';position:relative">' +
       '<span style="' + lbl + '">Type</span>' +
-      '<button style="' + typeBtnStyle + '" onclick="(function(){' +
-        'var p=document.getElementById(\'scen-type-panel\');' +
-        'if(p)p.style.display=p.style.display===\'none\'?\'block\':\'none\';})()">' +
-        typesLabel + '</button>' +
-      typePanel +
-    '</span>' +
+      '<div style="' + row + ';position:relative">' +
+        '<button style="' + typeBtnStyle + '" onclick="(function(){' +
+          'var p=document.getElementById(\'scen-type-panel\');' +
+          'if(p)p.style.display=p.style.display===\'none\'?\'block\':\'none\';})()">' +
+          typesLabel + '</button>' +
+        typePanel +
+      '</div>' +
+    '</div>' +
     clearBtn +
     '</div>';
 
