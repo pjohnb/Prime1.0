@@ -47,8 +47,7 @@ def _polygon_delay():
         from pathlib import Path
         ops = Path(__file__).resolve().parent.parent / "ops_config.json"
         cfg = json.loads(ops.read_text())
-        plan = cfg.get("polygon_plan", "free")
-        delay_ms = 100 if plan == "paid" else int(cfg.get("polygon_rate_limit_delay_ms", 13000))
+        delay_ms = int(cfg.get("polygon_rate_limit_delay_ms", 13000))
         time.sleep(delay_ms / 1000)
     except Exception:
         time.sleep(0.5)  # safe default
