@@ -22,6 +22,16 @@ from typing import Any, Dict, List, Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from prime_scanners.prime_psa_scanner import (
+    fetch_bars,
+    analyze_symbol,
+    DEFAULT_INTERVAL,
+    DEFAULT_BASELINE_PERIODS,
+    DEFAULT_LONG_PERIODS,
+    DEFAULT_SHORT_PERIODS,
+    resolve_psa_universe,
+)
+
 logger = logging.getLogger(__name__)
 
 DIAG_RESULT_FILENAME = "psa_diagnostic_latest.json"
@@ -57,8 +67,6 @@ def _diag_one(
     Gates are suspended: no Stage 0 or Stage 1 filter is applied.
     Returns (symbol, factor_dict | None).  None means insufficient data.
     """
-    from prime_scanners.prime_psa_scanner import fetch_bars, analyze_symbol
-
     bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
     if not bars:
         return symbol, None
@@ -112,10 +120,6 @@ def run_psa_diagnostic_scan(
     and also returned.
     """
     from prime_config.prime_config import get_config
-    from prime_scanners.prime_psa_scanner import (
-        DEFAULT_INTERVAL, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
-        DEFAULT_SHORT_PERIODS, resolve_psa_universe,
-    )
 
     cfg = get_config()
 
@@ -151,7 +155,7 @@ def run_psa_diagnostic_scan(
             try:
                 sym, data = fut.result()
             except Exception as exc:
-                logger.debug("PSA diag worker error: %s", exc)
+                logger.warning("PSA diag worker error [%s]: %s", futures[fut], exc)
                 skipped += 1
                 continue
             if data is None:
