@@ -12,7 +12,7 @@ Scenario types:
   4   Sniper — Trifecta         IDX STRONG + UOA/PEAD + PSA APPROVED
   5   Watch                     Any single signal alone (monitor for convergence)
   6   Sniper — Anomalous        UOA/PEAD + PSA APPROVED (no IDX)
-  7   Sniper — Sector Phase     SRS + PSA APPROVED (same symbol)
+  7   Sniper — Sector Phase     SRS RECOVERING sector + PSA APPROVED (constituent stock)
   8   Sniper — Metals MR        MMR TRANCHE_2 + PSA APPROVED (same symbol)
   9   Timeframe Confluence      MTFA STRONG + any confirming signal (IDX/UOA/PSA/PEAD)
   10  Sniper — Ultimate         IDX STRONG + UOA/PEAD + PSA APPROVED + MTFA STRONG
@@ -31,15 +31,33 @@ Signal direction matching:
   - MMR TRANCHE_2 → LONG; SHORT_TRANCHE_2 → SHORT
 """
 
+import json
 import logging
 import pytz
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 _ET = pytz.timezone("America/New_York")
+
+# Sector constituent map: ETF ticker → list of member stock tickers.
+# Used by Type 7 to match a RECOVERING SRS sector ETF against PSA stock signals.
+_SECTORS_PATH = Path(__file__).resolve().parent.parent / "data" / "sectors_constituents.json"
+_SECTOR_CONSTITUENTS_CACHE: Optional[Dict[str, List[str]]] = None
+
+
+def _load_sector_constituents() -> Dict[str, List[str]]:
+    global _SECTOR_CONSTITUENTS_CACHE
+    if _SECTOR_CONSTITUENTS_CACHE is None:
+        try:
+            _SECTOR_CONSTITUENTS_CACHE = json.loads(_SECTORS_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("SRS Type 7: could not load sectors_constituents.json — %s", exc)
+            _SECTOR_CONSTITUENTS_CACHE = {}
+    return _SECTOR_CONSTITUENTS_CACHE
 
 # ---------------------------------------------------------------------------
 # Scenario type registry
@@ -255,7 +273,7 @@ def detect_scenarios(
     signal sets):
       Types 4 > 3 > 2 > 1  (IDX-based, PSA as individual-stock anchor)
       Type 6 (UOA/PEAD + PSA, no IDX)
-      Type 7 (SRS + PSA, same symbol)
+      Type 7 (SRS RECOVERING sector + PSA constituent stock)
       Type 8 (MMR TRANCHE_2 + PSA, same symbol)
       Type 5 (single signal watch — emitted only when no higher type fires)
     """
@@ -354,16 +372,25 @@ def detect_scenarios(
             scenarios.append(sc)
             anchored_ids.add(idx_sig.get("signal_id"))
 
-        # --- Type 7: SRS + PSA on same ETF symbol ---
+        # --- Type 7: SRS RECOVERING sector + PSA APPROVED constituent stock ---
+        # SRS signals carry an ETF symbol (e.g. "XLK") and sector name ("Technology").
+        # PSA signals are for individual stocks, never sector ETFs. Match on constituent
+        # membership: a PSA stock is valid when it belongs to the SRS RECOVERING ETF's
+        # known constituent list (data/sectors_constituents.json). The scenario sym is
+        # the tradeable PSA stock, not the sector ETF.
+        _sector_map = _load_sector_constituents()
         for srs_sig in srs:
-            sym = srs_sig["symbol"]
-            matching_psa = [s for s in psa if s["symbol"] == sym]
-            if matching_psa:
-                constituents = [srs_sig, matching_psa[0]]
-                st = _overall_staleness(constituents)
-                sc = _build_scenario("7", direction, sym, constituents, st, detected_at)
+            etf = srs_sig["symbol"]
+            sector_stocks = set(_sector_map.get(etf, []))
+            if not sector_stocks:
+                continue
+            for psa_sig in [s for s in psa if s["symbol"] in sector_stocks]:
+                sym = psa_sig["symbol"]
+                sc_sigs = [srs_sig, psa_sig]
+                st = _overall_staleness(sc_sigs)
+                sc = _build_scenario("7", direction, sym, sc_sigs, st, detected_at)
                 scenarios.append(sc)
-                for s in constituents:
+                for s in sc_sigs:
                     anchored_ids.add(s.get("signal_id"))
 
         # --- Type 8: MMR TRANCHE_2 + PSA on same symbol ---

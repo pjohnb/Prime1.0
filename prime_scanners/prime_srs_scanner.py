@@ -199,6 +199,9 @@ def run_srs_scan(api_key: str) -> Dict:
 
     # CIL-070: graceful degradation — no Polygon key means no data, so return an
     # empty (well-formed) result with a MIXED regime rather than crashing.
+    # Signal writes: only RECOVERING sectors are approved by the bridge and written
+    # to the signals table. Returning 0 signals is expected behavior whenever no
+    # sector satisfies the RECOVERING criteria (chg_2d >= +1.5% with volume confirmation).
     if not (api_key or "").strip():
         logger.warning("SRS: Polygon unavailable — skipping scan")
         return {

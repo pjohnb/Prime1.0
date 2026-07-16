@@ -281,17 +281,19 @@ class TestType6Anomalous(unittest.TestCase):
 
 
 class TestType7SectorPhase(unittest.TestCase):
-    """Type 7: SRS + PSA APPROVED on same symbol."""
+    """Type 7: SRS RECOVERING sector + PSA APPROVED constituent stock."""
 
-    def test_srs_psa_same_symbol_emits_type7(self):
-        signals = [_srs("XLK"), _psa("XLK")]
+    def test_srs_psa_constituent_emits_type7(self):
+        # AAPL is a known XLK constituent — should fire Type 7 with sym=AAPL
+        signals = [_srs("XLK"), _psa("AAPL")]
         result = detect_scenarios(signals, now=_now())
         t7 = [s for s in result if s["type_num"] == "7"]
         self.assertGreater(len(t7), 0)
-        self.assertEqual(t7[0]["primary_symbol"], "XLK")
+        self.assertEqual(t7[0]["primary_symbol"], "AAPL")
 
-    def test_type7_requires_same_symbol(self):
-        signals = [_srs("XLK"), _psa("MSFT")]
+    def test_type7_requires_psa_stock_in_sector_constituents(self):
+        # GLD is a commodity ETF, not a constituent of any GICS sector — no Type 7
+        signals = [_srs("XLK"), _psa("GLD")]
         result = detect_scenarios(signals, now=_now())
         t7 = [s for s in result if s["type_num"] == "7"]
         self.assertEqual(len(t7), 0)
@@ -779,8 +781,8 @@ class TestUnknown(unittest.TestCase):
         self.assertEqual(len(unknown), 0)
 
     def test_known_combination_not_surfaced_as_unknown(self):
-        """SRS + PSA on same symbol = Type 7, not Unknown."""
-        result = self._detect(_srs("XLK"), _psa("XLK"))
+        """SRS + PSA for a constituent stock = Type 7, not Unknown."""
+        result = self._detect(_srs("XLK"), _psa("AAPL"))
         t7 = [s for s in result if s["type_num"] == "7"]
         unknown = [s for s in result if s["type_num"] == "0"]
         self.assertGreater(len(t7), 0)
