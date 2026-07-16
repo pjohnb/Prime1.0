@@ -363,28 +363,36 @@ function _scenRetryNarration(scenarioId) {
 }
 
 async function _scenFetchNarration(sc) {
-  const scenarioId = sc.scenario_id;
   try {
-    const resp = await fetch(API + '/scenarios/narrate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        scenario_id:        sc.scenario_id,
-        type_num:           sc.type_num,
-        type_name:          sc.type_name,
-        direction:          sc.direction,
-        conviction:         sc.conviction,
-        primary_symbol:     sc.primary_symbol,
-        constituent_signals: sc.constituent_signals || []
-      })
-    });
+    const scenarioId = sc.scenario_id;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    let resp;
+    try {
+      resp = await fetch(API + '/scenarios/narrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          scenario_id:        sc.scenario_id,
+          type_num:           sc.type_num,
+          type_name:          sc.type_name,
+          direction:          sc.direction,
+          conviction:         sc.conviction,
+          primary_symbol:     sc.primary_symbol,
+          constituent_signals: sc.constituent_signals || []
+        })
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || 'HTTP ' + resp.status);
     const narration = data.narration || '';
     _scenarioNarrationCache[scenarioId] = narration;
     if (_scenInfoCurrentId === scenarioId) _scenSetNarration(narration);
   } catch (_e) {
-    if (_scenInfoCurrentId === scenarioId) _scenSetNarrationError(scenarioId);
+    if (_scenInfoCurrentId === sc.scenario_id) _scenSetNarrationError(sc.scenario_id);
   }
 }
 
