@@ -200,7 +200,7 @@ function _renderExecutedCard(sc, fill) {
     <span style="font-size:12px;color:var(--text3)">Stop <span style="color:var(--amber)">${stopLabel}</span></span>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
-    <button onclick="openScenarioInfo('${sc.type_num}')"
+    <button onclick="openScenarioInfo('${sc.scenario_id}')"
       style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;min-width:32px"
       title="Learn about this scenario type">ⓘ</button>
     <button onclick="showView('portfolio')"
@@ -246,7 +246,7 @@ function _renderScenarioCard(sc) {
     ${_scConstituentRows(constituents)}
   </div>
   ${unknownNote}<div style="display:flex;gap:8px;align-items:center">
-    <button onclick="openScenarioInfo('${sc.type_num}')"
+    <button onclick="openScenarioInfo('${sc.scenario_id}')"
       style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;min-width:32px"
       title="Learn about this scenario type">ⓘ</button>
     ${execBtn}
@@ -257,6 +257,8 @@ function _renderScenarioCard(sc) {
 async function loadScenarios() {
   const container = document.getElementById('scen-cards');
   if (!container) return;
+  // WO-PRIME-SCENARIOS-PHASE3-01: clear narration cache on refresh
+  Object.keys(_scenarioNarrationCache).forEach(k => delete _scenarioNarrationCache[k]);
   _scenRenderFilterBar();
   container.innerHTML = '<div class="empty-state" style="padding:24px 0;color:var(--text3)">Loading scenarios…</div>';
   try {
@@ -281,19 +283,115 @@ async function loadScenarios() {
   }
 }
 
-function openScenarioInfo(typeNum) {
-  const info = _SCENARIO_MODAL_COPY[String(typeNum)];
-  if (!info) return;
+// WO-PRIME-SCENARIOS-PHASE3-01: session narration cache (scenario_id → narration text)
+const _scenarioNarrationCache = {};
+let _scenInfoCurrentId = null;
+
+function openScenarioInfo(scenarioId) {
+  const sc = _scenarioRegistry[scenarioId];
+  if (!sc) return;
   const modal = document.getElementById('scen-info-modal');
   if (!modal) return;
-  document.getElementById('scen-info-title').textContent = info.title;
-  document.getElementById('scen-info-body').textContent  = info.body;
+
+  _scenInfoCurrentId = scenarioId;
+
+  const copy = _SCENARIO_MODAL_COPY[String(sc.type_num)];
+  document.getElementById('scen-info-title').textContent =
+    copy ? copy.title : (sc.type_name || 'Scenario Details');
+
+  const metaEl = document.getElementById('scen-info-meta');
+  if (metaEl) {
+    metaEl.innerHTML =
+      `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">` +
+        _scConvictionBadge(sc.conviction) +
+        _scDirTag(sc.direction) +
+        `<span style="font-size:12px;color:var(--text3);font-family:var(--mono);font-weight:700">${sc.primary_symbol || '--'}</span>` +
+      `</div>` +
+      _scConstituentRows(sc.constituent_signals || []);
+  }
+
   modal.style.display = 'flex';
+
+  if (_scenarioNarrationCache[scenarioId]) {
+    _scenSetNarration(_scenarioNarrationCache[scenarioId]);
+    return;
+  }
+  _scenSetNarrationLoading();
+  _scenFetchNarration(sc);
 }
 
 function closeScenarioInfo() {
   const modal = document.getElementById('scen-info-modal');
   if (modal) modal.style.display = 'none';
+  _scenInfoCurrentId = null;
+}
+
+function _scenSetNarrationLoading() {
+  const el = document.getElementById('scen-info-narration');
+  if (!el) return;
+  el.innerHTML =
+    `<div style="display:flex;align-items:center;gap:10px;color:var(--text3);padding:8px 0">` +
+      `<div style="width:15px;height:15px;border:2px solid var(--border);border-top-color:var(--accent,#6366f1);` +
+           `border-radius:50%;animation:prime-spin 0.8s linear infinite;flex-shrink:0"></div>` +
+      `<span>Analyzing scenario…</span>` +
+    `</div>`;
+}
+
+function _scenSetNarration(text) {
+  const el = document.getElementById('scen-info-narration');
+  if (!el) return;
+  el.innerHTML = `<p style="margin:0">${_escHtml(text)}</p>`;
+}
+
+function _scenSetNarrationError(scenarioId) {
+  const el = document.getElementById('scen-info-narration');
+  if (!el) return;
+  el.innerHTML =
+    `<div style="color:var(--red,#ef4444);font-size:13px">Unable to generate analysis. Please try again.` +
+      `<button onclick="_scenRetryNarration('${scenarioId}')"` +
+        ` style="margin-left:10px;background:transparent;border:1px solid var(--border);` +
+               `color:var(--text2);padding:3px 10px;border-radius:4px;font-size:12px;cursor:pointer">Retry</button>` +
+    `</div>`;
+}
+
+function _scenRetryNarration(scenarioId) {
+  const sc = _scenarioRegistry[scenarioId];
+  if (!sc) return;
+  _scenInfoCurrentId = scenarioId;
+  _scenSetNarrationLoading();
+  _scenFetchNarration(sc);
+}
+
+async function _scenFetchNarration(sc) {
+  const scenarioId = sc.scenario_id;
+  try {
+    const resp = await fetch(API + '/scenarios/narrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scenario_id:        sc.scenario_id,
+        type_num:           sc.type_num,
+        type_name:          sc.type_name,
+        direction:          sc.direction,
+        conviction:         sc.conviction,
+        primary_symbol:     sc.primary_symbol,
+        constituent_signals: sc.constituent_signals || []
+      })
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || 'HTTP ' + resp.status);
+    const narration = data.narration || '';
+    _scenarioNarrationCache[scenarioId] = narration;
+    if (_scenInfoCurrentId === scenarioId) _scenSetNarration(narration);
+  } catch (_e) {
+    if (_scenInfoCurrentId === scenarioId) _scenSetNarrationError(scenarioId);
+  }
+}
+
+function _escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ── WO-PRIME-SCENARIO-EXECUTE-01: Execute dialog ─────────────────────────────

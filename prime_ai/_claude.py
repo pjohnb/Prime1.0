@@ -44,6 +44,8 @@ def _detect_feature(system: str) -> str:
         return "Briefing"
     if ("dk" in text or "dark" in text) and "pool" in text:
         return "DK Classifier"
+    if "scenario" in text and "narrat" in text:
+        return "Scenario Narration"
     return "Other"
 
 
