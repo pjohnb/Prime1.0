@@ -1,11 +1,11 @@
 """
-PRIME Sprint 14 Item 1 -- v0.9 Scanner -> v1.0 DB Bridge.
+PRIME Sprint 14 Item 1 -- Scanner -> v1.0 DB Bridge.
 
-The v0.9 scanners (PSA, PEAD, UOA, MMR, SRS) write their output to CSV/JSON
-files in C:\\Dev\\PRIME\\scan_results and to the prime_ai_monitoring.db SQLite
-database. This bridge intercepts that output, maps APPROVED signals to the
-v1.0 prime_signals schema, and writes them to prime_trades.db -- so every scan
-auto-populates the Lovable UI Signals tab with no manual import step.
+v1.0 scanners (PSA, PEAD, UOA, MMR, SRS, MTFA) write JSON output to
+C:\\Dev\\PRIME1.0\\scan_results. This bridge reads the latest file for each
+scanner, maps APPROVED signals to the v1.0 prime_signals schema, and writes
+them to prime_trades.db -- so every scan auto-populates the Lovable UI
+Signals tab with no manual import step.
 
 Design:
   * strategy column = scanner name (UOA / PEAD / SRS / PSA / MMR) so the UI
@@ -15,12 +15,12 @@ Design:
   * Deduplication via a deterministic signal_id (see make_signal_id) + an
     INSERT OR IGNORE in insert_signal_dedup(); re-ingesting a scan is a no-op.
 
-Each adapter (bridge_uoa_rows, bridge_pead_rows, ...) is pure mapping logic and
-returns the number of NEW signals inserted. ingest_latest() discovers the most
-recent output for each scanner and bridges them all; it is the function wired
-into run_scan.bat and exposed via the module CLI.
+Each adapter is pure mapping logic and returns the number of NEW signals
+inserted. ingest_latest() discovers the most recent output for each scanner
+and bridges them all; it is the function wired into run_scan.bat and exposed
+via the module CLI.
 
-Usage (wired as the final step of the v0.9 scan pipeline):
+Usage:
     cd /d C:\\Dev\\PRIME1.0
     python -m prime_bridge.prime_signal_bridge --ingest-latest
 """
@@ -30,7 +30,6 @@ import csv
 import json
 import logging
 import re
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,11 +38,6 @@ from prime_analytics.prime_signals_db import init_signals_table, insert_signal_d
 
 logger = logging.getLogger(__name__)
 
-# Canonical v0.9 output locations (frozen repo).
-V09_SCAN_RESULTS = Path(r"C:\Dev\PRIME\scan_results")
-V09_MONITORING_DB = Path(r"C:\Dev\PRIME\prime_ai_monitoring.db")
-
-# v1.0 scan results directory (all v1.0 scanners write JSON here).
 V10_SCAN_RESULTS = Path(r"C:\Dev\PRIME1.0\scan_results")
 
 # Approval gates per scanner (the value(s) that mean "tradeable signal").
@@ -144,6 +138,38 @@ def bridge_uoa_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
                 "group": (row.get("group") or "").strip(),
                 "call_put_ratio": _to_float(row.get("call_put_ratio"), None),
                 "total_volume": _to_float(row.get("total_volume"), None),
+            },
+        }
+        if signal["symbol"] and _insert(signal, db_path):
+            count += 1
+    return count
+
+
+def bridge_uoa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> int:
+    """UOA uoa_scan_*.json. Approved = tier in STRONG/WATCH."""
+    scan_ts = (data.get("scan_time") or "").strip()
+    count = 0
+    for sig in data.get("signals", []):
+        tier = (sig.get("tier") or "").strip().upper()
+        if tier not in UOA_APPROVED_TIERS:
+            continue
+        direction = (sig.get("direction") or "LONG").strip().upper()
+        trigger_source = "UOA_PUT" if direction == "SHORT" else "UOA_CALL"
+        signal = {
+            "symbol": (sig.get("symbol") or "").strip(),
+            "strategy": "UOA",
+            "scan_ts": scan_ts,
+            "entry_price": _to_float(sig.get("price_at_scan")),
+            "score": _to_float(sig.get("sizzle_index")),
+            "tier": tier,
+            "direction": direction,
+            "status": "APPROVED",
+            "trigger_source": trigger_source,
+            "factors": {
+                "source": "schwab",
+                "group": (sig.get("group") or "").strip(),
+                "call_put_ratio": _to_float(sig.get("call_put_ratio"), None),
+                "total_volume": _to_float(sig.get("total_volume"), None),
             },
         }
         if signal["symbol"] and _insert(signal, db_path):
@@ -279,6 +305,53 @@ def bridge_pead_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None)
     return count
 
 
+def bridge_pead_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> int:
+    """PEAD pead_scan_*.json. Approved = signal["approved"] is True."""
+    scan_ts = (data.get("scan_time") or "").strip()
+    count = 0
+    for sig in data.get("signals", []):
+        if not sig.get("approved"):
+            continue
+        direction = (sig.get("direction") or "LONG").strip().upper()
+        if direction == "NEUTRAL":
+            continue
+        trigger_source = "PEAD_BEAT" if direction == "LONG" else "PEAD_MISS"
+
+        guidance_flag = (sig.get("guidance_flag") or "").strip() or None
+        finnhub_available = bool(sig.get("finnhub_guidance_available", False))
+        if not guidance_flag:
+            from prime_scanners.prime_pead_scanner import classify_guidance_flag
+            eps_surp = _to_float(sig.get("surprise_pct"), 0.0) or 0.0
+            price_rxn = _to_float(sig.get("price_change_pct"), 0.0) or 0.0
+            guidance_flag = classify_guidance_flag(eps_surp, price_rxn)
+            finnhub_available = False
+
+        signal = {
+            "symbol": (sig.get("symbol") or "").strip(),
+            "strategy": "PEAD",
+            "scan_ts": scan_ts,
+            "entry_price": _to_float(sig.get("price_at_scan")),
+            "score": _to_float(sig.get("score")),
+            "tier": "",
+            "direction": direction,
+            "status": "APPROVED",
+            "trigger_source": trigger_source,
+            "guidance_flag": guidance_flag,
+            "finnhub_guidance_available": finnhub_available,
+            "factors": {
+                "eps_surprise_pct": _to_float(sig.get("surprise_pct"), None),
+                "price_reaction_pct": _to_float(sig.get("price_change_pct"), None),
+                "days_since_earnings": sig.get("days_since_earnings"),
+                "earnings_date": sig.get("earnings_date"),
+                "guidance_flag": guidance_flag,
+            },
+        }
+        signal = _apply_guidance_tier(signal)
+        if signal["symbol"] and _insert(signal, db_path):
+            count += 1
+    return count
+
+
 def bridge_mmr_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) -> int:
     """MMR CSV rows. Approved = TRANCHE_1/2 (LONG) or SHORT_TRANCHE_1/2 (SHORT).
 
@@ -399,32 +472,12 @@ def _psa_scan_ts(path: Path) -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def _read_pead_latest(monitoring_db: Path) -> List[Dict[str, Any]]:
-    """Read the most recent scan's approved PEAD signals from monitoring DB."""
-    conn = sqlite3.connect(str(monitoring_db))
-    conn.row_factory = sqlite3.Row
-    try:
-        latest = conn.execute(
-            "SELECT MAX(scan_timestamp) FROM pead_signals"
-        ).fetchone()[0]
-        if not latest:
-            return []
-        rows = conn.execute(
-            "SELECT * FROM pead_signals WHERE scan_timestamp = ? AND above_threshold = 1",
-            (latest,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 def ingest_latest(
     scan_dir: Path = V10_SCAN_RESULTS,
-    monitoring_db: Path = V09_MONITORING_DB,
     db_path: Optional[Path] = None,
 ) -> Dict[str, int]:
     """Discover and bridge the latest output for every scanner.
@@ -444,9 +497,10 @@ def ingest_latest(
         except Exception as e:  # pragma: no cover - defensive pipeline guard
             logger.warning("bridge %s skipped: %s", name, e)
 
-    uoa = _latest(scan_dir, "live_signals_*.csv")
+    uoa = _latest(scan_dir, "uoa_scan_*.json")
     if uoa:
-        _try("UOA", lambda: bridge_uoa_rows(_read_csv(uoa), db_path))
+        _try("UOA", lambda: bridge_uoa_result(
+            json.loads(uoa.read_text(encoding="utf-8")), db_path))
 
     psa = _latest(scan_dir, "psa_scan_*.json")
     if psa:
@@ -462,8 +516,10 @@ def ingest_latest(
         _try("SRS", lambda: bridge_srs_result(
             json.loads(srs.read_text(encoding="utf-8")), db_path))
 
-    if Path(monitoring_db).exists():
-        _try("PEAD", lambda: bridge_pead_rows(_read_pead_latest(Path(monitoring_db)), db_path))
+    pead = _latest(scan_dir, "pead_scan_*.json")
+    if pead:
+        _try("PEAD", lambda: bridge_pead_result(
+            json.loads(pead.read_text(encoding="utf-8")), db_path))
 
     mtfa = _latest(scan_dir, "mtfa_scan_*.json")
     if mtfa:
@@ -479,14 +535,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--ingest-latest", action="store_true",
                         help="Bridge the latest output for every scanner.")
     parser.add_argument("--scan-dir", default=str(V10_SCAN_RESULTS),
-                        help="v0.9 scan_results directory.")
-    parser.add_argument("--monitoring-db", default=str(V09_MONITORING_DB),
-                        help="v0.9 prime_ai_monitoring.db path (PEAD source).")
+                        help="v1.0 scan_results directory.")
     args = parser.parse_args(argv)
 
     results = ingest_latest(
         scan_dir=Path(args.scan_dir),
-        monitoring_db=Path(args.monitoring_db),
     )
     total = sum(results.values())
     print("Scanner bridge: {0} new signals  {1}".format(

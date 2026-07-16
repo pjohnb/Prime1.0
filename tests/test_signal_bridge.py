@@ -168,6 +168,67 @@ class TestPEAD(_BridgeTestBase):
         self.assertAlmostEqual(sig["entry_price"], 880.5, places=1)
 
 
+class TestPEADResult(_BridgeTestBase):
+    DATA = {
+        "scan_time": "2026-06-02T09:30:00",
+        "signals_found": 2,
+        "actionable_count": 1,
+        "signals": [
+            {"symbol": "NVDA", "score": 72.0, "direction": "LONG", "approved": True,
+             "guidance_flag": "BEAT_RAISE", "finnhub_guidance_available": True,
+             "price_at_scan": 880.5, "surprise_pct": 15.0, "price_change_pct": 3.2,
+             "days_since_earnings": 1, "earnings_date": "2026-06-01",
+             "confidence_level": "NORMAL"},
+            {"symbol": "LOW", "score": 20.0, "direction": "SHORT", "approved": False,
+             "price_at_scan": 200.0, "surprise_pct": -5.0, "price_change_pct": -1.0},
+        ],
+    }
+
+    def test_inserts_approved_only(self):
+        n = bridge.bridge_pead_result(self.DATA, db_path=self.db)
+        self.assertEqual(n, 1)
+        sig = self._signals()[0]
+        self.assertEqual(sig["symbol"], "NVDA")
+        self.assertEqual(sig["strategy"], "PEAD")
+        self.assertEqual(sig["direction"], "LONG")
+        self.assertAlmostEqual(sig["entry_price"], 880.5, places=1)
+        self.assertEqual(sig["tier"], "STRONG")  # BEAT_RAISE + LONG → STRONG
+
+    def test_neutral_direction_skipped(self):
+        data = {"scan_time": "2026-06-02T09:30:00", "signals": [
+            {"symbol": "AA", "score": 60.0, "direction": "NEUTRAL", "approved": True,
+             "price_at_scan": 50.0},
+        ]}
+        n = bridge.bridge_pead_result(data, db_path=self.db)
+        self.assertEqual(n, 0)
+
+
+class TestUOAResult(_BridgeTestBase):
+    DATA = {
+        "scan_time": "2026-06-02T12:50:00",
+        "scanner": "prime_uoa_scanner",
+        "version": "1.0",
+        "signals": [
+            {"symbol": "SPY", "group": "Macro", "tier": "STRONG", "sizzle_index": 259.5,
+             "direction": "SHORT", "price_at_scan": 759.69,
+             "call_put_ratio": 0.4, "total_volume": 500000},
+            {"symbol": "AAPL", "group": "Top50", "tier": "IGNORE", "sizzle_index": 1.2,
+             "direction": "LONG", "price_at_scan": 210.0},
+        ],
+    }
+
+    def test_inserts_approved_tiers_only(self):
+        n = bridge.bridge_uoa_result(self.DATA, db_path=self.db)
+        self.assertEqual(n, 1)
+        sig = self._signals()[0]
+        self.assertEqual(sig["symbol"], "SPY")
+        self.assertEqual(sig["strategy"], "UOA")
+        self.assertEqual(sig["direction"], "SHORT")
+        self.assertEqual(sig["trigger_source"], "UOA_PUT")
+        self.assertAlmostEqual(sig["entry_price"], 759.69, places=2)
+        self.assertAlmostEqual(sig["score"], 259.5, places=1)
+
+
 class TestMMR(_BridgeTestBase):
     ROWS = [
         {"symbol": "SLV", "price": "31.2", "tranche": "TRANCHE_2", "confidence": "HIGH",
@@ -238,22 +299,27 @@ class TestSRS(_BridgeTestBase):
 
 
 class TestIngestLatest(_BridgeTestBase):
-    """End-to-end: ingest_latest discovers files in a temp scan dir + PEAD DB."""
+    """End-to-end: ingest_latest discovers v1.0 JSON files in a temp scan dir."""
 
     def setUp(self):
         super().setUp()
         self.scan_dir = Path(__file__).parent / "_test_scan_results"
         self.scan_dir.mkdir(exist_ok=True)
-        self.mon_db = Path(__file__).parent / "_test_monitoring.db"
         for p in self.scan_dir.glob("*"):
             p.unlink()
-        if self.mon_db.exists():
-            self.mon_db.unlink()
 
-        # UOA CSV
-        (self.scan_dir / "live_signals_20260602_1250.csv").write_text(
-            "date,time,symbol,group,tier,sizzle_index,direction,underlying_price,data_source\n"
-            "2026-06-02,12:50,SPY,Macro,STRONG,259.5,SHORT,759.69,TS\n",
+        # UOA JSON (v1.0 format)
+        (self.scan_dir / "uoa_scan_20260602_1250_ET.json").write_text(
+            json.dumps({
+                "scan_time": "2026-06-02T12:50:00",
+                "scanner": "prime_uoa_scanner",
+                "version": "1.0",
+                "signals": [
+                    {"symbol": "SPY", "group": "Macro", "tier": "STRONG",
+                     "sizzle_index": 259.5, "direction": "SHORT",
+                     "price_at_scan": 759.69, "call_put_ratio": 0.4, "total_volume": 500000},
+                ],
+            }),
             encoding="utf-8")
         # PSA JSON (v1.0 format)
         (self.scan_dir / "psa_scan_20260602_1030_ET.json").write_text(
@@ -277,28 +343,30 @@ class TestIngestLatest(_BridgeTestBase):
         # SRS JSON
         (self.scan_dir / "srs_scan_20260602_0800_ET.json").write_text(
             json.dumps(TestSRS.DATA), encoding="utf-8")
-        # PEAD monitoring DB
-        conn = sqlite3.connect(str(self.mon_db))
-        conn.execute("""CREATE TABLE pead_signals (
-            symbol TEXT, scan_timestamp TEXT, direction TEXT, score REAL,
-            eps_surprise_pct REAL, price_reaction_pct REAL, days_since_earnings INTEGER,
-            earnings_date TEXT, price_at_scan REAL, above_threshold INTEGER)""")
-        conn.execute("INSERT INTO pead_signals VALUES "
-                     "('NVDA','2026-06-02T09:30:00','LONG',72.0,15.0,3.2,1,'2026-06-01',880.5,1)")
-        conn.commit()
-        conn.close()
+        # PEAD JSON (v1.0 format)
+        (self.scan_dir / "pead_scan_20260602_0930_ET.json").write_text(
+            json.dumps({
+                "scan_time": "2026-06-02T09:30:00",
+                "signals_found": 1,
+                "actionable_count": 1,
+                "signals": [
+                    {"symbol": "NVDA", "score": 72.0, "direction": "LONG", "approved": True,
+                     "guidance_flag": "BEAT_RAISE", "finnhub_guidance_available": True,
+                     "price_at_scan": 880.5, "surprise_pct": 15.0, "price_change_pct": 3.2,
+                     "days_since_earnings": 1, "earnings_date": "2026-06-01",
+                     "confidence_level": "NORMAL"},
+                ],
+            }),
+            encoding="utf-8")
 
     def tearDown(self):
         for p in self.scan_dir.glob("*"):
             p.unlink()
         self.scan_dir.rmdir()
-        if self.mon_db.exists():
-            self.mon_db.unlink()
         super().tearDown()
 
     def test_ingest_all_scanners(self):
-        results = bridge.ingest_latest(
-            scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
+        results = bridge.ingest_latest(scan_dir=self.scan_dir, db_path=self.db)
         self.assertEqual(results, {"UOA": 1, "PSA": 1, "PEAD": 1, "MMR": 2, "SRS": 1, "MTFA": 0})
         self.assertEqual(len(self._signals()), 6)
         strategies = {s["strategy"] for s in self._signals()}
@@ -308,9 +376,8 @@ class TestIngestLatest(_BridgeTestBase):
         self.assertEqual(directions, {"LONG", "SHORT"})
 
     def test_ingest_idempotent(self):
-        bridge.ingest_latest(scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
-        results = bridge.ingest_latest(
-            scan_dir=self.scan_dir, monitoring_db=self.mon_db, db_path=self.db)
+        bridge.ingest_latest(scan_dir=self.scan_dir, db_path=self.db)
+        results = bridge.ingest_latest(scan_dir=self.scan_dir, db_path=self.db)
         self.assertEqual(sum(results.values()), 0)
         self.assertEqual(len(self._signals()), 6)
 
