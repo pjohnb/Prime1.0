@@ -24,6 +24,14 @@
 
   "api_token": "CHANGE_ME_BEFORE_RUNNING",
 
+  "scenario_signal_window_idx_min": 60,
+  "scenario_signal_window_mtfa_min": 60,
+  "scenario_signal_window_uoa_min": 90,
+  "scenario_signal_window_psa_min": 120,
+  "scenario_signal_window_pead_min": 120,
+  "scenario_signal_window_srs_min": 120,
+  "scenario_signal_window_mmr_min": 120,
+
   "scan_schedule": {
     "psa":   "09:45,11:30,13:30",
     "uoa":   "09:35,11:00,14:00",

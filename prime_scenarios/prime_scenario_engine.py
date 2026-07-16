@@ -17,12 +17,13 @@ Scenario types:
   9   Timeframe Confluence      MTFA STRONG + any confirming signal (IDX/UOA/PSA/PEAD)
   10  Sniper — Ultimate         IDX STRONG + UOA/PEAD + PSA APPROVED + MTFA STRONG
 
-Staleness framework:
-  - PEAD: EXEMPT (always eligible, multi-session drift play)
-  - All others: scan_ts date < today (ET midnight) → VETOED (hard 1-session veto)
-  - Within scanner soft window: FRESH; beyond soft window: SOFT_STALE
+Staleness framework (WO-PRIME-SCENARIOS-UX-01 Phase 1 — silence = retraction):
+  - All strategies: scan_ts date < today (ET midnight) → VETOED (hard 1-session veto)
+  - Within scanner recency window: FRESH; outside window: VETOED
+  - No SOFT_STALE state; every visible scenario is built from current signals only
   - Session boundary: ET midnight (America/New_York); handles EST/EDT automatically
   - Naive `now` arguments are always treated as UTC then converted to ET
+  - Recency windows configurable via ops_config (scenario_signal_window_*_min)
 
 Signal direction matching:
   - IDX tiers use STRONG-LONG / WEAK-LONG / STRONG-SHORT / WEAK-SHORT
@@ -77,18 +78,17 @@ SCENARIO_TYPES: Dict[str, Dict[str, str]] = {
     "10": {"name": "Sniper — Ultimate",           "conviction": "HIGHEST"},
 }
 
-# Soft windows per scanner (beyond this → SOFT_STALE, still eligible)
-_SOFT_WINDOWS: Dict[str, timedelta] = {
-    "UOA":  timedelta(hours=1),
-    "PSA":  timedelta(hours=1),
-    "MTFA": timedelta(hours=1),
-    "IDX":  timedelta(hours=8),
-    "MMR":  timedelta(hours=8),
-    "SRS":  timedelta(hours=8),
-    "PEAD": timedelta(days=365),  # PEAD is EXEMPT; this sentinel is never hit
+# Per-scanner recency windows (beyond this → VETOED, not eligible for scenario detection).
+# Module-level defaults; ops_config overrides are loaded by _load_recency_windows().
+_RECENCY_WINDOWS: Dict[str, timedelta] = {
+    "IDX":  timedelta(minutes=60),
+    "MTFA": timedelta(minutes=60),
+    "UOA":  timedelta(minutes=90),
+    "PSA":  timedelta(minutes=120),
+    "PEAD": timedelta(minutes=120),
+    "SRS":  timedelta(minutes=120),
+    "MMR":  timedelta(minutes=120),
 }
-
-PEAD_MAX_SESSIONS = 5  # sessions PEAD remains eligible (no specific number given in WO)
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +127,20 @@ def _parse_ts(ts_str: str) -> Optional[datetime]:
         return None
 
 
-def get_signal_staleness(signal: Dict[str, Any], now: Optional[datetime] = None) -> str:
-    """Return 'FRESH', 'SOFT_STALE', or 'VETOED' for a signal.
+def get_signal_staleness(
+    signal: Dict[str, Any],
+    now: Optional[datetime] = None,
+    recency_windows: Optional[Dict[str, timedelta]] = None,
+) -> str:
+    """Return 'FRESH' or 'VETOED' for a signal.
 
-    PEAD is EXEMPT from the hard veto and remains FRESH up to PEAD_MAX_SESSIONS.
-    All other strategies are VETOED if their scan_ts date precedes today in ET.
+    WO-PRIME-SCENARIOS-UX-01 Phase 1: SOFT_STALE removed. Silence = retraction.
+    A signal is eligible only if produced within its scanner's recency window.
+    Outside the window → VETOED. PEAD no longer exempt; date-boundary applies to all.
     Session boundary is ET midnight (America/New_York) — handles EST/EDT automatically.
     Naive `now` is treated as UTC then converted to ET.
     """
+    windows = recency_windows if recency_windows is not None else _RECENCY_WINDOWS
     strategy = signal.get("strategy", "")
     scan_ts = _parse_ts(signal.get("scan_ts", ""))
     if scan_ts is None:
@@ -143,22 +149,16 @@ def get_signal_staleness(signal: Dict[str, Any], now: Optional[datetime] = None)
     et_ref = _et_now_naive(now)
     today = datetime(et_ref.year, et_ref.month, et_ref.day)  # ET midnight, naive
 
-    if strategy == "PEAD":
-        age_days = (et_ref - scan_ts).days
-        if age_days > PEAD_MAX_SESSIONS:
-            return "VETOED"
-        return "FRESH"
-
-    # Hard veto: scan_ts date is before today (ET)
+    # Hard session veto: scan_ts date before today (ET) → always VETOED
     scan_date = datetime(scan_ts.year, scan_ts.month, scan_ts.day)
     if scan_date < today:
         return "VETOED"
 
-    # Soft window check (elapsed time measured in ET)
-    soft_window = _SOFT_WINDOWS.get(strategy, timedelta(hours=8))
+    # Recency gate: signal outside scanner's window → VETOED (silence = retraction)
+    window = windows.get(strategy, timedelta(minutes=120))
     age = et_ref - scan_ts
-    if age > soft_window:
-        return "SOFT_STALE"
+    if age > window:
+        return "VETOED"
 
     return "FRESH"
 
@@ -250,8 +250,6 @@ def _overall_staleness(signals: List[Dict[str, Any]]) -> str:
     statuses = [s.get("_staleness", "FRESH") for s in signals]
     if "VETOED" in statuses:
         return "VETOED"
-    if "SOFT_STALE" in statuses:
-        return "SOFT_STALE"
     return "FRESH"
 
 
@@ -259,9 +257,28 @@ def _overall_staleness(signals: List[Dict[str, Any]]) -> str:
 # Core detection
 # ---------------------------------------------------------------------------
 
+def _load_recency_windows() -> Dict[str, timedelta]:
+    """Return per-scanner recency windows from ops_config, with module defaults as fallback."""
+    try:
+        from prime_config.prime_config import get_config
+        ops = get_config().ops
+        return {
+            "IDX":  timedelta(minutes=ops.scenario_signal_window_idx_min),
+            "MTFA": timedelta(minutes=ops.scenario_signal_window_mtfa_min),
+            "UOA":  timedelta(minutes=ops.scenario_signal_window_uoa_min),
+            "PSA":  timedelta(minutes=ops.scenario_signal_window_psa_min),
+            "PEAD": timedelta(minutes=ops.scenario_signal_window_pead_min),
+            "SRS":  timedelta(minutes=ops.scenario_signal_window_srs_min),
+            "MMR":  timedelta(minutes=ops.scenario_signal_window_mmr_min),
+        }
+    except Exception:
+        return dict(_RECENCY_WINDOWS)
+
+
 def detect_scenarios(
     signals: List[Dict[str, Any]],
     now: Optional[datetime] = None,
+    recency_windows: Optional[Dict[str, timedelta]] = None,
 ) -> List[Dict[str, Any]]:
     """Detect convergence scenarios from a list of APPROVED signals.
 
@@ -283,7 +300,7 @@ def detect_scenarios(
     annotated: List[Dict[str, Any]] = []
     for raw in signals:
         sig = dict(raw)
-        sig["_staleness"] = get_signal_staleness(sig, now)
+        sig["_staleness"] = get_signal_staleness(sig, now, recency_windows)
         sig["_direction"] = _signal_direction(sig)
         annotated.append(sig)
 
@@ -482,7 +499,8 @@ def run_detection(
     try:
         init_scenarios_table(db_path)
         expire_old_scenarios(db_path)
-        scenarios = detect_scenarios(signals, now)
+        windows = _load_recency_windows()
+        scenarios = detect_scenarios(signals, now, recency_windows=windows)
         upserted = 0
         for sc in scenarios:
             sid = upsert_scenario(sc, db_path)

@@ -564,6 +564,55 @@ function _renderSettings() {
             onchange="localStorage.setItem('prime_scenario_max_rows', this.value)"/>
           <span style="font-size:11px;color:var(--text3)">Default: 20. FIFO — newest first.</span>
         </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="IDX signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">IDX Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_idx_min" min="1" max="480"
+            value="${d.scenario_signal_window_idx_min != null ? d.scenario_signal_window_idx_min : 60}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 60 min.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="MTFA signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">MTFA Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_mtfa_min" min="1" max="480"
+            value="${d.scenario_signal_window_mtfa_min != null ? d.scenario_signal_window_mtfa_min : 60}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 60 min.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="UOA signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">UOA Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_uoa_min" min="1" max="480"
+            value="${d.scenario_signal_window_uoa_min != null ? d.scenario_signal_window_uoa_min : 90}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 90 min.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="PSA signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">PSA Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_psa_min" min="1" max="480"
+            value="${d.scenario_signal_window_psa_min != null ? d.scenario_signal_window_psa_min : 120}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 120 min.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="PEAD signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">PEAD Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_pead_min" min="1" max="480"
+            value="${d.scenario_signal_window_pead_min != null ? d.scenario_signal_window_pead_min : 120}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 120 min.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="SRS signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">SRS Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_srs_min" min="1" max="480"
+            value="${d.scenario_signal_window_srs_min != null ? d.scenario_signal_window_srs_min : 120}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 120 min.</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px" title="MMR signal recency window (minutes). Signals older than this within the session are VETOED.">
+          <span style="font-size:12px;color:var(--text3);font-family:var(--mono)">MMR Recency Window (min)</span>
+          <input type="number" id="sett-scenario_signal_window_mmr_min" min="1" max="480"
+            value="${d.scenario_signal_window_mmr_min != null ? d.scenario_signal_window_mmr_min : 120}"
+            style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:14px;font-family:var(--mono);width:100%"/>
+          <span style="font-size:11px;color:var(--text3)">Default: 120 min.</span>
+        </label>
       </div>
     </div>
 
@@ -803,6 +852,13 @@ async function saveSettings() {
   payload.psa_stage1_cd_drawdown = parseFloat(_v('psa_stage1_cd_drawdown')) || 3.0;
   payload.psa_confirmation_bc_drawdown = parseFloat(_v('psa_confirmation_bc_drawdown')) || 5.0;
   payload.psa_confirmation_cd_drawdown = parseFloat(_v('psa_confirmation_cd_drawdown')) || 5.0;
+  payload.scenario_signal_window_idx_min = parseInt(_v('scenario_signal_window_idx_min')) || 60;
+  payload.scenario_signal_window_mtfa_min = parseInt(_v('scenario_signal_window_mtfa_min')) || 60;
+  payload.scenario_signal_window_uoa_min = parseInt(_v('scenario_signal_window_uoa_min')) || 90;
+  payload.scenario_signal_window_psa_min = parseInt(_v('scenario_signal_window_psa_min')) || 120;
+  payload.scenario_signal_window_pead_min = parseInt(_v('scenario_signal_window_pead_min')) || 120;
+  payload.scenario_signal_window_srs_min = parseInt(_v('scenario_signal_window_srs_min')) || 120;
+  payload.scenario_signal_window_mmr_min = parseInt(_v('scenario_signal_window_mmr_min')) || 120;
 
   // Remove null values
   Object.keys(payload).forEach(k => { if (payload[k] === null) delete payload[k]; });

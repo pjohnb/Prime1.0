@@ -91,8 +91,6 @@ function _scFormatDetected(ts) {
 function _scStaleDot(status) {
   if (status === 'VETOED')
     return '<span style="color:#ef4444;font-size:10px" title="VETOED — stale">&#9679;</span>';
-  if (status === 'SOFT_STALE')
-    return '<span style="color:#f59e0b;font-size:10px" title="SOFT_STALE — aging">&#9679;</span>';
   return '<span style="color:#22c55e;font-size:10px" title="FRESH">&#9679;</span>';
 }
 
@@ -750,10 +748,8 @@ function _scenRenderFilterBar() {
   const lbl = 'font-size:10px;color:var(--text3);font-family:var(--mono);' +
               'text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;margin-right:2px';
 
-  const stale = ['FRESH', 'SOFT_STALE', 'All'].map(v =>
-    _scFiltBtn(v === 'SOFT_STALE' ? 'SOFT' : v,
-               _scenFilters.staleness === v,
-               "_scenSetStaleness('" + v + "')")
+  const stale = ['FRESH', 'All'].map(v =>
+    _scFiltBtn(v, _scenFilters.staleness === v, "_scenSetStaleness('" + v + "')")
   ).join('');
 
   const dirs = ['LONG', 'SHORT', 'Both'].map(v =>

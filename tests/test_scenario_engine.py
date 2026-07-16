@@ -31,7 +31,6 @@ from prime_scenarios.prime_scenario_engine import (
     get_signal_staleness,
     run_detection,
     SCENARIO_TYPES,
-    PEAD_MAX_SESSIONS,
 )
 
 
@@ -41,7 +40,9 @@ from prime_scenarios.prime_scenario_engine import (
 
 def _sig(strategy, tier="", direction="LONG", symbol="SPY", status="APPROVED",
          scan_ts=None, signal_id=None):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    # Use current UTC time so naive comparison against ET ref always yields a fresh signal.
+    # UTC is ahead of ET, so the naive timestamp looks like a future ET time → age is negative.
+    default_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     return {
         "signal_id": signal_id or f"{strategy}-{symbol}-{tier}",
         "strategy": strategy,
@@ -49,7 +50,7 @@ def _sig(strategy, tier="", direction="LONG", symbol="SPY", status="APPROVED",
         "direction": direction,
         "symbol": symbol,
         "status": status,
-        "scan_ts": scan_ts or f"{today} 12:45",
+        "scan_ts": scan_ts or default_ts,
     }
 
 
@@ -111,20 +112,22 @@ class TestStaleness(unittest.TestCase):
         sig = self._sig_ts("IDX", f"{self.FIXED_YESTERDAY} 10:00")
         self.assertEqual(get_signal_staleness(sig, now=self.FIXED_NOW), "VETOED")
 
-    def test_pead_yesterday_is_fresh(self):
+    def test_pead_yesterday_is_vetoed(self):
+        # Phase 1: PEAD no longer exempt; date-boundary veto applies to all scanners
         sig = self._sig_ts("PEAD", f"{self.FIXED_YESTERDAY} 10:00")
-        self.assertEqual(get_signal_staleness(sig, now=self.FIXED_NOW), "FRESH")
+        self.assertEqual(get_signal_staleness(sig, now=self.FIXED_NOW), "VETOED")
 
     def test_pead_very_old_is_vetoed(self):
-        old = (self.FIXED_NOW - timedelta(days=PEAD_MAX_SESSIONS + 1)).strftime("%Y-%m-%d")
+        # Phase 1: old PEAD from 7 days ago is VETOED by date-boundary
+        old = (self.FIXED_NOW - timedelta(days=7)).strftime("%Y-%m-%d")
         sig = self._sig_ts("PEAD", f"{old} 10:00")
         self.assertEqual(get_signal_staleness(sig, now=self.FIXED_NOW), "VETOED")
 
-    def test_uoa_stale_within_session(self):
-        sig = self._sig_ts("UOA", f"{self.FIXED_TODAY} 09:30")  # same day, > 1h ago
+    def test_uoa_outside_recency_window_is_vetoed(self):
+        # Phase 1: UOA recency window = 90 min; 2h-old same-day signal → VETOED
+        sig = self._sig_ts("UOA", f"{self.FIXED_TODAY} 09:00")  # 120 min before 11:00 ET ref
         result = get_signal_staleness(sig, now=self.FIXED_NOW)
-        # 5.5h elapsed > 1h soft window → SOFT_STALE (still same day, not VETOED)
-        self.assertEqual(result, "SOFT_STALE")
+        self.assertEqual(result, "VETOED")
 
     def test_missing_scan_ts_is_vetoed(self):
         sig = {"strategy": "IDX", "scan_ts": ""}
@@ -343,27 +346,28 @@ class TestStalenessInDetection(unittest.TestCase):
         t1 = [s for s in result if s["type_num"] == "1"]
         self.assertEqual(len(t1), 0)
 
-    def test_pead_yesterday_participates(self):
-        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+    def test_pead_today_participates_as_institutional(self):
+        # Phase 1: PEAD from today within recency window participates as institutional
+        FIXED_NOW = datetime(2026, 7, 12, 15, 0, 0)  # 11:00 ET
         signals = [
-            _psa("NVDA", scan_ts=f"{today} 10:00"),
-            _pead("NVDA", scan_ts=f"{yesterday} 09:30"),
+            _psa("NVDA", scan_ts="2026-07-12 14:30"),   # 10:30 ET, 30 min old → FRESH
+            _pead("NVDA", scan_ts="2026-07-12 14:30"),  # 10:30 ET, 30 min old → FRESH (120 min window)
         ]
-        result = detect_scenarios(signals, now=_now())
+        result = detect_scenarios(signals, now=FIXED_NOW)
         t6 = [s for s in result if s["type_num"] == "6"]
-        self.assertGreater(len(t6), 0, "PEAD should participate as institutional signal")
+        self.assertGreater(len(t6), 0, "Today's PEAD should participate as institutional signal")
 
-    def test_soft_stale_scenario_still_detected(self):
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        # IDX from 2 hours ago (beyond 1h soft window for a hypothetical test)
-        idx_ts = f"{today} 09:30"
-        signals = [_idx("WEAK-LONG", scan_ts=idx_ts), _psa("AAPL")]
-        result = detect_scenarios(signals, now=_now())
+    def test_fresh_scenario_detected_within_window(self):
+        # Phase 1: SOFT_STALE removed; scenario with signals within recency windows is FRESH
+        FIXED_NOW = datetime(2026, 7, 12, 15, 0, 0)  # 11:00 ET
+        signals = [
+            _idx("WEAK-LONG", scan_ts="2026-07-12 14:30"),  # 10:30 ET, 30 min → within 60 min IDX window
+            _psa("AAPL", scan_ts="2026-07-12 14:30"),
+        ]
+        result = detect_scenarios(signals, now=FIXED_NOW)
         t2 = [s for s in result if s["type_num"] == "2"]
         self.assertGreater(len(t2), 0)
-        # staleness_status may be SOFT_STALE or FRESH depending on wall clock
-        self.assertIn(t2[0]["staleness_status"], ("FRESH", "SOFT_STALE"))
+        self.assertEqual(t2[0]["staleness_status"], "FRESH")
 
 
 # ---------------------------------------------------------------------------
@@ -704,8 +708,7 @@ class TestDedup(unittest.TestCase):
 
     def test_run_detection_deduplicates(self):
         """Calling run_detection twice on the same signals yields one scenario per symbol."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        signals = [_idx("STRONG-LONG", "SPY", scan_ts=f"{today} 10:00")]
+        signals = [_idx("STRONG-LONG", "SPY")]
         run_detection(signals, db_path=self.db)
         run_detection(signals, db_path=self.db)
         rows = get_scenarios(db_path=self.db, active_only=True)
@@ -714,10 +717,9 @@ class TestDedup(unittest.TestCase):
 
     def test_watch_upgrades_to_trifecta_via_run_detection(self):
         """Progressive signal arrival: Confirmed → Trifecta via two run_detection calls."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
         # First run: IDX + PSA → Type 2 (Confirmed)
         run_detection(
-            [_idx("WEAK-LONG", scan_ts=f"{today} 09:30"), _psa("AAPL", scan_ts=f"{today} 09:30")],
+            [_idx("WEAK-LONG"), _psa("AAPL")],
             db_path=self.db,
         )
         rows_1 = [r for r in get_scenarios(db_path=self.db) if r["primary_symbol"] == "AAPL"]
@@ -726,11 +728,7 @@ class TestDedup(unittest.TestCase):
 
         # Second run: IDX STRONG + UOA + PSA → Type 4 (Trifecta)
         run_detection(
-            [
-                _idx("STRONG-LONG", scan_ts=f"{today} 10:00"),
-                _uoa("AAPL", scan_ts=f"{today} 10:00"),
-                _psa("AAPL", scan_ts=f"{today} 10:00"),
-            ],
+            [_idx("STRONG-LONG"), _uoa("AAPL"), _psa("AAPL")],
             db_path=self.db,
         )
         rows_2 = [r for r in get_scenarios(db_path=self.db) if r["primary_symbol"] == "AAPL"]
@@ -739,11 +737,10 @@ class TestDedup(unittest.TestCase):
 
     def test_type4_never_shows_type2_for_same_symbol(self):
         """A symbol qualifying for Type 4 must show Type 4, never Type 2."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
         signals = [
-            _idx("STRONG-LONG", scan_ts=f"{today} 10:00"),
-            _uoa("NVDA", scan_ts=f"{today} 10:00"),
-            _psa("NVDA", scan_ts=f"{today} 10:00"),
+            _idx("STRONG-LONG"),
+            _uoa("NVDA"),
+            _psa("NVDA"),
         ]
         run_detection(signals, db_path=self.db)
         rows = get_scenarios(db_path=self.db)

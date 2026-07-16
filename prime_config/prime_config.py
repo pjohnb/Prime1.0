@@ -210,6 +210,13 @@ class OpsConfig:
     # intraday noise in the narrow CD window.
     psa_confirmation_bc_drawdown: float = 5.0
     psa_confirmation_cd_drawdown: float = 5.0
+    scenario_signal_window_idx_min: int = 60
+    scenario_signal_window_mtfa_min: int = 60
+    scenario_signal_window_uoa_min: int = 90
+    scenario_signal_window_psa_min: int = 120
+    scenario_signal_window_pead_min: int = 120
+    scenario_signal_window_srs_min: int = 120
+    scenario_signal_window_mmr_min: int = 120
     # WO-PRIME-PSA-CALIBRATION-02 Phase 3: confirmed INERT for all six scanners.
     # PSA, UOA, PEAD, DK, SHORT, IDX all use hardcoded module constants or
     # dedicated cfg.ops.* flat fields — none reads strategy_thresholds at runtime.
