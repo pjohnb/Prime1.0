@@ -206,7 +206,9 @@ def fetch_bars(
         # desc = newest bars first; reversed below to restore chronological order.
         # asc + limit would return the OLDEST bars (pre-market from days ago),
         # causing stale A-B-C-D analysis and severe volume underestimation.
-        {"adjusted": "true", "sort": "desc", "limit": total_bars + 20},
+        # limit=50000 (Polygon max) prevents the API from capping base aggregates
+        # to the current session only when a multi-day date range is supplied.
+        {"adjusted": "true", "sort": "desc", "limit": 50000},
         api_key,
     )
     if not data or not data.get("results"):
