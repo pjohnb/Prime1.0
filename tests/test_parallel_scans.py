@@ -112,6 +112,20 @@ class TestParallelScansStructure(unittest.TestCase):
         self.assertLess(bridge1_pos, psa_submit_pos,
                         "Bridge pass 1 must occur before PSA is submitted")
 
+    def test_short_submitted_to_pool_after_bridge1(self):
+        """WO-PRIME-SHORT-AUTOTRIGGER-01: SHORT pool submit must follow bridge pass 1
+        and precede bridge pass 2 (pool exit guarantees SHORT completes before bridge 2)."""
+        start = ROUTES_SRC.index("def _run_parallel_deep_scan(")
+        end = ROUTES_SRC.index("\n@api_bp.route", start)
+        body = ROUTES_SRC[start:end]
+        bridge1_pos = body.index('_run_bridge("1")')
+        short_submit_pos = body.index('pool.submit(_guarded_run, "short")')
+        bridge2_pos = body.index('_run_bridge("2")')
+        self.assertGreater(short_submit_pos, bridge1_pos,
+                           "SHORT must be submitted to pool after bridge pass 1")
+        self.assertLess(short_submit_pos, bridge2_pos,
+                        "SHORT pool submit must precede bridge pass 2")
+
     def test_failure_isolation_try_finally(self):
         """Scanner failures must not block other scanners (try/finally in _guarded_run)."""
         start = ROUTES_SRC.index("def _run_parallel_deep_scan(")
@@ -178,8 +192,8 @@ class TestParallelScansBehavior(unittest.TestCase):
         self.assertEqual(len(psa_calls), 1, "PSA must be called exactly once")
         self.assertTrue(psa_calls[0][1], "PSA must be called with skip_bridge=True")
 
-    def test_short_scanner_skip_bridge_false(self):
-        """Short scanner must be called with skip_bridge=False (it runs serially after bridge 2)."""
+    def test_short_scanner_skip_bridge_true(self):
+        """SHORT runs in the pool via _guarded_run (skip_bridge=True; bridge pass 2 consolidates)."""
         call_log = []
         with patch("prime_api.prime_api_routes._run_scanner_bg",
                    side_effect=self._make_mock_scanner_bg(call_log)), \
@@ -191,7 +205,7 @@ class TestParallelScansBehavior(unittest.TestCase):
 
         short_calls = [c for c in call_log if c[0] == "short"]
         self.assertEqual(len(short_calls), 1, "Short scanner must be called exactly once")
-        self.assertFalse(short_calls[0][1], "Short scanner must be called with skip_bridge=False")
+        self.assertTrue(short_calls[0][1], "Short scanner must be called with skip_bridge=True")
 
     def test_uoa_failure_does_not_block_other_scanners(self):
         """AC6: a failing UOA must not prevent IDX, MMR, SRS, PEAD, PSA from running."""
