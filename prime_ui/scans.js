@@ -18,7 +18,7 @@ const _SCANNER_TOOLTIPS = {
   DK:    'DK: Dark Pool — detects off-exchange institutional accumulation or distribution. Confirms or nullifies other scanner signals.',
   IDX:   'IDX: Index &amp; Sector — tracks relative strength across sector ETFs vs. S&amp;P 500. Provides market regime context.',
   SHORT: 'SHORT: Short-Selling — identifies bearish setups combining put-heavy UOA with borrow availability and DK nullification confirmation.',
-  SRS:   'SRS: Short-Squeeze &amp; Reversal — targets heavily shorted stocks showing early reversal signals. Generates long squeeze and short continuation entries.',
+  SRS:   'SRS: Sector Recovery Scanner — monitors sector ETFs (XLK, XLV, XLF, XLY, XLP, XLE, XLI, XLB, XLRE, XLU, XLC, SPY) for drawdown, stabilization, and recovery phases. Writes a LONG signal when a sector enters RECOVERING phase (2-day gain ≥ +1.5% with volume confirmation after drawdown). 0 signals is normal when no sector currently meets the recovery threshold.',
   MTFA:  'MTFA: Multi-Timeframe Analysis — scores trend alignment across intraday (5-min), weekly (5 sessions), and annual (252 sessions) timeframes. Score 100 = all 3 aligned (STRONG). Also flags proximity to 52-week and session high/low.',
 };
 
@@ -51,6 +51,9 @@ async function triggerScan(scanner, btnId) {
 }
 
 async function _pollUntilIdle(scanner, btnId, msgEl) {
+  const cancelBtn = document.getElementById('cancel-btn-' + scanner);
+  if (cancelBtn) cancelBtn.style.display = '';
+
   for (let i = 0; i < 120; i++) {
     await new Promise(r => setTimeout(r, 2500));
     try {
@@ -63,15 +66,44 @@ async function _pollUntilIdle(scanner, btnId, msgEl) {
         if (msgEl) { msgEl.textContent = sig; msgEl.style.color = 'var(--green)'; }
         break;
       }
+      if (row.status === 'cancelled') {
+        if (msgEl) { msgEl.textContent = 'Cancelled'; msgEl.style.color = 'var(--text3)'; }
+        break;
+      }
       if (row.status === 'error') {
         if (msgEl) { msgEl.textContent = 'Error — check log'; msgEl.style.color = 'var(--red)'; }
         break;
       }
     } catch (e) { break; }
   }
+  if (cancelBtn) cancelBtn.style.display = 'none';
   const btn = document.getElementById(btnId);
   if (btn) { btn.disabled = false; btn.textContent = 'Run ' + scanner.toUpperCase(); }
   loadScanStatus();
+}
+
+// WO-PRIME-CANCEL-SCAN-01: cancel individual or all running scans
+async function cancelScan(scanner) {
+  const cancelBtn = document.getElementById('cancel-btn-' + scanner);
+  if (cancelBtn) cancelBtn.disabled = true;
+  try {
+    await fetch(_scansApi() + '/scans/' + scanner + '/cancel', { method: 'POST' });
+  } catch (e) {}
+  if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.style.display = 'none'; }
+}
+
+async function cancelAllScans() {
+  const btn = document.getElementById('cancel-all-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch(_scansApi() + '/scans/status');
+    const data = await resp.json();
+    const running = (data.scanners || []).filter(x => x.status === 'running');
+    await Promise.all(running.map(s =>
+      fetch(_scansApi() + '/scans/' + s.scanner.toLowerCase() + '/cancel', { method: 'POST' }).catch(() => {})
+    ));
+  } catch (e) {}
+  if (btn) { btn.disabled = false; btn.style.display = 'none'; }
 }
 
 // ── Run All ──────────────────────────────────────────────────────────────────
@@ -107,8 +139,10 @@ async function runAllScans() {
   }
 
   if (prog) prog.textContent = 'Running: All Scanners…';
+  const cancelAllBtn = document.getElementById('cancel-all-btn');
+  if (cancelAllBtn) cancelAllBtn.style.display = '';
 
-  // Poll until all scanners are idle (complete or error); timeout at ~10 min
+  // Poll until all scanners are idle (complete, error, or cancelled); timeout at ~10 min
   for (let i = 0; i < 240; i++) {
     await new Promise(r => setTimeout(r, 2500));
     try {
@@ -120,6 +154,7 @@ async function runAllScans() {
     } catch (e) { break; }
   }
 
+  if (cancelAllBtn) cancelAllBtn.style.display = 'none';
   if (prog) prog.textContent = 'All scans complete.';
   if (btn) btn.disabled = false;
   _runAllActive = false;
@@ -135,10 +170,16 @@ async function loadScanStatus() {
     const tbody = document.getElementById('scan-status-body');
     if (!tbody) return;
     tbody.innerHTML = '';
+    const anyRunning = (data.scanners || []).some(x => x.status === 'running');
+    const cancelAllBtn = document.getElementById('cancel-all-btn');
+    if (cancelAllBtn && !_runAllActive) cancelAllBtn.style.display = anyRunning ? '' : 'none';
     (data.scanners || []).forEach(s => {
+      const cancelBtn = document.getElementById('cancel-btn-' + s.scanner.toLowerCase());
+      if (cancelBtn) cancelBtn.style.display = s.status === 'running' ? '' : 'none';
       const statusColor = s.status === 'running' ? 'var(--amber)'
         : s.status === 'error' ? 'var(--red)'
-        : s.status === 'complete' ? 'var(--green)' : 'var(--text3)';
+        : s.status === 'complete' ? 'var(--green)'
+        : s.status === 'cancelled' ? 'var(--text3)' : 'var(--text3)';
       const lastRunFmt = s.last_run
         ? (typeof formatET === 'function' ? formatET(s.last_run, true) : s.last_run)
         : '--';

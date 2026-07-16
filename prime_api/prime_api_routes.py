@@ -318,6 +318,51 @@ def execute_signal_endpoint(signal_id):
     strategy = sig.get("strategy") or "SIGNAL"
     entry_price_scan = float(sig.get("entry_price") or 0.0)
 
+    # WO-PRIME-ML-OUTCOME-01: resolve scenario context for trade linkage.
+    # Payload may supply scenario_id explicitly; otherwise auto-detect from
+    # the most recent active scenario for this symbol.
+    import json as _json_exec
+    _exec_scenario_id: Optional[str] = None
+    _exec_scenario_type: Optional[int] = None
+    _exec_conviction_tier: Optional[str] = None
+    _exec_constituent_signals: Optional[str] = None
+
+    _payload_sc_id = (payload.get("scenario_id") or "").strip() or None
+    try:
+        from prime_scenarios.prime_scenarios_db import get_scenarios
+        if _payload_sc_id:
+            # Validate the supplied scenario_id against active scenarios.
+            _all_sc = get_scenarios(limit=50, active_only=False)
+            _found = next((s for s in _all_sc if s.get("scenario_id") == _payload_sc_id), None)
+        else:
+            # Auto-pick highest-priority active scenario for this symbol.
+            _all_sc = get_scenarios(limit=20, active_only=True)
+            _sym_sc = [s for s in _all_sc if (s.get("primary_symbol") or "").upper() == symbol]
+            _found = _sym_sc[0] if _sym_sc else None
+
+        if _found:
+            _exec_scenario_id = _found.get("scenario_id")
+            _exec_scenario_type = (
+                int(_found["type_num"]) if _found.get("type_num") is not None else None
+            )
+            _exec_constituent_signals = _json_exec.dumps(
+                _found.get("constituent_signals") or []
+            )
+    except Exception as _sc_err:
+        logger.debug("execute_signal: scenario lookup skipped: %s", _sc_err)
+
+    # Conviction tier from signal tier field; fall back to signal status.
+    _sig_tier = (sig.get("tier") or "").strip().upper()
+    if _sig_tier in ("STRONG", "WEAK"):
+        _exec_conviction_tier = _sig_tier
+    else:
+        _sig_status = (sig.get("status") or "").upper()
+        _exec_conviction_tier = (
+            "STRONG" if _sig_status == "STRONG"
+            else "WEAK" if _sig_status in ("APPROVED", "WATCH")
+            else None
+        )
+
     # After-hours guard: MARKET orders require RTH.
     if order_type == "MARKET" and not _is_rth():
         return jsonify({
@@ -466,6 +511,10 @@ def execute_signal_endpoint(signal_id):
                             stage_total=stage_count if staged_entry_on else None,
                             stop_price=_exec_stop_price if _exec_stop_price > 0 else None,
                             stop_type=stop_type_param if stop_type_param else None,
+                            scenario_id=_exec_scenario_id,
+                            scenario_type=_exec_scenario_type,
+                            conviction_tier=_exec_conviction_tier,
+                            constituent_signals=_exec_constituent_signals,
                         )
                         orders_placed.append({
                             "account": suffix,
@@ -553,6 +602,10 @@ def execute_signal_endpoint(signal_id):
                     stage_total=stage_count if staged_entry_on else None,
                     stop_price=_exec_stop_price if _exec_stop_price > 0 else None,
                     stop_type=stop_type_param if stop_type_param else None,
+                    scenario_id=_exec_scenario_id,
+                    scenario_type=_exec_scenario_type,
+                    conviction_tier=_exec_conviction_tier,
+                    constituent_signals=_exec_constituent_signals,
                 )
                 if stop_type_param == "TRAILING" and _exec_trail_pct is not None and log_id:
                     from prime_data.prime_db import update_trailing_stop
@@ -927,6 +980,66 @@ def detect_scenarios_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/scenarios/narrate", methods=["POST"])
+def narrate_scenario_endpoint():
+    """POST /api/v1/scenarios/narrate -- AI narration for a scenario card (WO-PRIME-SCENARIOS-PHASE3-01).
+
+    Body: { scenario_id, type_num, type_name, direction, conviction, primary_symbol, constituent_signals }
+    Returns: { narration: "<3-5 sentence plain-English explanation>" }
+    """
+    from prime_ai._claude import call_claude, ClaudeUnavailable, get_api_key
+
+    body = request.get_json(silent=True) or {}
+    primary_symbol = body.get("primary_symbol", "")
+    type_name = body.get("type_name", "")
+    type_num = str(body.get("type_num", ""))
+    direction = body.get("direction", "")
+    conviction = body.get("conviction", "")
+    scenario_id = body.get("scenario_id", "")
+    constituent_signals = body.get("constituent_signals", [])
+
+    if not primary_symbol or not type_name:
+        return jsonify({"error": "missing required fields: primary_symbol, type_name"}), 400
+
+    signal_lines = []
+    for sig in constituent_signals:
+        strategy = sig.get("strategy", "")
+        tier = sig.get("tier", "")
+        score = sig.get("score")
+        score_str = f" (score: {score})" if score is not None else ""
+        signal_lines.append(f"  - {strategy}: {tier}{score_str}")
+    signals_text = "\n".join(signal_lines) if signal_lines else "  (no constituent signals)"
+
+    system = (
+        "You are a trading scenario analyst for PRIME, a professional trading intelligence platform. "
+        "Generate a 3-5 sentence plain-English narration explaining why a specific trading scenario fired. "
+        "Include: (1) which scanners fired and what they found, "
+        "(2) why the signals together produce this scenario type, "
+        "(3) what the conviction level means in practical terms, "
+        "(4) one sentence on what to watch for before executing. "
+        "Write directly and concisely for a professional trader. No markdown formatting. "
+        "This is a scenario narration request."
+    )
+    prompt = (
+        f"Symbol: {primary_symbol}\n"
+        f"Scenario Type: {type_name} (Type {type_num})\n"
+        f"Direction: {direction}\n"
+        f"Conviction: {conviction}\n"
+        f"Constituent Signals:\n{signals_text}\n\n"
+        "Generate the scenario narration."
+    )
+
+    try:
+        narration = call_claude(system, prompt, api_key=get_api_key(), max_tokens=400)
+        return jsonify({"narration": narration.strip()}), 200
+    except ClaudeUnavailable as e:
+        logger.warning("scenario narration unavailable: %s", e)
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        logger.error("scenario narrate endpoint error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @api_bp.route("/strategies", methods=["GET"])
 def get_strategies():
     """GET /api/v1/strategies -- distinct strategies for the UI filter (Item 3)."""
@@ -1014,6 +1127,24 @@ def get_analytics_effectiveness():
         return jsonify(_get_effectiveness_stats()), 200
     except Exception as e:
         logger.error("analytics/effectiveness error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/analytics/poc-summary", methods=["GET"])
+def get_poc_summary():
+    """GET /api/v1/analytics/poc-summary -- POC evaluation summary. WO-PRIME-ML-OUTCOME-01.
+
+    Returns total trades, win rate, P&L, avg hold, breakdown by scenario type
+    and conviction tier, and top-5 winning/losing signals by P&L.
+    Query params: from_date, to_date (ISO date strings, e.g. 2026-07-01).
+    """
+    from prime_data.prime_db import _get_poc_summary
+    from_date = request.args.get("from_date")
+    to_date = request.args.get("to_date")
+    try:
+        return jsonify(_get_poc_summary(from_date=from_date, to_date=to_date)), 200
+    except Exception as e:
+        logger.error("analytics/poc-summary error: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -1113,6 +1244,16 @@ def create_trade():
         order_type = "MARKET"
     confirmed  = bool(payload.get("confirmed", False))
     signal_id_val = str(payload.get("signal_id") or "").strip() or None
+    # WO-PRIME-ML-OUTCOME-01: optional scenario linkage (null for manual trades, AC6).
+    ct_scenario_id  = str(payload.get("scenario_id") or "").strip() or None
+    ct_scenario_type_raw = payload.get("scenario_type")
+    ct_scenario_type: Optional[int] = (
+        int(ct_scenario_type_raw) if ct_scenario_type_raw is not None else None
+    )
+    ct_conviction_tier = str(payload.get("conviction_tier") or "").strip().upper() or None
+    if ct_conviction_tier not in ("STRONG", "WEAK"):
+        ct_conviction_tier = None
+    ct_constituent = str(payload.get("constituent_signals") or "").strip() or None
 
     try:
         qty   = int(payload.get("qty"))
@@ -1275,6 +1416,10 @@ def create_trade():
                 target_price=live_target_price,
                 stop_type=live_stop_type,
                 signal_id=signal_id_val,
+                scenario_id=ct_scenario_id,
+                scenario_type=ct_scenario_type,
+                conviction_tier=ct_conviction_tier,
+                constituent_signals=ct_constituent,
             )
             # Wire trailing stop pct if TRAILING mode
             if live_stop_type == "TRAILING" and live_trail_pct is not None and log_id:
@@ -1391,6 +1536,10 @@ def create_trade():
             stop_type=stop_type_val,
             limit_price=limit_price_val,
             signal_id=signal_id_val,
+            scenario_id=ct_scenario_id,
+            scenario_type=ct_scenario_type,
+            conviction_tier=ct_conviction_tier,
+            constituent_signals=ct_constituent,
         )
 
         # For TRAILING stop: wire trailing_stop_pct to the new trade
@@ -2476,6 +2625,22 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
                 output_lines.append(line)
         proc.wait()
 
+        # WO-PRIME-CANCEL-SCAN-01: if operator cancelled, mark and return early.
+        with _scan_lock:
+            cancelled = _scan_state[scanner].get("cancel_requested", False)
+        if cancelled:
+            finish_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with _scan_lock:
+                _scan_state[scanner].update({
+                    "status": "cancelled",
+                    "last_run": datetime.utcnow().isoformat(),
+                    "signals": 0,
+                    "cancel_requested": False,
+                })
+            with open(scan_log, "a", encoding="utf-8") as lf:
+                lf.write(f"--- {finish_ts} END {scanner.upper()} CANCELLED ---\n")
+            return
+
         # After scanner completes, run bridge to ingest new signals.
         # Suppressed in parallel batch mode (skip_bridge=True); coordinator
         # runs two consolidated bridge passes instead.
@@ -2812,6 +2977,48 @@ def trigger_scan(scanner: str):
     t.start()
     started = datetime.now().isoformat()
     return jsonify({"scanner": scanner, "started": started, "status": "started"}), 202
+
+
+@api_bp.route("/scans/<string:scanner>/cancel", methods=["POST"])
+def cancel_scan(scanner: str):
+    """POST /api/v1/scans/{scanner}/cancel -- cancel a running scan subprocess.
+
+    WO-PRIME-CANCEL-SCAN-01. Returns 200 on success, 409 if not running.
+    """
+    import os as _os
+    scanner = scanner.lower()
+    if scanner not in _SCANNER_MAP:
+        return jsonify({"error": f"unknown scanner: {scanner}"}), 400
+
+    with _scan_lock:
+        state = _scan_state.get(scanner, {})
+        if state.get("status") != "running":
+            return jsonify({"error": "scanner is not running", "scanner": scanner}), 409
+        pid = state.get("pid")
+        if not pid:
+            return jsonify({"error": "PID not yet available — retry in a moment"}), 409
+        _scan_state[scanner]["cancel_requested"] = True
+
+    scan_log = _get_scan_log_path()
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(scan_log, "a", encoding="utf-8") as lf:
+            lf.write(f"[WARN] {ts} CANCEL requested for {scanner.upper()} (PID {pid}) by operator\n")
+    except Exception:
+        pass
+
+    killed = False
+    try:
+        if sys.platform == "win32":
+            _subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        else:
+            import signal as _signal
+            _os.kill(pid, _signal.SIGTERM)
+        killed = True
+    except Exception as exc:
+        logger.warning("cancel_scan: kill PID %s failed: %s", pid, exc)
+
+    return jsonify({"scanner": scanner, "cancelled": killed, "pid": pid}), 200
 
 
 @api_bp.route("/scans/status", methods=["GET"])
