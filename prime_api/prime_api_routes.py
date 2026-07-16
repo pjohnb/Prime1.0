@@ -1205,6 +1205,17 @@ def health_check():
     return jsonify(status), code
 
 
+@api_bp.route("/deep-scan/stats", methods=["GET"])
+def get_deep_scan_stats_endpoint():
+    """GET /api/v1/deep-scan/stats -- WO-PRIME-DEEP-SCAN-COUNT-01."""
+    from prime_data.prime_db import get_deep_scan_stats
+    try:
+        return jsonify(get_deep_scan_stats()), 200
+    except Exception as e:
+        logger.error("deep-scan stats error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 def _is_recent(entry_time: str, now: datetime, window_s: int = 60) -> bool:
     """True if entry_time parses to within window_s seconds of now."""
     try:

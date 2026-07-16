@@ -30,6 +30,49 @@ async function loadHealth() {
         `Failed to load position health — ${e.message}</td></tr>`;
     }
   }
+  loadDeepScanStats();
+}
+
+// ── Deep Scan Data section ────────────────────────────────────────────────────
+
+async function loadDeepScanStats() {
+  try {
+    const r = await fetch(_healthApi() + '/deep-scan/stats');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    _renderDeepScanStats(d);
+  } catch (e) {
+    const el = document.getElementById('deep-scan-stats');
+    if (el) el.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load deep scan stats — ${e.message}</div>`;
+  }
+}
+
+function _renderDeepScanStats(d) {
+  const el = document.getElementById('deep-scan-stats');
+  if (!el) return;
+  const fmtDate = s => s ? s.slice(0, 10) : '--';
+  const fmtTs   = s => s ? (typeof formatET === 'function' ? formatET(s, true) : s.slice(0, 16).replace('T', ' ')) : '--';
+  const fmtSize = b => {
+    if (b == null) return '--';
+    if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+    return (b / 1024).toFixed(1) + ' KB';
+  };
+  const tile = (label, value, tip) =>
+    `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px 14px" ${tip ? `data-tooltip="${tip}"` : ''}>` +
+    `<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;font-family:var(--mono)">${label}</div>` +
+    `<div style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text1)">${value}</div>` +
+    `</div>`;
+  const dateRange = (d.earliest_scan_date && d.latest_scan_date)
+    ? `${fmtDate(d.earliest_scan_date)} → ${fmtDate(d.latest_scan_date)}`
+    : '--';
+  el.innerHTML =
+    tile('Total Signals', (d.total_rows || 0).toLocaleString(), 'Total rows in prime_signals (all historical deep scan output)') +
+    tile('Date Range', dateRange, 'Earliest and latest scan date in storage') +
+    tile('Last Scan', fmtTs(d.last_scan_ts), 'Timestamp of the most recent SCAN_COMPLETE event') +
+    tile('DB Size', fmtSize(d.db_size_bytes), 'On-disk size of prime_trades.db') +
+    (d.historical_merged
+      ? `<div style="grid-column:1/-1;font-size:11px;color:var(--text3);padding-top:4px">Historical recovery data merged into prime_signals — single unified store.</div>`
+      : '');
 }
 
 // ── Render: summary badges ───────────────────────────────────────────────────
@@ -163,5 +206,6 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     loadHealth, _renderHealthSummary, _renderHealthRows, _thesisBadge,
     _updateTabBadge, _isRTH, _startHealthAutoRefresh, _stopHealthAutoRefresh,
+    loadDeepScanStats, _renderDeepScanStats,
   };
 }

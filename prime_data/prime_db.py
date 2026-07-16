@@ -1499,3 +1499,40 @@ def get_ops_events(
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+def get_deep_scan_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Return signal row counts, date range, last scan event, and DB file size."""
+    import os
+    path = _db_path(db_path)
+    result: Dict[str, Any] = {
+        "total_rows": 0,
+        "earliest_scan_date": None,
+        "latest_scan_date": None,
+        "last_scan_ts": None,
+        "db_size_bytes": None,
+        "historical_merged": True,
+    }
+    try:
+        with get_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), MIN(scan_ts), MAX(scan_ts) FROM prime_signals"
+            ).fetchone()
+            if row:
+                result["total_rows"] = row[0] or 0
+                result["earliest_scan_date"] = row[1]
+                result["latest_scan_date"] = row[2]
+            last_scan = conn.execute(
+                "SELECT timestamp FROM prime_ops_health"
+                " WHERE event_type='SCAN_COMPLETE'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if last_scan:
+                result["last_scan_ts"] = last_scan[0]
+    except Exception:
+        pass
+    try:
+        result["db_size_bytes"] = os.path.getsize(str(path))
+    except Exception:
+        pass
+    return result
