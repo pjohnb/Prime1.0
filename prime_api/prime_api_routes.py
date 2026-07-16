@@ -2576,7 +2576,8 @@ _scan_lock = threading.Lock()
 
 # Hard limit for subprocess lifetime in parallel deep-scan mode.  A hung scanner
 # would otherwise hold its semaphore slot forever, blocking PSA via uoa_done.wait().
-_SCANNER_TIMEOUT = 900  # 15 minutes
+# UOA completes in < 2 minutes normally; 3 minutes is a safe ceiling.
+_SCANNER_TIMEOUT = 180  # 3 minutes
 
 # WO-PRIME-PSA-CALIBRATION-02 Phase 2: PSA diagnostic scan state
 _diag_state: Dict[str, Any] = {"status": "idle", "last_run": None, "error": None}

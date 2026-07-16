@@ -42,7 +42,7 @@ OPTIONS_EXPIRY_DAYS = 60
 DIRECTION_RATIO_THRESHOLD = 1.5
 DEFAULT_BASELINE = 100_000
 
-QUOTE_TIMEOUT = 8
+SCHWAB_API_TIMEOUT = 30  # per-call timeout injected on the schwab-py session (was QUOTE_TIMEOUT=8, never applied)
 
 # DTE classification bands (locked -- do not adjust without owner sign-off)
 _ST_MAX_DTE = 10
@@ -84,6 +84,7 @@ def _get_schwab_client():
     """Return a connected schwab-py Client, or None if unavailable."""
     try:
         import schwab
+        import requests.adapters as _ra
         cfg = get_config()
         ss = cfg.schwab_snapshot
         if not ss.schwab_token_path or not ss.schwab_app_key:
@@ -94,6 +95,19 @@ def _get_schwab_client():
             api_key=ss.schwab_app_key,
             app_secret=ss.schwab_app_secret,
         )
+        # schwab-py issues all HTTP calls through a requests.Session with no
+        # default timeout.  Mount a custom adapter so every call (get_option_chain,
+        # get_quote, token refresh) fires a TimeoutError instead of hanging forever.
+        try:
+            class _TimeoutAdapter(_ra.HTTPAdapter):
+                def send(self, *args, **kwargs):
+                    kwargs.setdefault("timeout", SCHWAB_API_TIMEOUT)
+                    return super().send(*args, **kwargs)
+            _adapter = _TimeoutAdapter()
+            client.session.mount("https://", _adapter)
+            client.session.mount("http://", _adapter)
+        except Exception as _te:
+            logger.warning("UOA: could not inject Schwab timeout adapter: %s", _te)
         return client
     except Exception as e:
         logger.warning("UOA: Schwab client unavailable (%s) -- 0 signals", e)
