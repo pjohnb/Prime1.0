@@ -99,21 +99,53 @@ class TestUOA(_BridgeTestBase):
 
 
 class TestPSA(_BridgeTestBase):
-    ROWS = [
-        {"Symbol": "MSFT", "Momentum%": "8.5", "Volume%": "70", "Volatility%": "30",
-         "Trend": "1", "Consecutive": "3", "Approved": "YES"},
-        {"Symbol": "REJ", "Momentum%": "1.0", "Volume%": "10", "Volatility%": "5",
-         "Trend": "0", "Consecutive": "0", "Approved": "NO"},
-    ]
+    DATA = {
+        "scan_time": "2026-06-02T10:30:00",
+        "signals": [
+            {"symbol": "MSFT", "price_at_scan": 420.0, "direction": "LONG",
+             "score": 8.5, "momentum_pct": 8.5, "volume_pct": 70.0,
+             "volatility_pct": 30.0, "patterns": ["higher_highs"],
+             "trigger_source": "NONE", "approval_status": "APPROVED",
+             "dk_status": "NEUTRAL"},
+            {"symbol": "CMG", "price_at_scan": 34.85, "direction": "LONG",
+             "score": 930.1, "momentum_pct": 930.1, "volume_pct": 43.2,
+             "volatility_pct": 582.0, "patterns": ["volume_expansion"],
+             "trigger_source": "NONE", "approval_status": "WATCH",
+             "dk_status": "NEUTRAL"},
+            {"symbol": "SUPPR", "price_at_scan": 10.0, "direction": "LONG",
+             "score": 5.0, "momentum_pct": 5.0, "volume_pct": 20.0,
+             "volatility_pct": 10.0, "patterns": [],
+             "trigger_source": "NONE", "approval_status": "SUPPRESSED",
+             "suppression_reason": "DK_NULLIFYING", "dk_status": "NULLIFYING"},
+        ],
+    }
 
-    def test_inserts_approved_only(self):
-        n = bridge.bridge_psa_rows(self.ROWS, "2026-06-02 10:30", db_path=self.db)
-        self.assertEqual(n, 1)
-        sig = self._signals()[0]
-        self.assertEqual(sig["symbol"], "MSFT")
+    def test_delivers_approved_and_watch(self):
+        n = bridge.bridge_psa_result(self.DATA, db_path=self.db)
+        self.assertEqual(n, 2)
+        symbols = {s["symbol"] for s in self._signals()}
+        self.assertEqual(symbols, {"MSFT", "CMG"})
+
+    def test_approved_signal_fields(self):
+        bridge.bridge_psa_result(self.DATA, db_path=self.db)
+        sig = next(s for s in self._signals() if s["symbol"] == "MSFT")
         self.assertEqual(sig["strategy"], "PSA")
-        self.assertEqual(sig["scan_ts"], "2026-06-02 10:30")
+        self.assertEqual(sig["scan_ts"], "2026-06-02T10:30:00")
         self.assertAlmostEqual(sig["score"], 8.5, places=1)
+        self.assertAlmostEqual(sig["entry_price"], 420.0, places=1)
+
+    def test_watch_signal_delivered(self):
+        bridge.bridge_psa_result(self.DATA, db_path=self.db)
+        sig = next(s for s in self._signals() if s["symbol"] == "CMG")
+        self.assertEqual(sig["strategy"], "PSA")
+        self.assertAlmostEqual(sig["score"], 930.1, places=1)
+
+    def test_suppressed_signal_dropped_with_warning(self):
+        with self.assertLogs("prime_bridge.prime_signal_bridge", level="WARNING") as cm:
+            bridge.bridge_psa_result(self.DATA, db_path=self.db)
+        symbols = {s["symbol"] for s in self._signals()}
+        self.assertNotIn("SUPPR", symbols)
+        self.assertTrue(any("SUPPRESSED" in msg and "SUPPR" in msg for msg in cm.output))
 
 
 class TestPEAD(_BridgeTestBase):
@@ -223,10 +255,18 @@ class TestIngestLatest(_BridgeTestBase):
             "date,time,symbol,group,tier,sizzle_index,direction,underlying_price,data_source\n"
             "2026-06-02,12:50,SPY,Macro,STRONG,259.5,SHORT,759.69,TS\n",
             encoding="utf-8")
-        # PSA CSV
-        (self.scan_dir / "psa_20260602_1030_ET.csv").write_text(
-            "Symbol,Momentum%,Volume%,Volatility%,Trend,Consecutive,Approved\n"
-            "MSFT,8.5,70,30,1,3,YES\n",
+        # PSA JSON (v1.0 format)
+        (self.scan_dir / "psa_scan_20260602_1030_ET.json").write_text(
+            json.dumps({
+                "scan_time": "2026-06-02T10:30:00",
+                "signals": [
+                    {"symbol": "MSFT", "price_at_scan": 420.0, "direction": "LONG",
+                     "score": 8.5, "momentum_pct": 8.5, "volume_pct": 70.0,
+                     "volatility_pct": 30.0, "patterns": ["higher_highs"],
+                     "trigger_source": "NONE", "approval_status": "APPROVED",
+                     "dk_status": "NEUTRAL"},
+                ],
+            }),
             encoding="utf-8")
         # MMR CSV (one LONG + one SHORT row)
         (self.scan_dir / "mmr_signals_20260602_1100.csv").write_text(

@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 V09_SCAN_RESULTS = Path(r"C:\Dev\PRIME\scan_results")
 V09_MONITORING_DB = Path(r"C:\Dev\PRIME\prime_ai_monitoring.db")
 
+# v1.0 scan results directory (all v1.0 scanners write JSON here).
+V10_SCAN_RESULTS = Path(r"C:\Dev\PRIME1.0\scan_results")
+
 # Approval gates per scanner (the value(s) that mean "tradeable signal").
 UOA_APPROVED_TIERS = ("STRONG", "WATCH")
 MMR_APPROVED_TRANCHES = ("TRANCHE_1", "TRANCHE_2", "SHORT_TRANCHE_1", "SHORT_TRANCHE_2")
@@ -178,6 +181,49 @@ def bridge_psa_rows(
             },
         }
         if signal["symbol"] and _insert(signal, db_path):
+            count += 1
+    return count
+
+
+def bridge_psa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> int:
+    """PSA scan JSON (v1.0 format).
+
+    Delivers signals with approval_status APPROVED, STRONG, or WATCH.
+    Logs a WARNING and skips signals with approval_status SUPPRESSED.
+    """
+    count = 0
+    scan_ts = (data.get("scan_time") or "").strip()
+    for sig in (data.get("signals") or []):
+        approval = (sig.get("approval_status") or "WATCH").strip().upper()
+        if approval == "SUPPRESSED":
+            logger.warning(
+                "bridge PSA: dropping SUPPRESSED signal %s (reason=%s)",
+                sig.get("symbol"), sig.get("suppression_reason"),
+            )
+            continue
+        symbol = (sig.get("symbol") or "").strip()
+        if not symbol:
+            logger.warning("bridge PSA: signal missing symbol, skipping entry")
+            continue
+        signal = {
+            "symbol": symbol,
+            "strategy": "PSA",
+            "scan_ts": scan_ts,
+            "entry_price": _to_float(sig.get("price_at_scan")),
+            "score": _to_float(sig.get("score")),
+            "tier": approval,
+            "direction": (sig.get("direction") or "LONG").strip().upper(),
+            "status": "APPROVED",
+            "trigger_source": (sig.get("trigger_source") or "PSA_ONLY").strip(),
+            "factors": {
+                "momentum_pct": _to_float(sig.get("momentum_pct"), None),
+                "volume_pct": _to_float(sig.get("volume_pct"), None),
+                "volatility_pct": _to_float(sig.get("volatility_pct"), None),
+                "patterns": sig.get("patterns"),
+                "dk_status": sig.get("dk_status"),
+            },
+        }
+        if _insert(signal, db_path):
             count += 1
     return count
 
@@ -377,7 +423,7 @@ def _read_pead_latest(monitoring_db: Path) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def ingest_latest(
-    scan_dir: Path = V09_SCAN_RESULTS,
+    scan_dir: Path = V10_SCAN_RESULTS,
     monitoring_db: Path = V09_MONITORING_DB,
     db_path: Optional[Path] = None,
 ) -> Dict[str, int]:
@@ -402,9 +448,10 @@ def ingest_latest(
     if uoa:
         _try("UOA", lambda: bridge_uoa_rows(_read_csv(uoa), db_path))
 
-    psa = _latest(scan_dir, "psa_*.csv")
+    psa = _latest(scan_dir, "psa_scan_*.json")
     if psa:
-        _try("PSA", lambda: bridge_psa_rows(_read_csv(psa), _psa_scan_ts(psa), db_path))
+        _try("PSA", lambda: bridge_psa_result(
+            json.loads(psa.read_text(encoding="utf-8")), db_path))
 
     mmr = _latest(scan_dir, "mmr_signals_*.csv")
     if mmr:
@@ -431,7 +478,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Bridge v0.9 scanner output into the v1.0 DB.")
     parser.add_argument("--ingest-latest", action="store_true",
                         help="Bridge the latest output for every scanner.")
-    parser.add_argument("--scan-dir", default=str(V09_SCAN_RESULTS),
+    parser.add_argument("--scan-dir", default=str(V10_SCAN_RESULTS),
                         help="v0.9 scan_results directory.")
     parser.add_argument("--monitoring-db", default=str(V09_MONITORING_DB),
                         help="v0.9 prime_ai_monitoring.db path (PEAD source).")
