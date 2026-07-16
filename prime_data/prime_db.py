@@ -191,6 +191,12 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     # Sprint 35 CIL-NEW-08: staged entry tranche tracking.
     _migrate_add_column_trade_log(db_path, "stage_number", "INTEGER")
     _migrate_add_column_trade_log(db_path, "stage_total", "INTEGER")
+    # WO-PRIME-ML-OUTCOME-01: POC signal-to-trade outcome linkage.
+    _migrate_add_column_trade_log(db_path, "scenario_id", "TEXT")
+    _migrate_add_column_trade_log(db_path, "scenario_type", "INTEGER")
+    _migrate_add_column_trade_log(db_path, "conviction_tier", "TEXT")
+    _migrate_add_column_trade_log(db_path, "constituent_signals", "TEXT")
+    _migrate_add_column_trade_log(db_path, "signal_active_at_exit", "INTEGER")
 
     return path
 
@@ -306,6 +312,10 @@ def insert_trade(
     signal_id: Optional[str] = None,
     stage_number: Optional[int] = None,
     stage_total: Optional[int] = None,
+    scenario_id: Optional[str] = None,
+    scenario_type: Optional[int] = None,
+    conviction_tier: Optional[str] = None,
+    constituent_signals: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> str:
     """Insert a new trade record. Returns the generated log_id.
@@ -337,8 +347,9 @@ def insert_trade(
                 price_at_scan, trade_factors, claude_advisory, advisory_timestamp,
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type, limit_price, sector,
-                signal_id, stage_number, stage_total
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                signal_id, stage_number, stage_total,
+                scenario_id, scenario_type, conviction_tier, constituent_signals
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 log_id, strategy, symbol, direction, mode, order_type, shares,
                 entry_price, entry_time, score, eps_beat_pct, signal_source,
@@ -347,6 +358,7 @@ def insert_trade(
                 advisory_history, dark_pool_eval, trade_source,
                 stop_price, target_price, time_stop_minutes, stop_type or "FIXED",
                 limit_price, sector, signal_id, stage_number, stage_total,
+                scenario_id, scenario_type, conviction_tier, constituent_signals,
             ),
         )
         conn.commit()
@@ -437,6 +449,36 @@ def update_ml_outcome(
         return cursor.rowcount > 0
 
 
+def _update_signal_active_at_exit(
+    log_id: str,
+    signal_id: str,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Best-effort: set signal_active_at_exit on a CLOSED trade row.
+
+    Uses dk_status=CONFIRMING as the primary active indicator; falls back to
+    checking signal status is not DISMISSED/REJECTED when DK data is absent.
+    Never blocks a trade close on failure.
+    """
+    try:
+        from prime_analytics.prime_signals_db import get_signal_by_id
+        sig = get_signal_by_id(signal_id) or {}
+        dk = (sig.get("dk_status") or "").upper()
+        sts = (sig.get("status") or "").upper()
+        active = 1 if (
+            dk == "CONFIRMING"
+            or (not dk and sts not in ("DISMISSED", "REJECTED"))
+        ) else 0
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "UPDATE prime_trade_log SET signal_active_at_exit=? WHERE log_id=?",
+                (active, log_id),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("signal_active_at_exit update skipped for %s: %s", log_id, exc)
+
+
 def close_trade(
     log_id: str,
     exit_price: float,
@@ -479,6 +521,7 @@ def close_trade(
         except Exception as e:  # noqa: BLE001 - never block the trade close
             logger.warning("ML outcome update failed for signal %s: %s",
                            signal_id, e)
+        _update_signal_active_at_exit(log_id, signal_id, db_path=db_path)
     else:
         logger.debug("No signal_id for SCHWAB_IMPORT trade %s", log_id)
 
@@ -535,6 +578,7 @@ def close_trade_with_fill(
         except Exception as e:  # noqa: BLE001 - never block the trade close
             logger.warning("ML outcome update failed for signal %s: %s",
                            signal_id, e)
+        _update_signal_active_at_exit(log_id, signal_id, db_path=db_path)
     else:
         logger.debug("No signal_id for trade %s (close_trade_with_fill)", log_id)
 
@@ -1025,6 +1069,119 @@ def _get_effectiveness_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
     return {
         "by_strategy": by_strategy,
         "overall": overall,
+        "as_of": datetime.now().isoformat(),
+    }
+
+
+def _get_poc_summary(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """POC evaluation summary over CLOSED trades. (WO-PRIME-ML-OUTCOME-01.)
+
+    Returns overall metrics plus breakdowns by scenario_type and conviction_tier,
+    and the top-5 winning/losing signal IDs by realized P&L.
+    Filtered by exit_time when from_date / to_date are provided.
+    """
+    import json as _json
+
+    clauses = ["status = 'CLOSED'", "pnl_dollars IS NOT NULL"]
+    params: List[Any] = []
+    if from_date:
+        clauses.append("exit_time >= ?")
+        params.append(from_date)
+    if to_date:
+        clauses.append("exit_time <= ?")
+        params.append(to_date + "T23:59:59")
+    where = " AND ".join(clauses)
+
+    with get_connection(db_path) as conn:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT log_id, symbol, strategy, pnl_dollars, hold_minutes,"
+            f" signal_id, scenario_type, conviction_tier"
+            f" FROM prime_trade_log WHERE {where}", params
+        ).fetchall()]
+
+    total = len(rows)
+    wins = sum(1 for r in rows if (r.get("pnl_dollars") or 0) > 0)
+    total_pnl = sum(r.get("pnl_dollars") or 0 for r in rows)
+    win_rate = round(wins / total * 100, 1) if total else 0.0
+    avg_hold = round(sum(r.get("hold_minutes") or 0 for r in rows) / total) if total else 0
+
+    # Breakdown by scenario_type
+    by_sc: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        k = str(r.get("scenario_type")) if r.get("scenario_type") is not None else "None"
+        e = by_sc.setdefault(k, {"trades": 0, "wins": 0, "total_pnl": 0.0})
+        e["trades"] += 1
+        if (r.get("pnl_dollars") or 0) > 0:
+            e["wins"] += 1
+        e["total_pnl"] += r.get("pnl_dollars") or 0
+
+    by_scenario_type = []
+    for k in sorted(by_sc):
+        v = by_sc[k]
+        tr = v["trades"]
+        by_scenario_type.append({
+            "scenario_type": k,
+            "trades": tr,
+            "win_rate": round(v["wins"] / tr * 100, 1) if tr else 0.0,
+            "total_pnl": round(v["total_pnl"], 2),
+        })
+
+    # Breakdown by conviction_tier
+    by_tier: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        k = r.get("conviction_tier") or "UNLINKED"
+        e = by_tier.setdefault(k, {"trades": 0, "wins": 0, "total_pnl": 0.0})
+        e["trades"] += 1
+        if (r.get("pnl_dollars") or 0) > 0:
+            e["wins"] += 1
+        e["total_pnl"] += r.get("pnl_dollars") or 0
+
+    by_conviction_tier = []
+    for k in sorted(by_tier):
+        v = by_tier[k]
+        tr = v["trades"]
+        by_conviction_tier.append({
+            "conviction_tier": k,
+            "trades": tr,
+            "win_rate": round(v["wins"] / tr * 100, 1) if tr else 0.0,
+            "total_pnl": round(v["total_pnl"], 2),
+        })
+
+    # Top 5 winning/losing signals by total realized P&L
+    sig_map: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        sid = r.get("signal_id")
+        if not sid:
+            continue
+        e = sig_map.setdefault(sid, {
+            "signal_id": sid,
+            "symbol": r.get("symbol"),
+            "strategy": r.get("strategy"),
+            "total_pnl": 0.0,
+            "trades": 0,
+        })
+        e["total_pnl"] += r.get("pnl_dollars") or 0
+        e["trades"] += 1
+
+    sorted_sigs = sorted(sig_map.values(), key=lambda x: x["total_pnl"], reverse=True)
+
+    def _fmt(s: Dict[str, Any]) -> Dict[str, Any]:
+        return {**s, "total_pnl": round(s["total_pnl"], 2)}
+
+    return {
+        "total_trades": total,
+        "wins": wins,
+        "win_rate": win_rate,
+        "total_pnl": round(total_pnl, 2),
+        "avg_hold_minutes": avg_hold,
+        "by_scenario_type": by_scenario_type,
+        "by_conviction_tier": by_conviction_tier,
+        "top_signals_winning": [_fmt(s) for s in sorted_sigs[:5]],
+        "top_signals_losing": [_fmt(s) for s in reversed(sorted_sigs[-5:])],
         "as_of": datetime.now().isoformat(),
     }
 

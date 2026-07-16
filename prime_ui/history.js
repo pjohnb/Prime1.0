@@ -88,6 +88,157 @@ function _viewSignal(signalId) {
   loadSignals();
 }
 
+// WO-PRIME-ML-OUTCOME-01: POC Performance Summary panel.
+let _pocCollapsed = false;
+
+function togglePocPanel() {
+  const body = document.getElementById('poc-body');
+  const tog = document.getElementById('poc-toggle');
+  if (!body) return;
+  _pocCollapsed = !_pocCollapsed;
+  body.style.display = _pocCollapsed ? 'none' : 'block';
+  if (tog) tog.textContent = _pocCollapsed ? '▶' : '▼';
+}
+
+function _pocDefaultDates() {
+  const toEl = document.getElementById('poc-to');
+  const fromEl = document.getElementById('poc-from');
+  if (!toEl || !fromEl) return;
+  const today = new Date();
+  if (!toEl.value) toEl.value = today.toISOString().substring(0, 10);
+  if (!fromEl.value) {
+    fromEl.value = new Date(today.getFullYear(), today.getMonth(), 1)
+      .toISOString().substring(0, 10);
+  }
+}
+
+async function loadPocSummary() {
+  const contentEl = document.getElementById('poc-content');
+  if (!contentEl || _pocCollapsed) return;
+  _pocDefaultDates();
+  const from = document.getElementById('poc-from')?.value || '';
+  const to   = document.getElementById('poc-to')?.value || '';
+  let url = _histApi() + '/analytics/poc-summary';
+  const qs = [];
+  if (from) qs.push('from_date=' + encodeURIComponent(from));
+  if (to)   qs.push('to_date='   + encodeURIComponent(to));
+  if (qs.length) url += '?' + qs.join('&');
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) {
+      contentEl.innerHTML = `<div class="empty-state" style="padding:8px">Error: ${data.error}</div>`;
+      return;
+    }
+    if (!data.total_trades) {
+      contentEl.innerHTML = '<div class="empty-state" style="padding:8px">No closed trades in selected date range</div>';
+      return;
+    }
+    const pnlColor = (data.total_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+    let html = `<div style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px;font-size:13px">
+      <span style="font-family:var(--mono)">Trades: <b>${data.total_trades}</b></span>
+      <span style="font-family:var(--mono)">Wins: <b>${data.wins}</b></span>
+      <span style="font-family:var(--mono)">Win Rate: <b>${data.win_rate}%</b></span>
+      <span style="font-family:var(--mono);color:${pnlColor}">P&amp;L: <b>${_fmtHistMoney(data.total_pnl)}</b></span>
+      <span style="font-family:var(--mono)">Avg Hold: <b>${_histHold(data.avg_hold_minutes)}</b></span>
+    </div><div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">`;
+
+    if (data.by_scenario_type && data.by_scenario_type.length) {
+      html += `<div style="flex:1;min-width:180px">
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;font-family:var(--mono)">By Scenario Type</div>
+        <table style="width:100%;font-size:12px"><thead><tr>
+          <th style="text-align:left;padding:3px 6px">Type</th>
+          <th style="text-align:center;padding:3px 6px">Trades</th>
+          <th style="text-align:center;padding:3px 6px">Win%</th>
+          <th style="text-align:right;padding:3px 6px">P&amp;L</th>
+        </tr></thead><tbody>`;
+      data.by_scenario_type.forEach(r => {
+        const c = Number(r.total_pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+        const label = r.scenario_type === 'None' ? 'Unlinked' : 'Type ' + r.scenario_type;
+        html += `<tr>
+          <td style="font-family:var(--mono);padding:3px 6px">${label}</td>
+          <td style="text-align:center;font-family:var(--mono);padding:3px 6px">${r.trades}</td>
+          <td style="text-align:center;font-family:var(--mono);padding:3px 6px">${r.win_rate}%</td>
+          <td style="text-align:right;font-family:var(--mono);color:${c};padding:3px 6px">${_fmtHistMoney(r.total_pnl)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+
+    if (data.by_conviction_tier && data.by_conviction_tier.length) {
+      html += `<div style="flex:1;min-width:180px">
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;font-family:var(--mono)">By Conviction Tier</div>
+        <table style="width:100%;font-size:12px"><thead><tr>
+          <th style="text-align:left;padding:3px 6px">Tier</th>
+          <th style="text-align:center;padding:3px 6px">Trades</th>
+          <th style="text-align:center;padding:3px 6px">Win%</th>
+          <th style="text-align:right;padding:3px 6px">P&amp;L</th>
+        </tr></thead><tbody>`;
+      data.by_conviction_tier.forEach(r => {
+        const c = Number(r.total_pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+        html += `<tr>
+          <td style="font-family:var(--mono);padding:3px 6px">${r.conviction_tier}</td>
+          <td style="text-align:center;font-family:var(--mono);padding:3px 6px">${r.trades}</td>
+          <td style="text-align:center;font-family:var(--mono);padding:3px 6px">${r.win_rate}%</td>
+          <td style="text-align:right;font-family:var(--mono);color:${c};padding:3px 6px">${_fmtHistMoney(r.total_pnl)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+
+    html += '</div>';
+
+    const winners = data.top_signals_winning || [];
+    const losers  = data.top_signals_losing  || [];
+    if (winners.length || losers.length) {
+      html += `<div style="display:flex;gap:24px;flex-wrap:wrap">`;
+      if (winners.length) {
+        html += `<div style="flex:1;min-width:180px">
+          <div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;font-family:var(--mono)">Top 5 Winning Signals</div>
+          <table style="width:100%;font-size:12px"><thead><tr>
+            <th style="text-align:left;padding:3px 6px">Symbol</th>
+            <th style="text-align:left;padding:3px 6px">Strategy</th>
+            <th style="text-align:center;padding:3px 6px">Trades</th>
+            <th style="text-align:right;padding:3px 6px">P&amp;L</th>
+          </tr></thead><tbody>`;
+        winners.forEach(s => {
+          html += `<tr>
+            <td style="font-family:var(--mono);padding:3px 6px;font-weight:600">${s.symbol || '--'}</td>
+            <td style="font-family:var(--mono);padding:3px 6px">${s.strategy || '--'}</td>
+            <td style="text-align:center;font-family:var(--mono);padding:3px 6px">${s.trades}</td>
+            <td style="text-align:right;font-family:var(--mono);color:var(--green);padding:3px 6px">${_fmtHistMoney(s.total_pnl)}</td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      }
+      if (losers.length) {
+        html += `<div style="flex:1;min-width:180px">
+          <div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;font-family:var(--mono)">Top 5 Losing Signals</div>
+          <table style="width:100%;font-size:12px"><thead><tr>
+            <th style="text-align:left;padding:3px 6px">Symbol</th>
+            <th style="text-align:left;padding:3px 6px">Strategy</th>
+            <th style="text-align:center;padding:3px 6px">Trades</th>
+            <th style="text-align:right;padding:3px 6px">P&amp;L</th>
+          </tr></thead><tbody>`;
+        losers.forEach(s => {
+          html += `<tr>
+            <td style="font-family:var(--mono);padding:3px 6px;font-weight:600">${s.symbol || '--'}</td>
+            <td style="font-family:var(--mono);padding:3px 6px">${s.strategy || '--'}</td>
+            <td style="text-align:center;font-family:var(--mono);padding:3px 6px">${s.trades}</td>
+            <td style="text-align:right;font-family:var(--mono);color:var(--red);padding:3px 6px">${_fmtHistMoney(s.total_pnl)}</td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      }
+      html += '</div>';
+    }
+
+    contentEl.innerHTML = html;
+  } catch (e) {
+    contentEl.innerHTML = '<div class="empty-state" style="padding:8px">Failed to load POC summary — API offline?</div>';
+  }
+}
+
 // CIL-063: Strategy Effectiveness panel.
 let _effCollapsed = false;
 
@@ -158,6 +309,8 @@ async function loadHistory() {
 
   // CIL-063: refresh effectiveness panel on tab activation and filter changes.
   loadEffectiveness();
+  // WO-PRIME-ML-OUTCOME-01: refresh POC summary panel.
+  loadPocSummary();
 
   const strategy  = document.getElementById('hist-strategy')?.value || '';
   const direction = document.getElementById('hist-direction')?.value || '';
