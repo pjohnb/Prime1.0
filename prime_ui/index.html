@@ -279,7 +279,7 @@ th[data-tooltip], span[data-tooltip], div[data-tooltip] { cursor: help; }
     </div>
     <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
       <button id="scan-btn-mmr" class="btn-refresh" onclick="triggerScan('mmr','scan-btn-mmr')" style="font-size:12px;padding:4px 10px"
-              title="Metals Mean-Reversion Scanner. Monitors 10 precious metals instruments for oversold bounce (LONG) and overbought reversal (SHORT) conditions. Two-phase gate: TRANCHE_1 sets up the condition, TRANCHE_2 confirms directional turn. Score = RSI(14), continuous 0–100. Not comparable to IDX or PSA scores.">Run MMR</button>
+              title="MMR — Metals Mean-Reversion: scans GLD, SLV, GDX, GDXJ and the broader metals universe for RSI mean-reversion setups. LONG signals fire on the full metals universe at TRANCHE_2 threshold. SHORT signals are ETF-only (SLV, GLD, GDX, GDXJ). MMR + PSA confirmation feeds Type 8 (Sniper Metals) scenarios.">Run MMR</button>
       <span id="scan-msg-mmr" style="font-family:var(--mono);font-size:11px;min-height:14px"></span>
     </div>
     <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
