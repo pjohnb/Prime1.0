@@ -821,3 +821,18 @@ function _scenTypePanelClose(e) {
   const panel = document.getElementById('scen-type-panel');
   if (panel) panel.style.display = 'none';
 }
+
+// WO-PRIME-SCENARIOS-UX-01 Phase 2: scenario type reference panel
+function openScenarioTypes() {
+  document.getElementById('scen-types-modal').style.display = 'flex';
+  document.addEventListener('keydown', _scenTypesEscHandler);
+}
+
+function closeScenarioTypes() {
+  document.getElementById('scen-types-modal').style.display = 'none';
+  document.removeEventListener('keydown', _scenTypesEscHandler);
+}
+
+function _scenTypesEscHandler(e) {
+  if (e.key === 'Escape') closeScenarioTypes();
+}
