@@ -160,11 +160,16 @@ def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
     global _poly_retry_count
     params["apiKey"] = api_key
     for attempt in range(3):
+        logger.debug(
+            "[PSA-DEBUG] polygon_get attempt=%d endpoint=%s thread=%s",
+            attempt + 1, endpoint, threading.current_thread().name,
+        )
         try:
             r = requests.get(
                 f"{POLYGON_BASE}{endpoint}", params=params, timeout=API_TIMEOUT
             )
             if r.status_code == 200:
+                logger.debug("[PSA-DEBUG] polygon_get OK endpoint=%s", endpoint)
                 return r.json()
             logger.warning("Polygon %s -> HTTP %s", endpoint, r.status_code)
             return None
@@ -528,6 +533,7 @@ def _scan_one(
     payload for 'stage0': rejection record {symbol, reason, scan_ts}
     payload for 'stage1' or 'fetch': None
     """
+    logger.debug("[PSA-DEBUG] worker=%s symbol=%s start", threading.current_thread().name, symbol)
     bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
     if not bars:
         return symbol, None, _FETCH
@@ -767,10 +773,12 @@ def run_psa_scan(
     fetch_failures = 0
 
     scan_ts = scan_time.isoformat()
+    logger.info("[PSA-DEBUG] reading psa_workers config")
     try:
         workers = int(get_config().ops.psa_workers)
     except Exception:
         workers = 10
+    logger.info("[PSA-DEBUG] workers=%d universe=%d — entering ThreadPoolExecutor", workers, len(universe))
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="psa") as pool:
         futures = {
@@ -784,7 +792,15 @@ def run_psa_scan(
             ): sym
             for sym in universe
         }
+        logger.info("[PSA-DEBUG] submitted %d futures — entering as_completed loop", len(futures))
+        _completed_count = 0
         for fut in as_completed(futures):
+            _completed_count += 1
+            if _completed_count == 1 or _completed_count % 50 == 0:
+                logger.info(
+                    "[PSA-DEBUG] as_completed: %d/%d futures resolved",
+                    _completed_count, len(futures),
+                )
             try:
                 _sym, payload, outcome = fut.result()
             except Exception as exc:
@@ -899,15 +915,21 @@ def main():
 
     from prime_data.prime_db import init_db, log_ops_event
 
+    logger.info("[PSA-DEBUG] pre-init_db")
     init_db()
+    logger.info("[PSA-DEBUG] post-init_db")
 
+    logger.info("[PSA-DEBUG] pre-log_ops_event SCAN_START")
     log_ops_event("SCAN_START", "psa_scanner", detail=f"interval={args.interval}")
+    logger.info("[PSA-DEBUG] post-log_ops_event")
 
+    logger.info("[PSA-DEBUG] resolving universe mode=%s", cfg.ops.psa_universe)
     universe = resolve_psa_universe(
         mode=cfg.ops.psa_universe,
         custom=cfg.ops.psa_universe_custom,
         sector=cfg.ops.psa_universe_sector,
     )
+    logger.info("[PSA-DEBUG] universe resolved — %d symbols", len(universe))
 
     # Stage 1 thresholds: CLI args override ops_config values
     momentum_t = args.momentum if args.momentum is not None else cfg.ops.psa_stage1_momentum

@@ -2813,13 +2813,14 @@ def _run_parallel_deep_scan() -> None:
 
     Execution model:
       Stage 1 (concurrent) — IDX, UOA, MMR, PEAD, SRS, API-semaphore gated.
-      Bridge pass 1        — fires as soon as UOA + PEAD complete; gates PSA
+      Bridge pass 1        — fires as soon as UOA completes; gates PSA
                              signal-led upgrade (PSA reads prime_signals for
                              UOA triggers, which only exist after the bridge).
-      Stage 2              — PSA submitted to the same pool once UOA+PEAD
-                             threads are free.
-      Bridge pass 2        — consolidates PSA + SRS + all remaining output.
-      Short scanner        — after bridge pass 2 (needs UOA/PEAD/PSA in DB).
+      Stage 2              — PSA + SHORT submitted to the same pool once UOA
+                             completes; SHORT uses UOA_PUT/PEAD_MISS signals
+                             written by bridge pass 1.
+      Bridge pass 2        — consolidates PSA + SRS + SHORT + all remaining.
+      Short scanner        — after bridge pass 1, concurrent with PSA.
 
     Per-API semaphores prevent concurrent Polygon or Schwab subprocesses from
     exceeding API rate limits.  Polygon concurrency = 1 on free plan, 3 on
@@ -2872,27 +2873,30 @@ def _run_parallel_deep_scan() -> None:
                 return
         api = _SCANNER_API_CLASS.get(scanner, "polygon")
         sem = polygon_sem if api == "polygon" else schwab_sem
+        logger.info("[PSA-DEBUG] %s: acquiring %s semaphore", scanner, api)
         sem.acquire()
+        logger.info("[PSA-DEBUG] %s: acquired %s semaphore", scanner, api)
         try:
             _run_scanner_bg(scanner, mod, skip_bridge=True)
         except Exception as exc:  # noqa: BLE001
             logger.error("Parallel deep scan: %s failed: %s", scanner, exc)
         finally:
+            logger.info("[PSA-DEBUG] %s: releasing %s semaphore", scanner, api)
             sem.release()
             if scanner == "uoa":
                 uoa_done.set()
             elif scanner == "pead":
                 pead_done.set()
 
-    # Stage 1: scanners run concurrently; PSA submitted after bridge pass 1.
-    # max_workers = Stage-1 count + 2: PSA gets its own slot, one spare.
+    # Stage 1: scanners run concurrently; PSA + SHORT submitted after bridge pass 1.
+    # max_workers = Stage-1 count + 3: PSA + SHORT each get a dedicated slot, one spare.
     # In 'confirmation' mode MTFA is deferred until after bridge pass 2 so it
     # can restrict its universe to symbols already APPROVED by Stage-1 scanners.
     stage1 = ["idx", "uoa", "mmr", "pead", "srs", "mtfa"]
     if mtfa_mode == "confirmation":
         stage1 = ["idx", "uoa", "mmr", "pead", "srs"]
 
-    with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 2,
+    with _cf.ThreadPoolExecutor(max_workers=len(stage1) + 3,
                                 thread_name_prefix="deepscan") as pool:
         for s in stage1:
             pool.submit(_guarded_run, s)
@@ -2907,9 +2911,12 @@ def _run_parallel_deep_scan() -> None:
         uoa_done.wait()
         _run_bridge("1")
         pool.submit(_guarded_run, "psa")
+        # WO-PRIME-SHORT-AUTOTRIGGER-01: SHORT fires after bridge pass 1, concurrent
+        # with PSA. UOA_PUT + PEAD_MISS signals are in prime_signals after bridge pass 1.
+        pool.submit(_guarded_run, "short")
     # ThreadPoolExecutor.__exit__ calls shutdown(wait=True) — all work done here.
 
-    # Bridge pass 2: consolidate PSA + SRS + IDX output into prime_signals.
+    # Bridge pass 2: consolidate PSA + SHORT + SRS + IDX output into prime_signals.
     _run_bridge("2")
 
     # Factor C — Confirmation mode: MTFA runs here (post bridge-2) with a
@@ -2934,13 +2941,6 @@ def _run_parallel_deep_scan() -> None:
                 logger.info("MTFA confirmation mode: no APPROVED symbols — skipping")
         except Exception as _exc:
             logger.error("MTFA confirmation mode failed: %s", _exc)
-
-    # Short scanner: reads UOA/PEAD/PSA signals from DB after bridge pass 2.
-    short_mod = _SCANNER_MAP.get("short")
-    if short_mod:
-        with _scan_lock:
-            if _scan_state.get("short", {}).get("status") != "running":
-                _run_scanner_bg("short", short_mod, skip_bridge=False)
 
     # WO-PRIME-SCENARIOS-REFRESH-01: auto-detect scenarios at pipeline end so
     # the Scenarios tab sees the new timestamp within 5 s of detection.
