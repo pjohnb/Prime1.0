@@ -15,6 +15,8 @@ Standalone: python prime_scanners/prime_psa_scanner.py
 import json
 import logging
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,8 +36,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 POLYGON_BASE = "https://api.polygon.io"
-API_TIMEOUT = 10
+API_TIMEOUT = 30
 FETCH_WORKERS = 10
+
+_poly_retry_lock = threading.Lock()
+_poly_retry_count = 0
 ANALYSIS_WORKERS = 8
 
 # A-B-C-D defaults (overridable via config)
@@ -149,19 +154,37 @@ INTERVAL_MINUTES = {
 # API helpers
 # ---------------------------------------------------------------------------
 
+_RETRY_BACKOFF = [1, 2]
+
 def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
+    global _poly_retry_count
     params["apiKey"] = api_key
-    try:
-        r = requests.get(
-            f"{POLYGON_BASE}{endpoint}", params=params, timeout=API_TIMEOUT
-        )
-        if r.status_code == 200:
-            return r.json()
-        logger.warning("Polygon %s -> HTTP %s", endpoint, r.status_code)
-        return None
-    except Exception as e:
-        logger.warning("Polygon %s failed: %s", endpoint, e)
-        return None
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                f"{POLYGON_BASE}{endpoint}", params=params, timeout=API_TIMEOUT
+            )
+            if r.status_code == 200:
+                return r.json()
+            logger.warning("Polygon %s -> HTTP %s", endpoint, r.status_code)
+            return None
+        except requests.exceptions.Timeout:
+            if attempt < 2:
+                with _poly_retry_lock:
+                    _poly_retry_count += 1
+                delay = _RETRY_BACKOFF[attempt]
+                logger.warning(
+                    "Polygon %s timeout (attempt %d/3) — retrying in %ds",
+                    endpoint, attempt + 1, delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error("Polygon %s timed out after 3 attempts", endpoint)
+                return None
+        except Exception as e:
+            logger.warning("Polygon %s failed: %s", endpoint, e)
+            return None
+    return None
 
 
 def fetch_bars(
@@ -682,7 +705,10 @@ def run_psa_scan(
     db_path: Optional[Path] = None,
     config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    global _poly_retry_count
     scan_time = datetime.now()
+    with _poly_retry_lock:
+        _poly_retry_count = 0
 
     # CIL-070: graceful degradation. Without a Polygon key there is no data
     # source, so log a WARNING and return an empty (but well-formed) result
@@ -780,9 +806,14 @@ def run_psa_scan(
 
     signals.sort(key=lambda s: s["score"], reverse=True)
 
+    with _poly_retry_lock:
+        polygon_retries = _poly_retry_count
+
     logger.info(
-        "PSA complete: analyzed=%d approved=%d stage0_rejected=%d stage1_rejected=%d fetch_fail=%d",
-        analyzed, len(signals), stage0_rejected, stage1_rejected, fetch_failures,
+        "PSA complete: analyzed=%d approved=%d stage0_rejected=%d stage1_rejected=%d"
+        " fetch_fail=%d polygon_retries=%d",
+        analyzed, len(signals), stage0_rejected, stage1_rejected,
+        fetch_failures, polygon_retries,
     )
     logger.info("APPROVED: %d stocks", len(signals))
 
@@ -814,6 +845,7 @@ def run_psa_scan(
         "stage0_rejected": stage0_rejected,
         "stage1_rejected": stage1_rejected,
         "fetch_failures": fetch_failures,
+        "polygon_retries": polygon_retries,
         "signals": signals,
         "stage0_rejections": stage0_rejections,
     }
