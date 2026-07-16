@@ -67,9 +67,15 @@ def _diag_one(
     Gates are suspended: no Stage 0 or Stage 1 filter is applied.
     Returns (symbol, factor_dict | None).  None means insufficient data.
     """
+    logger.warning("[DIAG] %s entry: interval=%s total_bars=%d api_key_len=%d",
+                   symbol, interval, total_bars, len(api_key or ""))
+
     bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
     if not bars:
+        logger.warning("[DIAG] %s fetch_bars returned None/empty", symbol)
         return symbol, None
+
+    logger.warning("[DIAG] %s fetch_bars OK: %d bars", symbol, len(bars))
 
     last_price = bars[-1]["close"]
     raw_vol = sum(b.get("volume", 0) for b in bars)
@@ -90,7 +96,12 @@ def _diag_one(
 
     # Skip symbols where analysis cannot produce factor values.
     if "momentum_pct" not in result:
+        logger.warning("[DIAG] %s analyze_symbol no momentum_pct: reason=%s",
+                       symbol, result.get("reason", "unknown"))
         return symbol, None
+
+    logger.warning("[DIAG] %s analyze_symbol OK: momentum=%.1f approved=%s",
+                   symbol, result["momentum_pct"], result.get("approved"))
 
     return symbol, {
         "symbol": symbol,
