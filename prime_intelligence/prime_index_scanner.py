@@ -51,7 +51,11 @@ import requests
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+from prime_analytics.prime_signals_db import (
+    init_signals_table,
+    insert_signal_dedup,
+    upsert_signal_by_session,
+)
 
 logger = logging.getLogger("prime_index_scanner")
 
@@ -407,7 +411,7 @@ def run_index_scan(
                 "routed_account": account,
                 "dk_suppressed": suppressed,
             }
-            insert_signal_dedup(
+            upsert_signal_by_session(
                 symbol=symbol,
                 strategy="IDX",
                 scan_ts=scan_ts,

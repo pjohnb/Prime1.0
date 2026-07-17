@@ -154,5 +154,76 @@ class TestScanOrchestration(unittest.TestCase):
             self.assertIn(sym, idx.INDEX_UNIVERSE)
 
 
+class TestIdxSessionDedup(unittest.TestCase):
+    """WO-PRIME-IDX-DEDUP-01: IDX signals are upserted per session, not duplicated."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_idx_dedup.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self.no_cfg = self.db.parent / "_no_idx_dedup_cfg.json"
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _strong_long_bars(self, scale=1.0):
+        closes = [100.0 * scale + i * 0.5 for i in range(260)]
+        return _bars(closes, volumes=[1_000_000] * 259 + [3_000_000])
+
+    def _spy_flat_bars(self):
+        return _bars([100.0] * 260)
+
+    def test_second_run_same_day_does_not_add_rows(self):
+        """Running IDX twice on the same calendar day must yield 1 row per symbol."""
+        symbols = ["SPY", "XLK", "XLF"]
+        bars = {s: (self._spy_flat_bars() if s == "SPY" else self._strong_long_bars())
+                for s in symbols}
+        idx.run_index_scan(symbols=symbols, db_path=self.db,
+                           config_path=self.no_cfg, bars_by_symbol=bars,
+                           scan_ts="2026-07-17T11:54:00")
+        count_first = len(get_signals(strategy="IDX", db_path=self.db))
+
+        idx.run_index_scan(symbols=symbols, db_path=self.db,
+                           config_path=self.no_cfg, bars_by_symbol=bars,
+                           scan_ts="2026-07-17T12:12:00")
+        count_second = len(get_signals(strategy="IDX", db_path=self.db))
+
+        self.assertEqual(count_first, count_second,
+                         "Second IDX run same session must not add rows")
+
+    def test_second_run_updates_scan_ts_not_duplicates(self):
+        """After two same-day runs, XLK appears exactly once with the later scan_ts."""
+        bars = {"SPY": self._spy_flat_bars(), "XLK": self._strong_long_bars()}
+        idx.run_index_scan(symbols=["SPY", "XLK"], db_path=self.db,
+                           config_path=self.no_cfg, bars_by_symbol=bars,
+                           scan_ts="2026-07-17T11:54:00")
+        idx.run_index_scan(symbols=["SPY", "XLK"], db_path=self.db,
+                           config_path=self.no_cfg, bars_by_symbol=bars,
+                           scan_ts="2026-07-17T12:12:00")
+
+        xlk_rows = [r for r in get_signals(strategy="IDX", db_path=self.db)
+                    if r["symbol"] == "XLK"]
+        self.assertEqual(len(xlk_rows), 1)
+        self.assertEqual(xlk_rows[0]["scan_ts"], "2026-07-17T12:12:00")
+
+    def test_different_day_creates_new_row(self):
+        """Signals on separate calendar days must each get their own row."""
+        bars = {"SPY": self._spy_flat_bars(), "XLK": self._strong_long_bars()}
+        idx.run_index_scan(symbols=["SPY", "XLK"], db_path=self.db,
+                           config_path=self.no_cfg, bars_by_symbol=bars,
+                           scan_ts="2026-07-16T11:54:00")
+        idx.run_index_scan(symbols=["SPY", "XLK"], db_path=self.db,
+                           config_path=self.no_cfg, bars_by_symbol=bars,
+                           scan_ts="2026-07-17T11:54:00")
+
+        xlk_rows = [r for r in get_signals(strategy="IDX", db_path=self.db)
+                    if r["symbol"] == "XLK"]
+        self.assertEqual(len(xlk_rows), 2,
+                         "Signals on different days must be separate rows")
+
+
 if __name__ == "__main__":
     unittest.main()

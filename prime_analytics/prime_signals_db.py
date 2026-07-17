@@ -184,6 +184,79 @@ def insert_signal_dedup(
     return signal_id if inserted else None
 
 
+def upsert_signal_by_session(
+    symbol: str,
+    strategy: str,
+    scan_ts: str,
+    entry_price: float = 0.0,
+    score: float = 0.0,
+    sector: str = "Unknown",
+    tier: str = "",
+    status: str = "NEW",
+    direction: str = "LONG",
+    factors: str = "{}",
+    instrument_type: str = "EQUITY",
+    borrow_rate_pct: Optional[float] = None,
+    trigger_source: Optional[str] = None,
+    guidance_flag: Optional[str] = None,
+    finnhub_guidance_available: bool = False,
+    db_path: Optional[Path] = None,
+) -> str:
+    """Upsert a signal keyed on (symbol, strategy, session date).
+
+    If a row for this symbol+strategy already exists for the calendar date
+    of scan_ts, UPDATE it in place and return its signal_id.  If no such
+    row exists, INSERT one via insert_signal_dedup() and return the new id.
+
+    Use instead of insert_signal_dedup() for scanners (e.g. IDX) that run
+    more than once per session and must produce exactly one row per symbol
+    per day, not one per run.
+    """
+    session_date = scan_ts[:10]  # "YYYY-MM-DD"
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT signal_id FROM prime_signals "
+            "WHERE symbol = ? AND strategy = ? AND date(scan_ts) = ? LIMIT 1",
+            (symbol.upper(), strategy, session_date),
+        ).fetchone()
+        if row:
+            existing_id = row[0]
+            conn.execute(
+                """UPDATE prime_signals
+                   SET scan_ts=?, entry_price=?, score=?, sector=?, tier=?,
+                       status=?, direction=?, factors=?, instrument_type=?,
+                       borrow_rate_pct=?, trigger_source=?, guidance_flag=?,
+                       finnhub_guidance_available=?
+                   WHERE signal_id=?""",
+                (scan_ts, entry_price, score, sector, tier, status, direction,
+                 factors, instrument_type, borrow_rate_pct, trigger_source,
+                 guidance_flag, 1 if finnhub_guidance_available else 0,
+                 existing_id),
+            )
+            conn.commit()
+            return existing_id
+
+    sid = insert_signal_dedup(
+        symbol=symbol,
+        strategy=strategy,
+        scan_ts=scan_ts,
+        entry_price=entry_price,
+        score=score,
+        sector=sector,
+        tier=tier,
+        status=status,
+        direction=direction,
+        factors=factors,
+        instrument_type=instrument_type,
+        borrow_rate_pct=borrow_rate_pct,
+        trigger_source=trigger_source,
+        guidance_flag=guidance_flag,
+        finnhub_guidance_available=finnhub_guidance_available,
+        db_path=db_path,
+    )
+    return sid or make_signal_id(strategy, symbol, scan_ts)
+
+
 def get_signals(
     strategy: Optional[str] = None,
     symbol: Optional[str] = None,
