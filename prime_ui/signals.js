@@ -480,3 +480,13 @@ function initSigColTooltips() {
 }
 
 initSigColTooltips();
+
+function jumpToTop() {
+  const container = document.getElementById('view-signals');
+  if (container) container.scrollTop = 0;
+}
+
+function jumpToBottom() {
+  const container = document.getElementById('view-signals');
+  if (container) container.scrollTop = container.scrollHeight;
+}

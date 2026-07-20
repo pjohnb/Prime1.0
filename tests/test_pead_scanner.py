@@ -439,7 +439,8 @@ def test_persist_pead_dedup_and_skips_unapproved(_pead_db):
     from prime_analytics.prime_signals_db import get_signals
     sigs = _sample_pead_signals()
     assert persist_pead_signals(sigs, "2026-06-20 10:00:00", db_path=_pead_db) == 2
-    assert persist_pead_signals(sigs, "2026-06-20 10:00:00", db_path=_pead_db) == 0
+    # Second run same session: upserts (updates in place) — returns count, not 0
+    assert persist_pead_signals(sigs, "2026-06-20 10:00:00", db_path=_pead_db) == 2
     # Unapproved (below threshold) is not written.
     unapproved = [{"symbol": "ZZZ", "direction": "LONG", "score": 30.0,
                    "approved": False, "guidance_flag": "BEAT_HOLD",

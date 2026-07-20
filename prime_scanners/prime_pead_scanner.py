@@ -30,6 +30,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from prime_config.prime_config import get_config
 
+# WO-PRIME-MTFA-BACKBONE-01-C 3c: daily bar cache (requires WO-A infrastructure)
+try:
+    from prime_data.prime_bar_cache import get_daily_bars as _cache_get_daily
+    _DAILY_CACHE_AVAILABLE = True
+except ImportError:
+    _cache_get_daily = lambda *a, **kw: None  # type: ignore[assignment]
+    _DAILY_CACHE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -226,6 +234,26 @@ def fetch_analyst_count(
 def fetch_price_change(
     symbol: str, from_date: str, to_date: str, api_key: str
 ) -> Optional[Dict]:
+    # WO-PRIME-MTFA-BACKBONE-01-C 3c: read daily bars from cache when available.
+    if _DAILY_CACHE_AVAILABLE:
+        try:
+            _cached = _cache_get_daily(symbol, min_bars=10)
+            if _cached is not None:
+                in_range = [r for r in _cached if from_date <= r["bar_date"] <= to_date]
+                if in_range and in_range[0]["open"]:
+                    open_after = in_range[0]["open"]
+                    close_latest = in_range[-1]["close"]
+                    pct = ((close_latest - open_after) / open_after) * 100.0
+                    logger.debug("[PEAD] daily cache hit: %s (%d bars in range)", symbol, len(in_range))
+                    return {
+                        "open_after": open_after,
+                        "close_latest": close_latest,
+                        "pct_change": round(pct, 2),
+                        "days": len(in_range),
+                    }
+        except Exception:
+            pass
+
     time.sleep(POLYGON_RATE_DELAY)
     data = _polygon_get(
         f"/v2/aggs/ticker/{symbol}/range/1/day/{from_date}/{to_date}",
@@ -619,12 +647,13 @@ def persist_pead_signals(
     Approved = the signal was actionable on its pre-de-rating score (the
     `approved` flag set in run_pead_scan). The tier comes from the guidance_flag
     mapping; factors carry eps_surprise/guidance_flag/finnhub_guidance_available/
-    confidence_level. Deduplication via insert_signal_dedup's deterministic
-    signal_id makes re-running a scan idempotent.
+    confidence_level. Upsert keyed on (symbol, strategy, session date) makes
+    re-running a scan idempotent — second run updates the existing row in place
+    rather than inserting a duplicate.
 
-    Returns the number of new rows inserted (duplicates skipped).
+    Returns the number of rows written (insert or update).
     """
-    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+    from prime_analytics.prime_signals_db import init_signals_table, upsert_signal_by_session
 
     init_signals_table(db_path)
     inserted = 0
@@ -649,7 +678,7 @@ def persist_pead_signals(
             "finnhub_guidance_available": finnhub_available,
             "confidence_level": s.get("confidence_level", "HIGH"),
         })
-        result = insert_signal_dedup(
+        upsert_signal_by_session(
             symbol=symbol,
             strategy="PEAD",
             scan_ts=scan_ts,
@@ -665,8 +694,7 @@ def persist_pead_signals(
             finnhub_guidance_available=finnhub_available,
             db_path=db_path,
         )
-        if result is not None:
-            inserted += 1
+        inserted += 1
     return inserted
 
 
