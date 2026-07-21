@@ -34,6 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from prime_config.prime_config import get_config
+from prime_data.prime_bar_cache import write_daily_bars, write_intraday_bars
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,10 @@ def _polygon_get(endpoint: str, params: Dict, api_key: str) -> Optional[Dict]:
 
 
 def fetch_daily_bars(symbol: str, days: int, api_key: str) -> List[Dict]:
-    """Fetch the last `days` daily bars.  Returns most-recent `days` rows."""
+    """Fetch the last `days` daily bars.  Returns most-recent `days` rows.
+
+    Each bar includes a 'bar_date' key (YYYY-MM-DD) for bar_cache writes.
+    """
     # Buffer for weekends + holidays: request 1.5× the desired window.
     buffer = int(days * 1.5)
     to_date = datetime.now().strftime("%Y-%m-%d")
@@ -93,31 +97,43 @@ def fetch_daily_bars(symbol: str, days: int, api_key: str) -> List[Dict]:
         return []
     raw = data.get("results") or []
     bars = [
-        {"open": b["o"], "high": b["h"], "low": b["l"],
-         "close": b["c"], "volume": b["v"]}
+        {
+            "bar_date": datetime.utcfromtimestamp(b["t"] / 1000).strftime("%Y-%m-%d"),
+            "open": b["o"], "high": b["h"], "low": b["l"],
+            "close": b["c"], "volume": b["v"],
+        }
         for b in raw
-        if all(k in b for k in ("o", "h", "l", "c", "v"))
+        if all(k in b for k in ("t", "o", "h", "l", "c", "v"))
     ]
     return bars[-days:] if len(bars) >= days else bars
 
 
 def fetch_intraday_bars(symbol: str, api_key: str) -> List[Dict]:
-    """Fetch today's 5-min bars (empty list when market is not open)."""
+    """Fetch 5-min bars over a 2-session rolling window (yesterday + today).
+
+    Returning up to ~156 bars gives PSA's 39-bar minimum even on early-morning
+    runs before today's session has accumulated enough bars.  Each bar includes
+    a 'timestamp' key (ms epoch) for bar_cache writes.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
-    endpoint = f"/v2/aggs/ticker/{symbol}/range/5/minute/{today}/{today}"
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    endpoint = f"/v2/aggs/ticker/{symbol}/range/5/minute/{yesterday}/{today}"
     data = _polygon_get(endpoint, {
         "adjusted": "true",
         "sort": "asc",
-        "limit": INTRADAY_BARS + 10,
+        "limit": INTRADAY_BARS * 2 + 20,
     }, api_key)
     if not data:
         return []
     raw = data.get("results") or []
     return [
-        {"open": b["o"], "high": b["h"], "low": b["l"],
-         "close": b["c"], "volume": b["v"]}
+        {
+            "timestamp": b["t"],
+            "open": b["o"], "high": b["h"], "low": b["l"],
+            "close": b["c"], "volume": b["v"],
+        }
         for b in raw
-        if all(k in b for k in ("o", "h", "l", "c", "v"))
+        if all(k in b for k in ("t", "o", "h", "l", "c", "v"))
     ]
 
 
@@ -240,6 +256,16 @@ def _scan_one(
     intraday_bars = fetch_intraday_bars(symbol, api_key)
     if not intraday_bars:
         return symbol, None, _FETCH
+
+    # Cache writes — fire-and-forget; failure must not abort the scan.
+    try:
+        write_daily_bars(symbol, daily_bars)
+    except Exception as exc:
+        logger.warning("MTFA cache write_daily_bars(%s): %s", symbol, exc)
+    try:
+        write_intraday_bars(symbol, intraday_bars)
+    except Exception as exc:
+        logger.warning("MTFA cache write_intraday_bars(%s): %s", symbol, exc)
 
     result = analyze_symbol(daily_bars, intraday_bars)
     if result is None:

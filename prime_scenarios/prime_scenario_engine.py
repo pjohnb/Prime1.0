@@ -462,6 +462,9 @@ def detect_scenarios(
         unanchored_by_sym_dir[(sig["symbol"].upper(), dir_)].append(sig)
 
     for (sym, dir_), sigs in unanchored_by_sym_dir.items():
+        # IDX signals are sector-level context; skip groups with no stock-level scanner present.
+        if all(s.get("strategy") == "IDX" for s in sigs):
+            continue
         if len(sigs) > 1:
             st = _overall_staleness(sigs)
             sc = _build_scenario("0", dir_, sym, sigs, st, detected_at)

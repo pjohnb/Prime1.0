@@ -29,6 +29,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from prime_config.prime_config import get_config
 
+# WO-PRIME-MTFA-BACKBONE-01-C 3a: intraday bar cache (requires WO-A infrastructure)
+try:
+    from prime_data.prime_bar_cache import (
+        get_intraday_bars as _cache_get_intraday,
+        write_intraday_bars as _cache_write_intraday,
+    )
+    _BAR_CACHE_AVAILABLE = True
+except ImportError:
+    _cache_get_intraday = lambda *a, **kw: None  # type: ignore[assignment]
+    _cache_write_intraday = lambda *a, **kw: None  # type: ignore[assignment]
+    _BAR_CACHE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -536,7 +548,34 @@ def _scan_one(
     payload for 'stage1' or 'fetch': None
     """
     logger.debug("[PSA-DEBUG] worker=%s symbol=%s start", threading.current_thread().name, symbol)
-    bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
+
+    # WO-PRIME-MTFA-BACKBONE-01-C 3a: try bar cache before hitting Polygon.
+    bars: Optional[List[Dict]] = None
+    _min_bars = total_bars + 5
+    if _BAR_CACHE_AVAILABLE and interval == DEFAULT_INTERVAL:
+        try:
+            _cached = _cache_get_intraday(symbol, min_bars=_min_bars)
+            if _cached is not None:
+                bars = [
+                    {
+                        "open": r["open"], "high": r["high"],
+                        "low": r["low"],   "close": r["close"],
+                        "volume": r["volume"], "timestamp": r["bar_ts"],
+                    }
+                    for r in _cached[-_min_bars:]
+                ]
+                logger.debug("[PSA] cache hit: %s (%d bars)", symbol, len(bars))
+        except Exception as _exc:
+            logger.debug("[PSA] cache read failed for %s: %s", symbol, _exc)
+
+    if bars is None:
+        bars = fetch_bars(symbol, interval, total_bars + 5, api_key)
+        if bars and _BAR_CACHE_AVAILABLE and interval == DEFAULT_INTERVAL:
+            try:
+                _cache_write_intraday(symbol, bars)
+            except Exception:
+                pass
+
     if not bars:
         return symbol, None, _FETCH
 

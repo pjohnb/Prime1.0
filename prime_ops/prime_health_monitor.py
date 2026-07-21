@@ -131,6 +131,48 @@ def check_data_feed_quality(db_path: Optional[Path] = None) -> Dict[str, Any]:
     }
 
 
+_SECTORS_META_PATH = PROJECT_ROOT / "data" / "sectors_constituents_meta.json"
+_SECTORS_JSON_PATH = PROJECT_ROOT / "data" / "sectors_constituents.json"
+_SECTORS_STALE_DAYS = 8
+
+
+def check_sectors_file_age() -> Optional[Dict[str, str]]:
+    """Return a WARNING alert if sectors_constituents.json has not been refreshed in 8 days.
+
+    Reads last_refresh_utc from the companion metadata file written by
+    prime_sectors_refresh.  Falls back to the JSON file mtime when metadata
+    is absent (first run before any refresh has executed).
+    """
+    if _SECTORS_META_PATH.exists():
+        try:
+            meta = json.loads(_SECTORS_META_PATH.read_text(encoding="utf-8"))
+            ts_str = meta.get("last_refresh_utc", "")
+            if not ts_str:
+                return None
+            last_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            age_days = (datetime.utcnow() - last_dt).days
+            source = "metadata"
+        except Exception:
+            return None
+    elif _SECTORS_JSON_PATH.exists():
+        mtime = datetime.utcfromtimestamp(_SECTORS_JSON_PATH.stat().st_mtime)
+        age_days = (datetime.utcnow() - mtime).days
+        source = "file mtime (no refresh metadata)"
+    else:
+        return None
+
+    if age_days > _SECTORS_STALE_DAYS:
+        return {
+            "level": "WARNING",
+            "scanner": "sectors_refresh",
+            "message": (
+                f"sectors_constituents.json not refreshed in {age_days} days "
+                f"({source}) — weekly refresh job may not be running"
+            ),
+        }
+    return None
+
+
 def generate_alerts(health: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     alerts = []
     for h in health:
@@ -155,6 +197,10 @@ def generate_alerts(health: List[Dict[str, Any]]) -> List[Dict[str, str]]:
                     f"min ago (threshold: {STALE_THRESHOLDS.get(h['scanner'], '?')} min)"
                 ),
             })
+    # CIL #35: sectors file staleness check
+    sectors_alert = check_sectors_file_age()
+    if sectors_alert:
+        alerts.append(sectors_alert)
     return alerts
 
 

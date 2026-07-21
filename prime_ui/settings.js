@@ -540,6 +540,9 @@ function _renderSettings() {
         Diagnostic scan runs all universe symbols with gates suspended, builds a factor matrix, and uses PCA to rank symbols and back-calculate recommended Stage 0 and Stage 1 thresholds.
         Typical runtime: ~2 min. Does NOT trigger a live scan or affect scenario detection.
       </div>
+      <div style="background:#451a03;border:1px solid #92400e;border-radius:4px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#fcd34d;font-family:var(--mono)">
+        &#9888; Run after market close only. Polygon returns insufficient intraday bars during market hours &mdash; results will be unreliable before 4:15 PM ET.
+      </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2)">
           Capture top

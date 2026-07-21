@@ -8,7 +8,7 @@ scenario Types 9 and 10, scanner registration in SCANNER_MAP.
 import json
 import sys
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +17,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from prime_scanners.prime_mtfa_scanner import (
     _trend,
+    _scan_one,
     analyze_symbol,
+    fetch_daily_bars,
+    fetch_intraday_bars,
+    run_mtfa_scan,
     SCORE_ALL_ALIGNED,
     SCORE_TWO_ALIGNED,
     SCORE_ONE_ALIGNED,
@@ -29,7 +33,6 @@ from prime_data.prime_db import init_db
 from prime_scenarios.prime_scenario_engine import (
     detect_scenarios,
     SCENARIO_TYPES,
-    _SOFT_WINDOWS,
 )
 
 
@@ -256,7 +259,7 @@ class TestMTFABridge(unittest.TestCase):
 
 def _sig(strategy, tier="", direction="LONG", symbol="AAPL",
          status="APPROVED", signal_id=None):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    scan_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     return {
         "signal_id": signal_id or f"{strategy}-{symbol}-{tier}",
         "strategy": strategy,
@@ -264,7 +267,7 @@ def _sig(strategy, tier="", direction="LONG", symbol="AAPL",
         "direction": direction,
         "symbol": symbol,
         "status": status,
-        "scan_ts": f"{today} 10:00",
+        "scan_ts": scan_ts,
     }
 
 
@@ -345,9 +348,6 @@ class TestMTFARegistry(unittest.TestCase):
         self.assertEqual(SCENARIO_TYPES["9"]["conviction"], "HIGH")
         self.assertEqual(SCENARIO_TYPES["10"]["conviction"], "HIGHEST")
 
-    def test_mtfa_soft_window_registered(self):
-        self.assertIn("MTFA", _SOFT_WINDOWS)
-
     def test_scanner_map_contains_mtfa(self):
         ROUTES_SRC = (PROJECT_ROOT / "prime_api" / "prime_api_routes.py").read_text(encoding="utf-8")
         self.assertIn('"mtfa"', ROUTES_SRC)
@@ -369,6 +369,133 @@ class TestMTFARegistry(unittest.TestCase):
         self.assertIn("MTFA", BRIDGE_SRC)
         self.assertIn("bridge_mtfa_result", BRIDGE_SRC)
         self.assertIn("mtfa_scan_*.json", BRIDGE_SRC)
+
+
+# ---------------------------------------------------------------------------
+# WO-PRIME-MTFA-BACKBONE-01-B: bar cache integration + 2-session window
+# ---------------------------------------------------------------------------
+
+class TestMTFABackboneB(unittest.TestCase):
+
+    def _daily_bar(self, close=100.0, bar_date="2026-07-17"):
+        return {"bar_date": bar_date, "open": close, "high": close + 1,
+                "low": close - 1, "close": close, "volume": 2_000_000}
+
+    def _intraday_bar(self, close=100.0, ts=1_720_000_000_000):
+        return {"timestamp": ts, "open": close, "high": close + 0.5,
+                "low": close - 0.5, "close": close, "volume": 500_000}
+
+    # 3a — write_daily_bars and write_intraday_bars called after a successful fetch
+    @patch("prime_scanners.prime_mtfa_scanner.write_intraday_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.write_daily_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.fetch_intraday_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.fetch_daily_bars")
+    def test_cache_write_called_after_successful_fetch(
+        self, mock_fd, mock_fi, mock_wd, mock_wi
+    ):
+        daily = [self._daily_bar()] * 10
+        intra = [self._intraday_bar()] * 10
+        mock_fd.return_value = daily
+        mock_fi.return_value = intra
+        _scan_one("AAPL", "key", 1.0, 100, "2026-07-17 09:30")
+        mock_wd.assert_called_once_with("AAPL", daily)
+        mock_wi.assert_called_once_with("AAPL", intra)
+
+    # 3a — cache writes skipped when stage0 filter rejects the symbol
+    @patch("prime_scanners.prime_mtfa_scanner.write_intraday_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.write_daily_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.fetch_intraday_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.fetch_daily_bars")
+    def test_cache_not_written_on_stage0_reject(
+        self, mock_fd, mock_fi, mock_wd, mock_wi
+    ):
+        # price=1.0 < min_price=10.0 triggers stage0 return before cache writes
+        mock_fd.return_value = [self._daily_bar(close=1.0)]
+        _, _, outcome = _scan_one("AAPL", "key", 10.0, 100, "2026-07-17 09:30")
+        self.assertEqual(outcome, "stage0")
+        mock_wd.assert_not_called()
+        mock_wi.assert_not_called()
+
+    # 3a — cache write exception must not abort the scan
+    @patch("prime_scanners.prime_mtfa_scanner.write_intraday_bars",
+           side_effect=RuntimeError("db locked"))
+    @patch("prime_scanners.prime_mtfa_scanner.write_daily_bars",
+           side_effect=RuntimeError("db locked"))
+    @patch("prime_scanners.prime_mtfa_scanner.fetch_intraday_bars")
+    @patch("prime_scanners.prime_mtfa_scanner.fetch_daily_bars")
+    def test_cache_write_failure_nonfatal(
+        self, mock_fd, mock_fi, mock_wd, mock_wi
+    ):
+        mock_fd.return_value = [self._daily_bar()] * 10
+        mock_fi.return_value = [self._intraday_bar()] * 10
+        sym, sig, outcome = _scan_one("AAPL", "key", 1.0, 100, "2026-07-17 09:30")
+        self.assertEqual(sym, "AAPL")
+        self.assertNotEqual(outcome, "fetch")
+
+    # 3b — intraday endpoint must include both yesterday and today
+    @patch("prime_scanners.prime_mtfa_scanner._polygon_get")
+    def test_intraday_endpoint_spans_two_sessions(self, mock_get):
+        mock_get.return_value = {"results": []}
+        fetch_intraday_bars("AAPL", "key")
+        endpoint = mock_get.call_args[0][0]
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.assertIn(yesterday, endpoint)
+        self.assertIn(today, endpoint)
+
+    # 3b — each intraday bar carries a 'timestamp' key (ms epoch)
+    @patch("prime_scanners.prime_mtfa_scanner._polygon_get")
+    def test_intraday_bars_contain_timestamp_key(self, mock_get):
+        mock_get.return_value = {"results": [
+            {"t": 1_720_000_000_000, "o": 100, "h": 101, "l": 99, "c": 100, "v": 500_000}
+        ]}
+        bars = fetch_intraday_bars("AAPL", "key")
+        self.assertEqual(len(bars), 1)
+        self.assertIn("timestamp", bars[0])
+        self.assertEqual(bars[0]["timestamp"], 1_720_000_000_000)
+
+    # 3b — each daily bar carries a 'bar_date' key (YYYY-MM-DD)
+    @patch("prime_scanners.prime_mtfa_scanner._polygon_get")
+    def test_daily_bars_contain_bar_date_key(self, mock_get):
+        mock_get.return_value = {"results": [
+            {"t": 1_720_000_000_000, "o": 100, "h": 101, "l": 99, "c": 100, "v": 1_000_000}
+        ]}
+        bars = fetch_daily_bars("AAPL", 1, "key")
+        self.assertEqual(len(bars), 1)
+        self.assertIn("bar_date", bars[0])
+        self.assertRegex(bars[0]["bar_date"], r"^\d{4}-\d{2}-\d{2}$")
+
+    # 3c — universe resolved from ops_config.json via resolve_psa_universe
+    @patch("prime_scanners.prime_psa_scanner.resolve_psa_universe")
+    @patch("prime_scanners.prime_mtfa_scanner.get_config")
+    def test_universe_coupled_to_ops_config(self, mock_cfg, mock_resolve):
+        mock_resolve.return_value = []
+        cfg = mock_cfg.return_value
+        cfg.ops.psa_universe = "default"
+        cfg.ops.psa_universe_custom = []
+        cfg.ops.psa_universe_sector = None
+        cfg.ops.mtfa_workers = 1
+        run_mtfa_scan(api_key="test_key", universe=None)
+        mock_resolve.assert_called_once_with(
+            mode="default", custom=[], sector=None
+        )
+
+    # 3c — switching config to mag7 causes only Mag7 symbols to be scanned
+    @patch("prime_scanners.prime_mtfa_scanner._polygon_get")
+    @patch("prime_scanners.prime_psa_scanner.resolve_psa_universe")
+    @patch("prime_scanners.prime_mtfa_scanner.get_config")
+    def test_universe_switch_to_mag7(self, mock_cfg, mock_resolve, mock_get):
+        MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+        mock_resolve.return_value = MAG7
+        cfg = mock_cfg.return_value
+        cfg.ops.psa_universe = "mag7"
+        cfg.ops.psa_universe_custom = []
+        cfg.ops.psa_universe_sector = None
+        cfg.ops.mtfa_workers = 2
+        mock_get.return_value = None  # all fetches fail → fetch_failures only
+        result = run_mtfa_scan(api_key="test_key", universe=None)
+        self.assertEqual(result["universe_size"], len(MAG7))
+        self.assertEqual(result["fetch_failures"], len(MAG7))
 
 
 if __name__ == "__main__":

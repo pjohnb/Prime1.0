@@ -3559,6 +3559,19 @@ def _reschedule_all(scheduler, schedule: Dict[str, Any]) -> None:
         if scheduler.get_job("scan_job_deep"):
             scheduler.remove_job("scan_job_deep")
 
+    # WO-PRIME-MTFA-BACKBONE-01-C 3d: MTFA pre-run triggers at fixed ET times.
+    for _h, _m in [(9, 40), (11, 15), (12, 45), (14, 15)]:
+        _prerun_id = f"scan_job_mtfa_prerun_{_h:02d}{_m:02d}"
+        _prerun_trigger = CronTrigger(
+            day_of_week="mon-fri", hour=_h, minute=_m, timezone="America/New_York"
+        )
+        if scheduler.get_job(_prerun_id):
+            scheduler.reschedule_job(_prerun_id, trigger=_prerun_trigger)
+        else:
+            scheduler.add_job(
+                _make_job("mtfa"), trigger=_prerun_trigger, id=_prerun_id, replace_existing=True
+            )
+
 
 def _read_schedule() -> Dict[str, Any]:
     """Read scan schedule settings from ops_config.json."""
@@ -3626,6 +3639,97 @@ def post_scan_schedule():
         return jsonify({"error": str(e)}), 500
 
 
+def _run_sectors_refresh_bg() -> None:
+    """Weekly sectors refresh — runs in-process, called by APScheduler (CIL #35).
+
+    Fetches active US common stocks from Polygon and prunes stale constituents
+    from data/sectors_constituents.json.  State is stored in
+    _sectors_refresh_state for the /api/v1/sectors/refresh/status endpoint.
+    """
+    global _sectors_refresh_state
+    with _sectors_refresh_lock:
+        if _sectors_refresh_state.get("status") == "running":
+            logger.info("Sectors refresh already running — skipping")
+            return
+        _sectors_refresh_state = {
+            "status": "running",
+            "last_run_utc": datetime.utcnow().isoformat(),
+            "last_result": None,
+            "error": None,
+        }
+    try:
+        from prime_config.prime_config import get_config
+        from prime_ops.prime_sectors_refresh import refresh_sectors_constituents
+        cfg = get_config()
+        api_key = cfg.polygon_api_key or ""
+        if not api_key:
+            raise ValueError("polygon_api_key not configured")
+        result = refresh_sectors_constituents(api_key)
+        with _sectors_refresh_lock:
+            _sectors_refresh_state = {
+                "status": "complete",
+                "last_run_utc": datetime.utcnow().isoformat(),
+                "last_result": result,
+                "error": result.get("error"),
+            }
+        logger.info("Sectors refresh complete: kept=%s removed=%s",
+                    result.get("total_kept"), result.get("total_removed"))
+    except Exception as exc:
+        logger.error("Sectors refresh error: %s", exc)
+        with _sectors_refresh_lock:
+            _sectors_refresh_state = {
+                "status": "error",
+                "last_run_utc": datetime.utcnow().isoformat(),
+                "last_result": None,
+                "error": str(exc),
+            }
+
+
+def _run_bar_cache_purge() -> None:
+    """Nightly bar cache purge — runs in-process, called by APScheduler (CIL #38).
+
+    Deletes intraday rows older than 2 session opens and daily rows older than
+    30 days from data/bar_cache.db. Logs deleted row counts.
+    """
+    try:
+        from prime_data.prime_bar_cache import purge_old_bars
+        counts = purge_old_bars()
+        logger.info(
+            "bar_cache_purge_nightly: intraday=%d daily=%d rows deleted",
+            counts.get("intraday", 0), counts.get("daily", 0),
+        )
+    except Exception as exc:
+        logger.error("bar_cache_purge_nightly error: %s", exc)
+
+
+@api_bp.route("/sectors/refresh/status", methods=["GET"])
+def get_sectors_refresh_status():
+    """GET /api/v1/sectors/refresh/status -- sectors refresh job state and metadata (CIL #35)."""
+    from pathlib import Path as _Path
+    meta_path = _Path(__file__).resolve().parent.parent / "data" / "sectors_constituents_meta.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    with _sectors_refresh_lock:
+        state = dict(_sectors_refresh_state)
+    return jsonify({"job_state": state, "metadata": meta}), 200
+
+
+@api_bp.route("/sectors/refresh/trigger", methods=["POST"])
+@require_local_token
+def trigger_sectors_refresh():
+    """POST /api/v1/sectors/refresh/trigger -- manually trigger sectors refresh (CIL #35)."""
+    with _sectors_refresh_lock:
+        if _sectors_refresh_state.get("status") == "running":
+            return jsonify({"error": "refresh already running"}), 409
+    t = threading.Thread(target=_run_sectors_refresh_bg, daemon=True)
+    t.start()
+    return jsonify({"started": True}), 202
+
+
 def init_scheduler() -> Any:
     """Create and start the APScheduler BackgroundScheduler.
 
@@ -3636,12 +3740,27 @@ def init_scheduler() -> Any:
     global _SCHEDULER
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
         scheduler = BackgroundScheduler(timezone="America/New_York")
         schedule = _read_schedule()
         _reschedule_all(scheduler, schedule)
+        # CIL #35: weekly sectors constituent refresh — Sunday 6:00 AM ET
+        scheduler.add_job(
+            _run_sectors_refresh_bg,
+            trigger=CronTrigger(day_of_week="sun", hour=6, minute=0, timezone="America/New_York"),
+            id="sectors_refresh_weekly",
+            replace_existing=True,
+        )
+        # CIL #38: nightly bar cache purge — 20:00 ET daily
+        scheduler.add_job(
+            _run_bar_cache_purge,
+            trigger=CronTrigger(hour=20, minute=0, timezone="America/New_York"),
+            id="bar_cache_purge_nightly",
+            replace_existing=True,
+        )
         scheduler.start()
         _SCHEDULER = scheduler
-        logger.info("APScheduler started — %d scan jobs scheduled", len(scheduler.get_jobs()))
+        logger.info("APScheduler started — %d jobs scheduled", len(scheduler.get_jobs()))
         return scheduler
     except Exception as e:
         logger.warning("APScheduler init failed: %s", e)

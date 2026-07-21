@@ -268,10 +268,46 @@ async function loadScenarios() {
     const filtered = _applyScenarioFilters(_allScenarios);
     _scenUpdateCount(filtered.length, _allScenarios.length);
     if (!_allScenarios.length) {
-      container.innerHTML = `<div style="padding:48px 0;text-align:center;color:var(--text3)">
-        <div style="font-size:15px;margin-bottom:6px">No active scenarios detected.</div>
-        <div style="font-size:12px">Scenarios will appear here automatically after the next scan run.</div>
-      </div>`;
+      container.innerHTML = '<div class="empty-state" style="padding:24px 0;color:var(--text3)">Checking scan state…</div>';
+      try {
+        const today2 = new Date().toISOString().slice(0, 10);
+        const [sigsR, scanR] = await Promise.all([
+          fetch('/api/v1/signals'),
+          fetch('/api/v1/scans/status'),
+        ]);
+        const sigsD2  = sigsR.ok ? await sigsR.json() : {};
+        const scanD2  = scanR.ok ? await scanR.json() : {};
+        const todaySigs  = (sigsD2.signals || []).filter(s => s.scan_ts && s.scan_ts.startsWith(today2));
+        const scanners2  = scanD2.scanners || [];
+        const anyRanToday = scanners2.some(sc => sc.last_run && sc.last_run.startsWith(today2));
+        let innerHtml;
+        if (!anyRanToday) {
+          innerHtml = `<div style="font-size:14px">No scans have run this session. Click Run All to begin scenario detection.</div>`;
+        } else if (todaySigs.length === 0) {
+          innerHtml = `<div style="font-size:14px">Scans completed — no signals produced. Market may be pre-open or scanners may need attention. Check Health tab.</div>`;
+        } else {
+          const psaSigs2  = todaySigs.filter(s => s.strategy === 'PSA');
+          const idxSigs2  = todaySigs.filter(s => s.strategy === 'IDX');
+          const uoaSigs2  = todaySigs.filter(s => s.strategy === 'UOA');
+          const mtfaSigs2 = todaySigs.filter(s => s.strategy === 'MTFA');
+          const psaWatch    = psaSigs2.filter(s => s.status !== 'APPROVED').length;
+          const psaApprv    = psaSigs2.filter(s => s.status === 'APPROVED').length;
+          const idxTierLbl  = idxSigs2.length === 0 ? '0'
+            : (idxSigs2.find(s => s.tier === 'STRONG_LONG' || s.tier === 'STRONG_SHORT') ? 'STRONG' : 'WEAK');
+          const uoaStrongCt  = uoaSigs2.filter(s => s.tier && s.tier.toUpperCase().includes('STRONG')).length;
+          const mtfaStrongCt = mtfaSigs2.filter(s => s.tier && s.tier.toUpperCase().includes('STRONG')).length;
+          const badges = `[PSA: ${psaWatch} WATCH, ${psaApprv} APPROVED] [IDX: ${idxTierLbl}] [UOA: ${uoaStrongCt} STRONG] [MTFA: ${mtfaStrongCt} STRONG]`;
+          innerHtml = `<div style="font-size:14px;margin-bottom:8px">Scans completed — signals present but none at required tier for scenario detection.</div>
+            <div style="font-size:12px;color:var(--text2);margin-bottom:8px">${badges}</div>
+            <div style="font-size:12px">No scenario threshold met. <a href="javascript:void(0)" onclick="openScanSummary()" style="color:var(--accent,#6366f1);text-decoration:underline">Open Scan Summary</a> for full details.</div>`;
+        }
+        container.innerHTML = `<div style="padding:48px 0;text-align:center;color:var(--text3)">${innerHtml}</div>`;
+      } catch (_diagErr) {
+        container.innerHTML = `<div style="padding:48px 0;text-align:center;color:var(--text3)">
+          <div style="font-size:15px;margin-bottom:6px">No active scenarios detected.</div>
+          <div style="font-size:12px">Scenarios will appear here automatically after the next scan run.</div>
+        </div>`;
+      }
       return;
     }
     container.innerHTML = filtered.map(_renderScenarioCard).join('') ||
@@ -853,4 +889,272 @@ function closeScenarioTypes() {
 
 function _scenTypesEscHandler(e) {
   if (e.key === 'Escape') closeScenarioTypes();
+}
+
+// CIL-40: Signal Legend modal
+function openSignalLegend() {
+  document.getElementById('signal-legend-modal').style.display = 'flex';
+  document.addEventListener('keydown', _signalLegendEscHandler);
+}
+
+function closeSignalLegend() {
+  document.getElementById('signal-legend-modal').style.display = 'none';
+  document.removeEventListener('keydown', _signalLegendEscHandler);
+}
+
+function _signalLegendEscHandler(e) {
+  if (e.key === 'Escape') closeSignalLegend();
+}
+
+// WO-PRIME-SCAN-SUMMARY-01: Scan Summary modal
+function evaluateScenarioAchievability(signals) {
+  const A = 'ACHIEVABLE', P = 'PARTIAL', N = 'NOT_MET';
+
+  const idxSigs = signals.filter(s => s.strategy === 'IDX');
+  const psaSigs = signals.filter(s => s.strategy === 'PSA');
+  const uoaSigs = signals.filter(s => s.strategy === 'UOA');
+  const peadSigs = signals.filter(s => s.strategy === 'PEAD');
+  const mtfaSigs = signals.filter(s => s.strategy === 'MTFA');
+  const srsSigs  = signals.filter(s => s.strategy === 'SRS');
+  const mmrSigs  = signals.filter(s => s.strategy === 'MMR');
+
+  const isIdxStrong  = s => s.tier === 'STRONG_LONG' || s.tier === 'STRONG_SHORT';
+  const isTierStrong = s => s.tier && s.tier.toUpperCase().includes('STRONG');
+
+  const idxAny    = idxSigs.length > 0;
+  const idxStrong = idxSigs.some(isIdxStrong);
+  const psaAny    = psaSigs.length > 0;
+  const psaApproved = psaSigs.some(s => s.status === 'APPROVED');
+  const uoaAny    = uoaSigs.length > 0;
+  const uoaStrong = uoaSigs.some(isTierStrong);
+  const peadAny   = peadSigs.length > 0;
+  const peadStrong = peadSigs.some(isTierStrong);
+  const mtfaAny   = mtfaSigs.length > 0;
+  const mtfaStrong = mtfaSigs.some(isTierStrong);
+  const srsAny       = srsSigs.length > 0;
+  const srsRecovering = srsSigs.some(s => s.tier === 'RECOVERING');
+  const mmrAny       = mmrSigs.length > 0;
+  const mmrTranche2  = mmrSigs.some(s => s.tier === 'TRANCHE_2');
+
+  return [
+    // Type 1: IDX STRONG
+    idxStrong ? A : idxAny ? P : N,
+    // Type 2: IDX any + PSA APPROVED
+    (idxAny && psaApproved) ? A : (idxAny || psaAny) ? P : N,
+    // Type 3: IDX any + PSA APPROVED + (UOA STRONG or PEAD STRONG)
+    (idxAny && psaApproved && (uoaStrong || peadStrong)) ? A
+      : (idxAny || psaAny || uoaAny || peadAny) ? P : N,
+    // Type 4: IDX STRONG + PSA APPROVED + (UOA STRONG or PEAD STRONG)
+    (idxStrong && psaApproved && (uoaStrong || peadStrong)) ? A
+      : (idxAny || psaAny || uoaAny || peadAny) ? P : N,
+    // Type 5: any scanner fired
+    signals.length > 0 ? A : N,
+    // Type 6: PSA APPROVED + (UOA STRONG or PEAD STRONG) — no IDX required
+    (psaApproved && (uoaStrong || peadStrong)) ? A
+      : (psaAny || uoaAny || peadAny) ? P : N,
+    // Type 7: SRS RECOVERING + PSA APPROVED
+    (srsRecovering && psaApproved) ? A : (srsAny || psaAny) ? P : N,
+    // Type 8: MMR TRANCHE_2 + PSA APPROVED
+    (mmrTranche2 && psaApproved) ? A : (mmrAny || psaAny) ? P : N,
+    // Type 9: MTFA STRONG + any confirming signal (IDX, UOA, PSA, PEAD)
+    (mtfaStrong && (idxAny || uoaAny || psaAny || peadAny)) ? A
+      : (mtfaAny || idxAny || uoaAny || psaAny || peadAny) ? P : N,
+    // Type 10: IDX any + PSA APPROVED + UOA STRONG + PEAD STRONG
+    (idxAny && psaApproved && uoaStrong && peadStrong) ? A
+      : (idxAny || psaAny || uoaAny || peadAny) ? P : N,
+    // Type 11: always NOT MET (Post-Beta)
+    N,
+  ];
+}
+
+function _renderScanSummaryStatus(el, signals, scanners) {
+  const SCANNERS = ['IDX', 'PSA', 'UOA', 'PEAD', 'MTFA', 'SRS', 'MMR'];
+  const scanMap = {};
+  (scanners || []).forEach(sc => { scanMap[sc.scanner] = sc; });
+
+  el.innerHTML = SCANNERS.map(name => {
+    const sc = scanMap[name] || {};
+    const sigs = signals.filter(s => s.strategy === name);
+    const count = sigs.length;
+    const lastRun = sc.last_run ? sc.last_run.slice(11, 16) : '—';
+
+    let tier = null, tierColor = 'var(--text3)';
+    if (count > 0) {
+      if (name === 'IDX') {
+        const strong = sigs.find(s => s.tier === 'STRONG_LONG' || s.tier === 'STRONG_SHORT');
+        tier = strong ? strong.tier : (sigs[0].tier || 'WEAK');
+        tierColor = strong ? 'var(--green,#22c55e)' : 'var(--yellow,#eab308)';
+      } else if (name === 'PSA') {
+        const approved = sigs.find(s => s.status === 'APPROVED');
+        tier = approved ? 'APPROVED' : 'WATCH';
+        tierColor = approved ? 'var(--green,#22c55e)' : 'var(--yellow,#eab308)';
+      } else {
+        const strong = sigs.find(s => s.tier && s.tier.toUpperCase().includes('STRONG'));
+        tier = strong ? strong.tier : (sigs[0].tier || 'ACTIVE');
+        tierColor = strong ? 'var(--green,#22c55e)' : 'var(--text2)';
+      }
+    }
+
+    return `<div style="background:var(--surface2,#1e2330);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:12px;font-weight:700;color:var(--text);font-family:var(--mono)">${name}</span>
+        <span style="font-size:10px;color:var(--text3)">${lastRun}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:13px;font-weight:700;color:var(--text)">${count}</span>
+        <span style="font-size:10px;color:var(--text3)">signals</span>
+        <span style="font-size:10px;font-weight:600;color:${tierColor};margin-left:auto">${tier || 'NO DATA'}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _renderScanSummaryMatrix(el, signals) {
+  const results = evaluateScenarioAchievability(signals);
+  const A = 'ACHIEVABLE', P = 'PARTIAL';
+
+  const isIdxStrong  = s => s.tier === 'STRONG_LONG' || s.tier === 'STRONG_SHORT';
+  const isTierStrong = s => s.tier && s.tier.toUpperCase().includes('STRONG');
+  const idxSigs  = signals.filter(s => s.strategy === 'IDX');
+  const psaSigs  = signals.filter(s => s.strategy === 'PSA');
+  const uoaSigs  = signals.filter(s => s.strategy === 'UOA');
+  const peadSigs = signals.filter(s => s.strategy === 'PEAD');
+  const mtfaSigs = signals.filter(s => s.strategy === 'MTFA');
+  const srsSigs  = signals.filter(s => s.strategy === 'SRS');
+  const mmrSigs  = signals.filter(s => s.strategy === 'MMR');
+
+  const idxAny     = idxSigs.length > 0;
+  const idxStrong  = idxSigs.some(isIdxStrong);
+  const psaAny     = psaSigs.length > 0;
+  const psaApproved = psaSigs.some(s => s.status === 'APPROVED');
+  const uoaAny    = uoaSigs.length > 0;
+  const uoaStrong = uoaSigs.some(isTierStrong);
+  const peadAny   = peadSigs.length > 0;
+  const peadStrong = peadSigs.some(isTierStrong);
+  const mtfaAny   = mtfaSigs.length > 0;
+  const mtfaStrong = mtfaSigs.some(isTierStrong);
+  const srsAny       = srsSigs.length > 0;
+  const srsRecovering = srsSigs.some(s => s.tier === 'RECOVERING');
+  const mmrAny       = mmrSigs.length > 0;
+  const mmrTranche2  = mmrSigs.some(s => s.tier === 'TRANCHE_2');
+
+  // Per-type column states: [IDX, PSA, UOA/PEAD, MTFA, SRS, MMR]
+  // Values: 'MET' | 'PARTIAL' | 'ABSENT' | 'NOT_REQ'
+  const typeColStates = [
+    // Type 1: IDX STRONG
+    [idxStrong ? 'MET' : idxAny ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 2: IDX any + PSA APPROVED
+    [idxAny ? 'MET' : 'ABSENT', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 3: IDX + PSA APPROVED + UOA/PEAD STRONG
+    [idxAny ? 'MET' : 'ABSENT', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT',
+     (uoaStrong || peadStrong) ? 'MET' : (uoaAny || peadAny) ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 4: IDX STRONG + PSA APPROVED + UOA/PEAD STRONG
+    [idxStrong ? 'MET' : idxAny ? 'PARTIAL' : 'ABSENT', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT',
+     (uoaStrong || peadStrong) ? 'MET' : (uoaAny || peadAny) ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 5: any signal — individual columns N/A
+    ['NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 6: PSA APPROVED + UOA/PEAD STRONG (no IDX)
+    ['NOT_REQ', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT',
+     (uoaStrong || peadStrong) ? 'MET' : (uoaAny || peadAny) ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 7: SRS RECOVERING + PSA APPROVED
+    ['NOT_REQ', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ',
+     srsRecovering ? 'MET' : srsAny ? 'PARTIAL' : 'ABSENT', 'NOT_REQ'],
+    // Type 8: MMR TRANCHE_2 + PSA APPROVED
+    ['NOT_REQ', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ',
+     mmrTranche2 ? 'MET' : mmrAny ? 'PARTIAL' : 'ABSENT'],
+    // Type 9: MTFA STRONG + any confirming signal (IDX, UOA, PSA, PEAD)
+    [idxAny ? 'MET' : 'ABSENT', psaAny ? 'MET' : 'ABSENT',
+     (uoaAny || peadAny) ? 'MET' : 'ABSENT', mtfaStrong ? 'MET' : mtfaAny ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ'],
+    // Type 10: IDX + PSA APPROVED + UOA STRONG + PEAD STRONG
+    [idxAny ? 'MET' : 'ABSENT', psaApproved ? 'MET' : psaAny ? 'PARTIAL' : 'ABSENT',
+     (uoaStrong && peadStrong) ? 'MET' : (uoaAny || peadAny) ? 'PARTIAL' : 'ABSENT', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+    // Type 11: Post-Beta
+    ['NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ', 'NOT_REQ'],
+  ];
+
+  const TYPES = [
+    'IDX Momentum', 'IDX + PSA', 'Triple Confirm', 'Full Conviction',
+    'Any Signal', 'Catalyst Only', 'Sector Phase', 'Metals MR',
+    'MTFA Confirm', 'Ultimate', 'Post-Beta',
+  ];
+
+  const cellIcon = state => {
+    if (state === 'MET')     return '<span style="color:var(--green,#22c55e)">&#10003;</span>';
+    if (state === 'PARTIAL') return '<span style="color:var(--yellow,#eab308)">&#8764;</span>';
+    if (state === 'ABSENT')  return '<span style="color:var(--text3)">&#10007;</span>';
+    return '<span style="color:var(--border)">&#8212;</span>';
+  };
+
+  const convictionCell = status => {
+    if (status === A) return '<span style="font-size:10px;font-weight:700;color:var(--green,#22c55e);letter-spacing:.04em">ACHIEVABLE</span>';
+    if (status === P) return '<span style="font-size:10px;font-weight:700;color:var(--yellow,#eab308);letter-spacing:.04em">PARTIAL</span>';
+    return '<span style="font-size:10px;color:var(--text3);letter-spacing:.04em">NOT MET</span>';
+  };
+
+  const headerCols = ['IDX', 'PSA', 'UOA/PEAD', 'MTFA', 'SRS', 'MMR'];
+  const header = `<thead><tr style="border-bottom:1px solid var(--border)">
+    <th style="padding:6px 8px;text-align:left;color:var(--text3);font-size:11px;font-weight:600;white-space:nowrap">#</th>
+    <th style="padding:6px 8px;text-align:left;color:var(--text3);font-size:11px;font-weight:600;white-space:nowrap">Name</th>
+    ${headerCols.map(c => `<th style="padding:6px 8px;text-align:center;color:var(--text3);font-size:11px;font-weight:600">${c}</th>`).join('')}
+    <th style="padding:6px 8px;text-align:center;color:var(--text3);font-size:11px;font-weight:600">Conviction</th>
+  </tr></thead>`;
+
+  const rows = TYPES.map((name, i) => {
+    const status = results[i];
+    const cols = typeColStates[i];
+    const isPostBeta = i === 10;
+    const leftBorder = status === A ? '3px solid var(--green,#22c55e)'
+      : status === P ? '3px solid var(--yellow,#eab308)' : '3px solid transparent';
+    const opacity = (status === 'NOT_MET') ? 'opacity:0.5;' : '';
+    const nameCell = isPostBeta
+      ? `${name} <span style="font-size:10px;color:var(--text3)">(Post-Beta)</span>`
+      : name;
+    return `<tr style="border-left:${leftBorder};${opacity}border-bottom:1px solid var(--border)">
+      <td style="padding:6px 8px;font-family:var(--mono);font-size:11px;color:var(--text3);white-space:nowrap">${i + 1}</td>
+      <td style="padding:6px 12px 6px 8px;font-size:12px;color:var(--text2);white-space:nowrap">${nameCell}</td>
+      ${cols.map(state => `<td style="padding:6px 8px;text-align:center">${cellIcon(state)}</td>`).join('')}
+      <td style="padding:6px 8px;text-align:center">${convictionCell(status)}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `${header}<tbody>${rows}</tbody>`;
+}
+
+async function openScanSummary() {
+  const modal = document.getElementById('scan-summary-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  document.addEventListener('keydown', _scanSummaryEscHandler);
+
+  const statusEl = document.getElementById('scan-summary-status');
+  const matrixEl = document.getElementById('scan-summary-matrix');
+  if (statusEl) statusEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">Loading...</div>';
+  if (matrixEl) matrixEl.innerHTML = '';
+
+  try {
+    const [sigsResp, scanResp] = await Promise.all([
+      fetch('/api/v1/signals'),
+      fetch('/api/v1/scans/status'),
+    ]);
+    const sigsData = sigsResp.ok ? await sigsResp.json() : {};
+    const scanData = scanResp.ok ? await scanResp.json() : {};
+    const today    = new Date().toISOString().slice(0, 10);
+    const signals  = (sigsData.signals || []).filter(s => s.scan_ts && s.scan_ts.startsWith(today));
+    const scanners = scanData.scanners || [];
+
+    if (statusEl) _renderScanSummaryStatus(statusEl, signals, scanners);
+    if (matrixEl) _renderScanSummaryMatrix(matrixEl, signals);
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<div style="color:var(--red,#ef4444);font-size:12px;padding:8px 0">Failed to load scan data.</div>';
+  }
+}
+
+function closeScanSummary() {
+  const modal = document.getElementById('scan-summary-modal');
+  if (modal) modal.style.display = 'none';
+  document.removeEventListener('keydown', _scanSummaryEscHandler);
+}
+
+function _scanSummaryEscHandler(e) {
+  if (e.key === 'Escape') closeScanSummary();
 }

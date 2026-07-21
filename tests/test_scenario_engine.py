@@ -815,6 +815,26 @@ class TestUnknown(unittest.TestCase):
         self.assertEqual(SCENARIO_TYPES["0"]["name"], "Unknown")
         self.assertEqual(SCENARIO_TYPES["0"]["conviction"], "LOW")
 
+    def test_idx_only_group_emits_no_scenario(self):
+        """Two IDX WEAK signals on the same symbol produce zero scenario cards (not Unknown or Watch)."""
+        s1 = {**_idx("WEAK-LONG", "SPY"), "signal_id": "IDX-SPY-weak-1"}
+        s2 = {**_idx("WEAK-LONG", "SPY"), "signal_id": "IDX-SPY-weak-2"}
+        result = self._detect(s1, s2)
+        self.assertEqual(result, [], "IDX-only constituents must not generate any scenario card")
+
+    def test_single_idx_signal_emits_no_scenario(self):
+        """A single IDX WEAK signal alone produces zero scenario cards (not Watch)."""
+        result = self._detect(_idx("WEAK-LONG", "SPY"))
+        self.assertEqual(result, [], "A lone IDX WEAK signal must not generate any scenario card")
+
+    def test_idx_plus_uoa_different_symbols_emits_watch_for_uoa(self):
+        """IDX WEAK on SPY + UOA on AAPL: SPY IDX-only group suppressed, AAPL UOA emits Watch."""
+        result = self._detect(_idx("WEAK-LONG", "SPY"), _uoa("AAPL", tier="STRONG"))
+        spy_cards = [s for s in result if s["primary_symbol"] == "SPY"]
+        aapl_watch = [s for s in result if s["type_num"] == "5" and s["primary_symbol"] == "AAPL"]
+        self.assertEqual(spy_cards, [], "IDX-only group for SPY must not generate a card")
+        self.assertGreater(len(aapl_watch), 0, "UOA on AAPL should still emit Watch")
+
 
 if __name__ == "__main__":
     unittest.main()

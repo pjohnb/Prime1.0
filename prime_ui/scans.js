@@ -469,10 +469,11 @@ async function loadPsaRejectionPanel() {
     const pctOf = (n) => total > 0 ? (n / total * 100) : 0;
 
     el.innerHTML = `
-      <h3 style="font-size:12px;color:var(--text3);margin-bottom:8px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">
-        PSA Stage 0 Rejection Distribution
-        <span style="color:var(--text3);font-weight:400;font-size:11px;margin-left:8px">${ts}</span>
-      </h3>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <h3 style="font-size:12px;color:var(--text3);margin:0;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase">PSA Stage 0 Breakdown</h3>
+        <span style="color:var(--text3);font-weight:400;font-size:11px">${ts}</span>
+        <button onclick="openAbcdDiagram()" title="A-B-C-D pattern diagram" style="background:transparent;border:1px solid var(--border);color:var(--text3);border-radius:50%;width:18px;height:18px;font-size:10px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;font-family:var(--mono);font-weight:700;line-height:1">?</button>
+      </div>
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px 16px">
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px 16px;margin-bottom:12px;font-family:var(--mono);font-size:12px">
           <div><span style="color:var(--text3)">Universe</span><br><span style="font-size:16px;color:var(--text)">${total}</span></div>
@@ -492,6 +493,21 @@ async function loadPsaRejectionPanel() {
     const el2 = document.getElementById('psa-rejection-panel');
     if (el2) el2.innerHTML = '';
   }
+}
+
+// CIL-44: A-B-C-D diagram modal
+function openAbcdDiagram() {
+  document.getElementById('abcd-diagram-modal').style.display = 'flex';
+  document.addEventListener('keydown', _abcdEscHandler);
+}
+
+function closeAbcdDiagram() {
+  document.getElementById('abcd-diagram-modal').style.display = 'none';
+  document.removeEventListener('keydown', _abcdEscHandler);
+}
+
+function _abcdEscHandler(e) {
+  if (e.key === 'Escape') closeAbcdDiagram();
 }
 
 // ── Tab initialisation ────────────────────────────────────────────────────────

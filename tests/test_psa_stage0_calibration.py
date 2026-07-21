@@ -143,6 +143,7 @@ class TestPSAStage0VolumeAggregation(unittest.TestCase):
         })
 
         with patch("prime_scanners.prime_psa_scanner.fetch_bars", return_value=bars), \
+             patch("prime_scanners.prime_psa_scanner._cache_get_intraday", return_value=None), \
              patch("prime_scanners.prime_psa_scanner.apply_signal_led_psa",
                    side_effect=mock_signal_led) as mock_sla:
             run_psa_scan(universe=["AAPL"], api_key="test_key")
@@ -176,6 +177,7 @@ class TestPSAStage0VolumeAggregation(unittest.TestCase):
         })
 
         with patch("prime_scanners.prime_psa_scanner.fetch_bars", return_value=[]), \
+             patch("prime_scanners.prime_psa_scanner._cache_get_intraday", return_value=None), \
              patch("prime_scanners.prime_psa_scanner.apply_signal_led_psa",
                    side_effect=mock_signal_led):
             run_psa_scan(universe=["AAPL"], api_key="test_key")
