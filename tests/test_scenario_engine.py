@@ -81,6 +81,10 @@ def _mmr(symbol="GLD", tier="TRANCHE_2", direction="LONG", scan_ts=None):
     return _sig("MMR", tier=tier, direction=direction, symbol=symbol, scan_ts=scan_ts)
 
 
+def _mtfa(symbol="AAPL", tier="STRONG", direction="LONG", scan_ts=None):
+    return _sig("MTFA", tier=tier, direction=direction, symbol=symbol, scan_ts=scan_ts)
+
+
 def _types(scenarios):
     return sorted(s["type_num"] for s in scenarios)
 
@@ -329,6 +333,66 @@ class TestType8MetalsMR(unittest.TestCase):
         result = detect_scenarios(signals, now=_now())
         t8 = [s for s in result if s["type_num"] == "8"]
         self.assertEqual(len(t8), 0)
+
+
+class TestType9TimeframeConfluence(unittest.TestCase):
+    """Type 9: MTFA STRONG + any confirming signal (IDX any, UOA/PEAD same symbol, PSA APPROVED).
+
+    WO-PRIME-SCENARIOS-DIAG-01: confirms Beta Day signal combinations that should
+    generate scenario cards but appeared to produce zero cards (observability gap).
+    """
+
+    def test_mtfa_strong_idx_weak_emits_type9(self):
+        # Beta Day 1 scenario: MTFA STRONG + IDX WEAK (no PSA APPROVED) → Type 9
+        signals = [_mtfa("BA"), _idx("WEAK-LONG", "SPY")]
+        result = detect_scenarios(signals, now=_now())
+        t9 = [s for s in result if s["type_num"] == "9"]
+        self.assertGreater(len(t9), 0)
+        self.assertEqual(t9[0]["primary_symbol"], "BA")
+        self.assertEqual(t9[0]["direction"], "LONG")
+
+    def test_mtfa_strong_alone_emits_type5_not_type9(self):
+        # MTFA STRONG without any confirmer → Type 5 Watch only, no Type 9
+        signals = [_mtfa("BA")]
+        result = detect_scenarios(signals, now=_now())
+        t9 = [s for s in result if s["type_num"] == "9"]
+        t5 = [s for s in result if s["type_num"] == "5"]
+        self.assertEqual(len(t9), 0, "MTFA STRONG alone must not produce Type 9")
+        self.assertGreater(len(t5), 0, "MTFA STRONG alone must produce Type 5 Watch")
+
+    def test_mtfa_strong_uoa_same_symbol_emits_type9(self):
+        signals = [_mtfa("NVDA"), _uoa("NVDA")]
+        result = detect_scenarios(signals, now=_now())
+        t9 = [s for s in result if s["type_num"] == "9"]
+        self.assertGreater(len(t9), 0)
+        self.assertEqual(t9[0]["primary_symbol"], "NVDA")
+
+    def test_mtfa_strong_idx_weak_multiple_symbols(self):
+        # 3 MTFA STRONG symbols + 1 IDX WEAK → 3 Type 9 cards (one per MTFA symbol)
+        signals = [
+            _mtfa("BA"), _mtfa("BX"), _mtfa("CCL"),
+            _idx("WEAK-LONG", "SPY"),
+        ]
+        result = detect_scenarios(signals, now=_now())
+        t9 = [s for s in result if s["type_num"] == "9"]
+        self.assertEqual(len(t9), 3)
+
+    def test_uoa_strong_idx_weak_no_psa_no_combined_type(self):
+        # Beta Day 1: UOA STRONG + IDX WEAK without PSA APPROVED → no Type 2/3/4/9
+        # UOA gets Type 5 Watch; IDX-only is skipped (sector-level, no stock signal)
+        signals = [_uoa("NVDA"), _idx("WEAK-LONG", "SPY")]
+        result = detect_scenarios(signals, now=_now())
+        higher = [s for s in result if s["type_num"] in ("2", "3", "4", "9")]
+        t5 = [s for s in result if s["type_num"] == "5"]
+        self.assertEqual(len(higher), 0, "No higher type without PSA APPROVED")
+        uoa_t5 = [s for s in t5 if s["primary_symbol"] == "NVDA"]
+        self.assertGreater(len(uoa_t5), 0, "UOA STRONG without confirmer gets Type 5 Watch")
+
+    def test_type9_not_emitted_when_mtfa_weak(self):
+        signals = [_mtfa("BA", tier="WEAK"), _idx("WEAK-LONG", "SPY")]
+        result = detect_scenarios(signals, now=_now())
+        t9 = [s for s in result if s["type_num"] == "9"]
+        self.assertEqual(len(t9), 0, "MTFA WEAK does not qualify for Type 9")
 
 
 # ---------------------------------------------------------------------------

@@ -2796,17 +2796,39 @@ def _auto_detect_scenarios() -> None:
     Called at the end of the parallel scan pipeline and after targeted MTFA runs
     so the Scenarios tab can poll /api/v1/scenarios/status and trigger an instant
     UI refresh without waiting for the 60-second idle poll.
+
+    WO-PRIME-SCENARIOS-DIAG-01: writes start/finish to the scan log alongside
+    Bridge-1/Bridge-2 entries so the full pipeline outcome is visible to the user.
     """
     global _last_detection_ts
+    scan_log = _get_scan_log_path()
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         from prime_analytics.prime_signals_db import get_signals as _gs
         from prime_scenarios.prime_scenario_engine import run_detection as _rd
         approved = [s for s in _gs(limit=1000) if s.get("status") == "APPROVED"]
-        _rd(approved)
+        result = _rd(approved)
         _last_detection_ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        logger.info("Auto scenario detection complete: %d APPROVED signals processed", len(approved))
+        n_detected = result.get("scenarios_detected", 0)
+        n_inserted = result.get("scenarios_inserted", 0)
+        logger.info(
+            "Auto scenario detection complete: %d APPROVED signals → %d scenarios (%d new)",
+            len(approved), n_detected, n_inserted,
+        )
+        with open(scan_log, "a", encoding="utf-8") as lf:
+            lf.write(f"--- {ts} SCENARIO-DETECTION ---\n")
+            lf.write(
+                f"Scenario detection: {len(approved)} approved signals → "
+                f"{n_detected} scenarios detected, {n_inserted} new\n"
+            )
     except Exception as exc:
         logger.error("Auto scenario detection failed: %s", exc)
+        try:
+            with open(scan_log, "a", encoding="utf-8") as lf:
+                lf.write(f"--- {ts} SCENARIO-DETECTION ERROR ---\n")
+                lf.write(f"{exc}\n")
+        except Exception:
+            pass
 
 
 def _run_targeted_mtfa(symbols: List[str]) -> None:
