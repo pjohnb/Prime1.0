@@ -145,6 +145,19 @@ class TestStaleness(unittest.TestCase):
                 f"{strategy} should be VETOED for yesterday signal"
             )
 
+    def test_machine_local_timestamp_within_window_is_fresh(self):
+        """now=None uses datetime.now() — signal 30 min ago in machine-local time must be FRESH.
+
+        WO-PRIME-BACKEND-FIXES-01 Item B: on a machine not in ET (e.g. MDT = UTC-7),
+        scan_ts is stored as naive machine-local. Using et_ref as age reference inflates
+        age by ~3 hours and vetoes fresh signals. The fix uses datetime.now() when now=None
+        so the age reference matches the scan_ts timezone.
+        """
+        scan_ts = (datetime.now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        sig = self._sig_ts("IDX", scan_ts)
+        # IDX window = 60 min; 30 min ago machine-local must always be FRESH
+        self.assertEqual(get_signal_staleness(sig, now=None), "FRESH")
+
 
 # ---------------------------------------------------------------------------
 # Type Detection Tests
@@ -393,6 +406,15 @@ class TestType9TimeframeConfluence(unittest.TestCase):
         result = detect_scenarios(signals, now=_now())
         t9 = [s for s in result if s["type_num"] == "9"]
         self.assertEqual(len(t9), 0, "MTFA WEAK does not qualify for Type 9")
+
+    def test_mtfa_strong_psa_approved_emits_type9(self):
+        """MTFA STRONG + PSA APPROVED (no IDX) → Type 9 on the PSA symbol."""
+        signals = [_mtfa("NVDA"), _psa("NVDA")]
+        result = detect_scenarios(signals, now=_now())
+        t9 = [s for s in result if s["type_num"] == "9"]
+        self.assertGreater(len(t9), 0, "MTFA STRONG + PSA APPROVED must emit Type 9")
+        self.assertEqual(t9[0]["primary_symbol"], "NVDA")
+        self.assertEqual(t9[0]["direction"], "LONG")
 
 
 # ---------------------------------------------------------------------------

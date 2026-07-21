@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup, upsert_signal_by_session
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ def bridge_psa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
             "tier": approval,
             "direction": (sig.get("direction") or "LONG").strip().upper(),
             "status": "APPROVED",
-            "trigger_source": (sig.get("trigger_source") or "PSA_ONLY").strip(),
+            "trigger_source": (lambda t: t if t and t != "NONE" else "PSA_ONLY")((sig.get("trigger_source") or "").strip()),
             "factors": {
                 "momentum_pct": _to_float(sig.get("momentum_pct"), None),
                 "volume_pct": _to_float(sig.get("volume_pct"), None),
@@ -385,31 +385,40 @@ def bridge_mmr_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
 
 
 def bridge_srs_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> int:
-    """SRS scan JSON. Approved = per-sector phase RECOVERING (LONG candidates)."""
+    """SRS scan JSON. Approved = per-sector phase RECOVERING (LONG candidates).
+
+    Uses upsert_signal_by_session() so repeated SRS runs on the same calendar day
+    update the existing row rather than creating duplicates (same fix as IDX/PEAD).
+    """
     count = 0
     scan_ts = (data.get("scan_time") or "").strip()
     for sector_name, sec in (data.get("sectors") or {}).items():
         phase = (sec.get("phase") or "").strip().upper()
         if phase not in SRS_APPROVED_PHASES:
             continue
+        symbol = (sec.get("etf") or "").strip()
+        if not symbol:
+            continue
         metrics = sec.get("metrics") or {}
-        signal = {
-            "symbol": (sec.get("etf") or "").strip(),
-            "strategy": "SRS",
-            "scan_ts": scan_ts,
-            "entry_price": _to_float(metrics.get("close")),
-            "score": _to_float(metrics.get("chg_2d_pct")),
-            "tier": phase,
-            "direction": "LONG",
-            "status": "APPROVED",
-            "sector": sector_name,
-            "factors": {
-                "phase": phase,
-                "chg_5d_pct": metrics.get("chg_5d_pct"),
-                "chg_2d_pct": metrics.get("chg_2d_pct"),
-            },
-        }
-        if signal["symbol"] and _insert(signal, db_path):
+        factors = json.dumps({
+            "phase": phase,
+            "chg_5d_pct": metrics.get("chg_5d_pct"),
+            "chg_2d_pct": metrics.get("chg_2d_pct"),
+        })
+        sid = upsert_signal_by_session(
+            symbol=symbol,
+            strategy="SRS",
+            scan_ts=scan_ts,
+            entry_price=_to_float(metrics.get("close")),
+            score=_to_float(metrics.get("chg_2d_pct")),
+            sector=sector_name,
+            tier=phase,
+            direction="LONG",
+            status="APPROVED",
+            factors=factors,
+            db_path=db_path,
+        )
+        if sid:
             count += 1
     return count
 

@@ -138,7 +138,9 @@ def get_signal_staleness(
     A signal is eligible only if produced within its scanner's recency window.
     Outside the window → VETOED. PEAD no longer exempt; date-boundary applies to all.
     Session boundary is ET midnight (America/New_York) — handles EST/EDT automatically.
-    Naive `now` is treated as UTC then converted to ET.
+    Naive `now` is treated as UTC then converted to ET (for the session boundary only).
+    Age is computed against machine local time (datetime.now()) when now=None, since
+    scan_ts values are stored as naive machine-local timestamps by the scanners.
     """
     windows = recency_windows if recency_windows is not None else _RECENCY_WINDOWS
     strategy = signal.get("strategy", "")
@@ -155,8 +157,12 @@ def get_signal_staleness(
         return "VETOED"
 
     # Recency gate: signal outside scanner's window → VETOED (silence = retraction)
+    # Use machine local time when now=None — scan_ts is stored as naive machine-local
+    # by all scanners. et_ref is ET-converted and can differ from local time by hours
+    # on machines not in ET, creating a systematic age inflation that vetoes fresh signals.
     window = windows.get(strategy, timedelta(minutes=120))
-    age = et_ref - scan_ts
+    age_ref = datetime.now() if now is None else et_ref
+    age = age_ref - scan_ts
     if age > window:
         return "VETOED"
 
