@@ -270,19 +270,20 @@ async function loadScenarios() {
     if (!_allScenarios.length) {
       container.innerHTML = '<div class="empty-state" style="padding:24px 0;color:var(--text3)">Checking scan state…</div>';
       try {
-        const today2 = new Date().toISOString().slice(0, 10);
+        const todayET2 = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const _toETDate = ts => { const d = _parseUtc(ts); return d ? d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) : null; };
         const [sigsR, scanR] = await Promise.all([
           fetch('/api/v1/signals'),
           fetch('/api/v1/scans/status'),
         ]);
         const sigsD2  = sigsR.ok ? await sigsR.json() : {};
         const scanD2  = scanR.ok ? await scanR.json() : {};
-        const todaySigs  = (sigsD2.signals || []).filter(s => s.scan_ts && s.scan_ts.startsWith(today2));
+        const todaySigs  = (sigsD2.signals || []).filter(s => s.scan_ts && _toETDate(s.scan_ts) === todayET2);
         const scanners2  = scanD2.scanners || [];
-        const anyRanToday = scanners2.some(sc => sc.last_run && sc.last_run.startsWith(today2));
+        const anyRanToday = scanners2.some(sc => sc.last_run && _toETDate(sc.last_run) === todayET2);
         let innerHtml;
         if (!anyRanToday) {
-          innerHtml = `<div style="font-size:14px">No scans have run this session. Click Run All to begin scenario detection.</div>`;
+          innerHtml = `<div style="font-size:14px">No scans have run today. Click Run All to begin scenario detection.</div>`;
         } else if (todaySigs.length === 0) {
           innerHtml = `<div style="font-size:14px">Scans completed — no signals produced. Market may be pre-open or scanners may need attention. Check Health tab.</div>`;
         } else {
@@ -454,10 +455,15 @@ function openScenarioExecute(scenarioId) {
   document.getElementById('scen-exec-dir').innerHTML      = _scDirTag(dir);
   document.getElementById('scen-exec-price').textContent  = ep ? '$' + Number(ep).toFixed(2) : '--';
 
+  // WO-PRIME-EXECUTE-STOP-01: default Stop % by conviction tier.
+  // Tighter stop for higher conviction (less tolerance for adverse move).
+  const _STOP_DEFAULTS = { 'HIGHEST': '2', 'HIGH': '3', 'LOW': '5' };
+  const defaultStopPct = _STOP_DEFAULTS[sc.conviction] || '3';
+
   document.getElementById('scen-exec-budget').value     = defaultBudget;
   document.getElementById('scen-exec-account').value    = '';
   document.getElementById('scen-exec-stop-type').value  = 'TRAILING';
-  document.getElementById('scen-exec-stop-pct').value   = '3';
+  document.getElementById('scen-exec-stop-pct').value   = defaultStopPct;
 
   // Rollover IRA cannot hold short positions.
   const iraOpt = document.getElementById('scen-exec-ira-opt');
