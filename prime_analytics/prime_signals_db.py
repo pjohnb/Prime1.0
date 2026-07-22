@@ -201,12 +201,13 @@ def upsert_signal_by_session(
     guidance_flag: Optional[str] = None,
     finnhub_guidance_available: bool = False,
     db_path: Optional[Path] = None,
-) -> str:
+) -> Optional[str]:
     """Upsert a signal keyed on (symbol, strategy, session date).
 
     If a row for this symbol+strategy already exists for the calendar date
-    of scan_ts, UPDATE it in place and return its signal_id.  If no such
-    row exists, INSERT one via insert_signal_dedup() and return the new id.
+    of scan_ts, UPDATE it in place and return None (matching insert_signal_dedup's
+    "not a new row" contract). If no such row exists, INSERT one via
+    insert_signal_dedup() and return the new signal_id.
 
     Use instead of insert_signal_dedup() for scanners (e.g. IDX) that run
     more than once per session and must produce exactly one row per symbol
@@ -234,7 +235,7 @@ def upsert_signal_by_session(
                  existing_id),
             )
             conn.commit()
-            return existing_id
+            return None
 
     sid = insert_signal_dedup(
         symbol=symbol,

@@ -433,9 +433,15 @@ def persist_uoa_signals(
     insert_signal_dedup's deterministic signal_id (strategy|symbol|scan_ts), so
     re-running a scan with the same scan_ts never creates duplicate rows.
 
+    scan_ts is normalized to isoformat() so the hash matches bridge_uoa_result
+    which reads "scan_time" from the JSON result (AUDIT-021).
+
     Returns the number of new rows inserted (duplicates skipped).
     """
     from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+
+    # AUDIT-021: normalize to isoformat so signal_id matches bridge hash.
+    scan_ts = scan_ts.replace(" ", "T")
 
     init_signals_table(db_path)
     inserted = 0
@@ -545,7 +551,7 @@ def run_uoa_scan(
     # CIL-046: persist approved signals directly to prime_signals (bypass bridge).
     try:
         persisted = persist_uoa_signals(
-            signals, scan_time.strftime("%Y-%m-%d %H:%M:%S")
+            signals, scan_time.isoformat()
         )
         logger.info("UOA: %d signal(s) persisted to prime_signals", persisted)
     except Exception as e:

@@ -79,6 +79,33 @@ def _insert(signal: Dict[str, Any], db_path: Optional[Path]) -> bool:
     return result is not None
 
 
+def _upsert(signal: Dict[str, Any], db_path: Optional[Path]) -> bool:
+    """Upsert one canonical signal dict keyed on (symbol, strategy, session date).
+
+    One row per symbol per calendar day regardless of how many times the scanner
+    runs. Use for PEAD/MTFA/MMR/PSA which run multiple times per session
+    (AUDIT-022 to AUDIT-025).
+    """
+    sid = upsert_signal_by_session(
+        symbol=signal["symbol"],
+        strategy=signal["strategy"],
+        scan_ts=signal["scan_ts"],
+        entry_price=signal.get("entry_price") or 0.0,
+        score=signal.get("score") or 0.0,
+        sector=signal.get("sector", "Unknown"),
+        tier=signal.get("tier", ""),
+        status=signal.get("status", "APPROVED"),
+        direction=signal.get("direction", "LONG"),
+        factors=json.dumps(signal.get("factors", {})),
+        instrument_type=signal.get("instrument_type", INSTRUMENT_TYPE),
+        trigger_source=signal.get("trigger_source"),
+        guidance_flag=signal.get("guidance_flag"),
+        finnhub_guidance_available=bool(signal.get("finnhub_guidance_available", False)),
+        db_path=db_path,
+    )
+    return sid is not None
+
+
 # Sprint 25 Item 4: guidance_flag tier adjustment table.
 # Maps (guidance_flag, direction) → adjusted tier.
 # None means: leave tier unchanged (BEAT_HOLD/UNKNOWN for LONG, UNKNOWN for SHORT).
@@ -249,7 +276,8 @@ def bridge_psa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
                 "dk_status": sig.get("dk_status"),
             },
         }
-        if _insert(signal, db_path):
+        # AUDIT-025: upsert so 4 PSA runs per day collapse to one row per symbol.
+        if _upsert(signal, db_path):
             count += 1
     return count
 
@@ -347,7 +375,8 @@ def bridge_pead_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> 
             },
         }
         signal = _apply_guidance_tier(signal)
-        if signal["symbol"] and _insert(signal, db_path):
+        # AUDIT-022: upsert so repeated PEAD runs collapse to one row per symbol per day.
+        if signal["symbol"] and _upsert(signal, db_path):
             count += 1
     return count
 
@@ -379,7 +408,8 @@ def bridge_mmr_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
                 "pct_from_sma": _to_float(row.get("pct_from_sma"), None),
             },
         }
-        if signal["symbol"] and _insert(signal, db_path):
+        # AUDIT-024: upsert so two MMR runs per day collapse to one row per symbol.
+        if signal["symbol"] and _upsert(signal, db_path):
             count += 1
     return count
 
@@ -453,7 +483,8 @@ def bridge_mtfa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> 
                 "near_session_low": sig.get("near_session_low"),
             },
         }
-        if signal["symbol"] and _insert(signal, db_path):
+        # AUDIT-023: upsert so 4 MTFA runs per day collapse to one row per symbol.
+        if signal["symbol"] and _upsert(signal, db_path):
             count += 1
     return count
 

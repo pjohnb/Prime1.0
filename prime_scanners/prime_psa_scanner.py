@@ -787,14 +787,27 @@ def run_psa_scan(
         except Exception:
             universe = list(DEFAULT_UNIVERSE)
     if thresholds is None:
+        # AUDIT-011: fall back to ops_config calibrated values, not module constants.
+        _cfg = get_config()
         thresholds = {
-            "momentum": DEFAULT_MOMENTUM_THRESHOLD,
-            "volume": DEFAULT_VOLUME_THRESHOLD,
-            "volatility": DEFAULT_VOLATILITY_THRESHOLD,
+            "momentum": _cfg.ops.psa_stage1_momentum,
+            "volume": _cfg.ops.psa_stage1_volume,
+            "volatility": _cfg.ops.psa_stage1_volatility,
         }
+        bc_max_drawdown = _cfg.ops.psa_stage1_bc_drawdown
+        cd_max_drawdown = _cfg.ops.psa_stage1_cd_drawdown
 
     total_bars = baseline_periods + long_periods + short_periods
 
+    logger.info(
+        "PSA Stage 1 thresholds: momentum=%.1f, volume=%.2f, volatility=%.2f, "
+        "bc_dd=%.2f, cd_dd=%.2f",
+        thresholds.get("momentum", 0),
+        thresholds.get("volume", 0),
+        thresholds.get("volatility", 0),
+        bc_max_drawdown,
+        cd_max_drawdown,
+    )
     logger.info(
         "PSA SCAN -- %s  universe=%d  bars=%d (%s)  thresholds m=%.0f v=%.0f vl=%.0f",
         scan_time.strftime("%Y-%m-%d %H:%M ET"),

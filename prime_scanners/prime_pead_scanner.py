@@ -837,8 +837,10 @@ def run_pead_scan(
 
     # CIL-046/047: persist approved signals directly to prime_signals (bypass bridge).
     try:
+        # AUDIT-022: isoformat matches the "scan_time" written into the JSON
+        # result below, so scanner-direct and bridge writes agree on scan_ts.
         persisted = persist_pead_signals(
-            signals, scan_time.strftime("%Y-%m-%d %H:%M:%S")
+            signals, scan_time.isoformat()
         )
         logger.info("PEAD: %d signal(s) persisted to prime_signals", persisted)
     except Exception as e:

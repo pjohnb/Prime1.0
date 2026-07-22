@@ -138,6 +138,69 @@ class TestDatabase(unittest.TestCase):
         self.assertTrue(table_exists("prime_trade_log", db_path=tmp))
 
 
+class TestConfigValidationWarnings(unittest.TestCase):
+    """AUDIT-010 — PSA momentum gate warning emitted when momentum=0."""
+
+    def _make_configs(self, tmp: Path, momentum_val: float):
+        cfg = tmp / "config.json"
+        ops = tmp / "ops_config.json"
+        cfg.write_text(json.dumps({
+            "polygon_api_key": "x",
+            "finnhub_api_key": "y",
+            "tradestation": {},
+            "schwab_snapshot": {},
+            "execution": {},
+            "risk_management": {},
+        }))
+        ops.write_text(json.dumps({
+            "scan_schedule": "TBD",
+            "notification_channels": "TBD",
+            "health_check_interval": "TBD",
+            "psa_stage1_momentum": momentum_val,
+        }))
+        return cfg, ops
+
+    def test_momentum_zero_logs_warning(self):
+        import logging
+        import tempfile
+        from prime_config.prime_config import load_config
+
+        tmp = Path(tempfile.mkdtemp())
+        cfg_path, ops_path = self._make_configs(tmp, 0)
+        with self.assertLogs("prime_config.prime_config", level="WARNING") as cm:
+            load_config(config_path=cfg_path, ops_config_path=ops_path)
+        self.assertTrue(
+            any("momentum" in m.lower() and "disabled" in m.lower() for m in cm.output),
+            f"Expected momentum-disabled WARNING, got: {cm.output}",
+        )
+
+    def test_momentum_nonzero_no_momentum_warning(self):
+        import logging
+        import tempfile
+        from prime_config.prime_config import load_config
+
+        tmp = Path(tempfile.mkdtemp())
+        cfg_path, ops_path = self._make_configs(tmp, 55.0)
+
+        captured = []
+
+        class _Cap(logging.Handler):
+            def emit(self, record):
+                captured.append(record.getMessage())
+
+        handler = _Cap()
+        handler.setLevel(logging.WARNING)
+        log = logging.getLogger("prime_config.prime_config")
+        log.addHandler(handler)
+        try:
+            load_config(config_path=cfg_path, ops_config_path=ops_path)
+        finally:
+            log.removeHandler(handler)
+
+        momentum_warnings = [m for m in captured if "momentum" in m.lower() and "disabled" in m.lower()]
+        self.assertEqual(momentum_warnings, [], f"Unexpected momentum warning: {momentum_warnings}")
+
+
 class TestGitIgnore(unittest.TestCase):
     """AC 0.6 — .gitignore excludes config.json and ops_config.json."""
 

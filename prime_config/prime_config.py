@@ -348,6 +348,13 @@ def load_config(
         ops=_build_dataclass(OpsConfig, ops_raw),
     )
 
+    # AUDIT-010: momentum=0 disables the gate silently — make it visible at startup.
+    if cfg.ops.psa_stage1_momentum == 0:
+        logger.warning(
+            "PSA momentum gate is disabled (momentum=0) — all symbols pass "
+            "momentum check unconditionally"
+        )
+
     return cfg
 
 

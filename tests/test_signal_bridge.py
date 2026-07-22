@@ -382,5 +382,167 @@ class TestIngestLatest(_BridgeTestBase):
         self.assertEqual(len(self._signals()), 6)
 
 
+class TestUOADedup(_BridgeTestBase):
+    """AUDIT-021 — UOA scan_ts format normalization produces one row per run."""
+
+    SCAN_TS = "2026-07-22T10:30:00.123456"
+    UOA_DATA = {
+        "scan_time": "2026-07-22T10:30:00.123456",
+        "signals": [
+            {"symbol": "UNH", "group": "Top50", "tier": "STRONG", "sizzle_index": 50.0,
+             "direction": "LONG", "price_at_scan": 580.0,
+             "call_put_ratio": 1.5, "total_volume": 100000},
+        ],
+    }
+
+    def test_bridge_then_bridge_same_ts_one_row(self):
+        bridge.bridge_uoa_result(self.UOA_DATA, db_path=self.db)
+        bridge.bridge_uoa_result(self.UOA_DATA, db_path=self.db)
+        sigs = self._signals(strategy="UOA")
+        self.assertEqual(len(sigs), 1, "Second bridge_uoa_result call must not insert duplicate")
+
+    def test_scanner_persist_then_bridge_one_row(self):
+        from prime_scanners.prime_uoa_scanner import persist_uoa_signals
+        scanner_signals = [
+            {"symbol": "UNH", "tier": "STRONG", "sizzle_index": 50.0,
+             "direction": "LONG", "price_at_scan": 580.0,
+             "group": "Top50", "call_put_ratio": 1.5, "total_volume": 100000},
+        ]
+        persist_uoa_signals(scanner_signals, self.SCAN_TS, db_path=self.db)
+        # Bridge reads the same scan_time from JSON (isoformat) — must not create second row.
+        bridge.bridge_uoa_result(self.UOA_DATA, db_path=self.db)
+        sigs = self._signals(strategy="UOA")
+        self.assertEqual(len(sigs), 1, "persist then bridge_uoa_result must produce one row")
+
+    def test_different_day_new_row(self):
+        def _data(scan_time):
+            return {**self.UOA_DATA, "scan_time": scan_time}
+
+        bridge.bridge_uoa_result(_data("2026-07-21T10:30:00.123456"), db_path=self.db)
+        bridge.bridge_uoa_result(_data("2026-07-22T10:30:00.123456"), db_path=self.db)
+        sigs = self._signals(strategy="UOA")
+        self.assertEqual(len(sigs), 2, "Different calendar dates must produce separate rows")
+
+
+class TestPEADDedup(_BridgeTestBase):
+    """AUDIT-022 — bridge_pead_result collapses to one row per symbol per day."""
+
+    def _pead_data(self, scan_time: str):
+        return {
+            "scan_time": scan_time,
+            "signals": [
+                {"symbol": "NVDA", "score": 72.0, "direction": "LONG", "approved": True,
+                 "guidance_flag": "BEAT_RAISE", "finnhub_guidance_available": True,
+                 "price_at_scan": 880.5, "surprise_pct": 15.0, "price_change_pct": 3.2,
+                 "days_since_earnings": 1, "earnings_date": "2026-07-21"},
+            ],
+        }
+
+    def test_two_runs_same_day_one_row(self):
+        bridge.bridge_pead_result(self._pead_data("2026-07-22T09:30:00"), db_path=self.db)
+        bridge.bridge_pead_result(self._pead_data("2026-07-22T12:00:00"), db_path=self.db)
+        sigs = self._signals(strategy="PEAD")
+        self.assertEqual(len(sigs), 1, "Two PEAD runs same day must produce one row")
+
+    def test_second_run_updates_scan_ts(self):
+        bridge.bridge_pead_result(self._pead_data("2026-07-22T09:30:00"), db_path=self.db)
+        bridge.bridge_pead_result(self._pead_data("2026-07-22T12:00:00"), db_path=self.db)
+        sig = self._signals(strategy="PEAD")[0]
+        self.assertEqual(sig["scan_ts"], "2026-07-22T12:00:00", "scan_ts must reflect the later run")
+
+    def test_different_day_new_row(self):
+        bridge.bridge_pead_result(self._pead_data("2026-07-21T09:30:00"), db_path=self.db)
+        bridge.bridge_pead_result(self._pead_data("2026-07-22T09:30:00"), db_path=self.db)
+        sigs = self._signals(strategy="PEAD")
+        self.assertEqual(len(sigs), 2, "Different calendar dates must produce separate rows")
+
+
+class TestMTFADedup(_BridgeTestBase):
+    """AUDIT-023 — bridge_mtfa_result collapses to one row per symbol per day."""
+
+    def _mtfa_data(self, scan_time: str):
+        return {
+            "scan_time": scan_time,
+            "signals": [
+                {"symbol": "AAPL", "tier": "STRONG", "direction": "LONG",
+                 "entry_price": 210.0, "score": 7.5, "scan_ts": scan_time,
+                 "intraday_trend": "UP", "weekly_trend": "UP", "annual_trend": "UP",
+                 "aligned_count": 3, "near_52w_high": False, "near_52w_low": False,
+                 "near_session_high": False, "near_session_low": False},
+            ],
+        }
+
+    def test_four_runs_same_day_one_row(self):
+        for ts in ["2026-07-22T09:30:00", "2026-07-22T11:00:00",
+                   "2026-07-22T13:00:00", "2026-07-22T15:00:00"]:
+            bridge.bridge_mtfa_result(self._mtfa_data(ts), db_path=self.db)
+        sigs = self._signals(strategy="MTFA")
+        self.assertEqual(len(sigs), 1, "4 MTFA runs same day must produce one row")
+
+    def test_second_run_updates_scan_ts(self):
+        bridge.bridge_mtfa_result(self._mtfa_data("2026-07-22T09:30:00"), db_path=self.db)
+        bridge.bridge_mtfa_result(self._mtfa_data("2026-07-22T15:00:00"), db_path=self.db)
+        sig = self._signals(strategy="MTFA")[0]
+        self.assertEqual(sig["scan_ts"], "2026-07-22T15:00:00")
+
+
+class TestMMRDedup(_BridgeTestBase):
+    """AUDIT-024 — bridge_mmr_rows collapses to one row per symbol per day."""
+
+    def _mmr_rows(self, scan_ts: str):
+        return [
+            {"symbol": "ISRG", "price": "400.0", "tranche": "TRANCHE_1",
+             "confidence": "HIGH", "rsi": "35.0", "pct_from_sma": "-5.0",
+             "vol_surge_mult": "2.1", "scan_ts": scan_ts},
+        ]
+
+    def test_two_runs_same_day_one_row(self):
+        bridge.bridge_mmr_rows(self._mmr_rows("2026-07-22T09:30:00"), db_path=self.db)
+        bridge.bridge_mmr_rows(self._mmr_rows("2026-07-22T14:00:00"), db_path=self.db)
+        sigs = self._signals(strategy="MMR")
+        self.assertEqual(len(sigs), 1, "Two MMR runs same day must produce one row")
+
+    def test_second_run_updates_scan_ts(self):
+        bridge.bridge_mmr_rows(self._mmr_rows("2026-07-22T09:30:00"), db_path=self.db)
+        bridge.bridge_mmr_rows(self._mmr_rows("2026-07-22T14:00:00"), db_path=self.db)
+        sig = self._signals(strategy="MMR")[0]
+        self.assertEqual(sig["scan_ts"], "2026-07-22T14:00:00")
+
+
+class TestPSADedup(_BridgeTestBase):
+    """AUDIT-025 — bridge_psa_result collapses to one row per symbol per day."""
+
+    def _psa_data(self, scan_time: str):
+        return {
+            "scan_time": scan_time,
+            "signals": [
+                {"symbol": "XLK", "price_at_scan": 220.0, "direction": "LONG",
+                 "score": 8.0, "momentum_pct": 60.0, "volume_pct": 55.0,
+                 "volatility_pct": 40.0, "patterns": ["higher_highs"],
+                 "trigger_source": "PSA_ONLY", "approval_status": "APPROVED",
+                 "dk_status": "NEUTRAL"},
+            ],
+        }
+
+    def test_four_runs_same_day_one_row(self):
+        for ts in ["2026-07-22T09:30:00", "2026-07-22T11:00:00",
+                   "2026-07-22T13:00:00", "2026-07-22T15:00:00"]:
+            bridge.bridge_psa_result(self._psa_data(ts), db_path=self.db)
+        sigs = self._signals(strategy="PSA")
+        self.assertEqual(len(sigs), 1, "4 PSA runs same day must produce one row")
+
+    def test_second_run_updates_scan_ts(self):
+        bridge.bridge_psa_result(self._psa_data("2026-07-22T09:30:00"), db_path=self.db)
+        bridge.bridge_psa_result(self._psa_data("2026-07-22T15:00:00"), db_path=self.db)
+        sig = self._signals(strategy="PSA")[0]
+        self.assertEqual(sig["scan_ts"], "2026-07-22T15:00:00")
+
+    def test_different_day_new_row(self):
+        bridge.bridge_psa_result(self._psa_data("2026-07-21T09:30:00"), db_path=self.db)
+        bridge.bridge_psa_result(self._psa_data("2026-07-22T09:30:00"), db_path=self.db)
+        sigs = self._signals(strategy="PSA")
+        self.assertEqual(len(sigs), 2, "Different calendar dates must produce separate rows")
+
+
 if __name__ == "__main__":
     unittest.main()

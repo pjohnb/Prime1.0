@@ -236,5 +236,129 @@ class TestModuleInterface(unittest.TestCase):
         self.assertNotIn("import sqlite3", source)
 
 
+class TestPSAThresholdWireup(unittest.TestCase):
+    """AUDIT-011 — run_psa_scan uses ops_config values when thresholds=None."""
+
+    def _mock_ops(self, momentum=33.0, volume=1.5, volatility=8.0, bc=2.22, cd=1.12):
+        from unittest.mock import MagicMock
+        ops = MagicMock()
+        ops.psa_stage1_momentum = momentum
+        ops.psa_stage1_volume = volume
+        ops.psa_stage1_volatility = volatility
+        ops.psa_stage1_bc_drawdown = bc
+        ops.psa_stage1_cd_drawdown = cd
+        ops.psa_universe = "sp500"
+        ops.psa_universe_custom = []
+        ops.psa_universe_sector = ""
+        ops.psa_workers = 1
+        return ops
+
+    def test_none_thresholds_uses_ops_config_momentum(self):
+        from prime_scanners.prime_psa_scanner import run_psa_scan
+        from unittest.mock import patch, MagicMock
+
+        mock_cfg = MagicMock()
+        mock_cfg.ops = self._mock_ops(momentum=33.0)
+
+        with patch("prime_scanners.prime_psa_scanner.get_config", return_value=mock_cfg), \
+             self.assertLogs("prime_scanners.prime_psa_scanner", level="INFO") as cm:
+            run_psa_scan(api_key="dummy", universe=[], thresholds=None)
+
+        # Ops value (33.0) must appear in threshold log line; module constant (55.0) must not.
+        all_output = "\n".join(cm.output)
+        self.assertIn("33.0", all_output, "Expected ops_config momentum=33.0 in log")
+        self.assertNotIn("55.0", all_output, "Module constant 55.0 leaked into threshold log")
+
+    def test_none_thresholds_logs_bc_cd_from_ops(self):
+        from prime_scanners.prime_psa_scanner import run_psa_scan
+        from unittest.mock import patch, MagicMock
+
+        mock_cfg = MagicMock()
+        mock_cfg.ops = self._mock_ops(bc=2.22, cd=1.12)
+
+        with patch("prime_scanners.prime_psa_scanner.get_config", return_value=mock_cfg), \
+             self.assertLogs("prime_scanners.prime_psa_scanner", level="INFO") as cm:
+            run_psa_scan(api_key="dummy", universe=[], thresholds=None)
+
+        all_output = "\n".join(cm.output)
+        self.assertIn("2.22", all_output, "Expected bc_dd=2.22 in threshold log")
+        self.assertIn("1.12", all_output, "Expected cd_dd=1.12 in threshold log")
+
+    def test_explicit_thresholds_override_ops_config(self):
+        from prime_scanners.prime_psa_scanner import run_psa_scan
+        from unittest.mock import patch, MagicMock
+
+        mock_cfg = MagicMock()
+        mock_cfg.ops = self._mock_ops(momentum=33.0)
+        explicit = {"momentum": 77.0, "volume": 2.0, "volatility": 5.0}
+
+        with patch("prime_scanners.prime_psa_scanner.get_config", return_value=mock_cfg), \
+             self.assertLogs("prime_scanners.prime_psa_scanner", level="INFO") as cm:
+            run_psa_scan(api_key="dummy", universe=[], thresholds=explicit)
+
+        all_output = "\n".join(cm.output)
+        self.assertIn("77.0", all_output, "Explicit momentum=77.0 should appear in log")
+        self.assertNotIn("33.0", all_output, "ops_config value 33.0 must not override explicit threshold")
+
+    def _low_momentum_bars(self):
+        """Bars that clear every Stage 1 gate except momentum, at momentum_pct≈45.3.
+
+        Low, steady momentum with strong volume/volatility expansion and a
+        clean (non-drawdown) uptrend, so momentum threshold is the only
+        variable that can flip approval — used to document AUDIT-010's
+        "momentum=0 approves everything" behavior without conflating it
+        with the other Stage 1 gates.
+        """
+        baseline, long_p, short_p = (
+            DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS, DEFAULT_SHORT_PERIODS,
+        )
+        ab = []
+        v = 100.0
+        for i in range(baseline):
+            v *= 1.005 if i % 2 == 0 else 1.006
+            ab.append(v)
+        bc = []
+        v = ab[-1]
+        for _ in range(long_p):
+            v *= 1.01
+            bc.append(v)
+        v0 = bc[-1]
+        cd = [v0 * 1.002, v0 * 1.002 * 1.002, v0 * 1.002 * 1.002 * 1.003]
+        closes = ab + bc + cd
+        volumes = [500_000] * baseline + [700_000] * long_p + [1_500_000] * short_p
+        return _make_bars(closes, volumes), baseline, long_p, short_p
+
+    def test_momentum_zero_approves_low_momentum_symbol(self):
+        """PSA scan with momentum=0 approves a symbol that momentum=55 would reject."""
+        from prime_scanners.prime_psa_scanner import analyze_symbol
+
+        bars, baseline, long_p, short_p = self._low_momentum_bars()
+        result = analyze_symbol(
+            bars, baseline, long_p, short_p, DEFAULT_REQUIRED_POSITIVE,
+            {"momentum": 0.0, "volume": DEFAULT_VOLUME_THRESHOLD,
+             "volatility": DEFAULT_VOLATILITY_THRESHOLD},
+            DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+        self.assertTrue(result["approved"],
+                         f"momentum=0 gate must pass regardless of momentum_pct: {result}")
+
+    def test_momentum_55_rejects_low_momentum_symbol(self):
+        """PSA scan with momentum=55 rejects the same symbol momentum=0 approves."""
+        from prime_scanners.prime_psa_scanner import analyze_symbol
+
+        bars, baseline, long_p, short_p = self._low_momentum_bars()
+        result = analyze_symbol(
+            bars, baseline, long_p, short_p, DEFAULT_REQUIRED_POSITIVE,
+            {"momentum": 55.0, "volume": DEFAULT_VOLUME_THRESHOLD,
+             "volatility": DEFAULT_VOLATILITY_THRESHOLD},
+            DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+        self.assertFalse(result["approved"], f"momentum=55 gate should reject: {result}")
+        self.assertTrue(
+            any("momentum" in r for r in result["rejection_reasons"]),
+            f"Rejection must cite momentum, got: {result['rejection_reasons']}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
