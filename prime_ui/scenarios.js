@@ -312,8 +312,10 @@ async function loadScenarios() {
           const idxSigs2  = todaySigs.filter(s => s.strategy === 'IDX');
           const uoaSigs2  = todaySigs.filter(s => s.strategy === 'UOA');
           const mtfaSigs2 = todaySigs.filter(s => s.strategy === 'MTFA');
-          const psaWatch    = psaSigs2.filter(s => s.status !== 'APPROVED').length;
-          const psaApprv    = psaSigs2.filter(s => s.status === 'APPROVED').length;
+          // AUDIT-005: bridge always writes status='APPROVED' regardless of
+          // approval tier — use tier (WATCH vs APPROVED/STRONG) not status.
+          const psaApprv    = psaSigs2.filter(s => s.tier === 'APPROVED' || s.tier === 'STRONG').length;
+          const psaWatch    = psaSigs2.length - psaApprv;
           const idxTierLbl  = idxSigs2.length === 0 ? '0'
             : (idxSigs2.find(s => s.tier === 'STRONG_LONG' || s.tier === 'STRONG_SHORT') ? 'STRONG' : 'WEAK');
           const uoaStrongCt  = uoaSigs2.filter(s => s.tier && s.tier.toUpperCase().includes('STRONG')).length;

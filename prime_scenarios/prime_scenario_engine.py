@@ -8,14 +8,14 @@ signal delivery.
 Scenario types:
   1   Sniper — Pure             IDX STRONG (volume confirmed)
   2   Sniper — Confirmed        IDX (any) + PSA APPROVED
-  3   Sniper — Institutional    IDX (any) + UOA/PEAD + PSA APPROVED
-  4   Sniper — Trifecta         IDX STRONG + UOA/PEAD + PSA APPROVED
+  3   Sniper — Institutional    IDX (any) + UOA/PEAD STRONG + PSA APPROVED
+  4   Sniper — Trifecta         IDX STRONG + UOA/PEAD STRONG + PSA APPROVED
   5   Watch                     Any single signal alone (monitor for convergence)
-  6   Sniper — Anomalous        UOA/PEAD + PSA APPROVED (no IDX)
+  6   Sniper — Anomalous        UOA/PEAD STRONG + PSA APPROVED (no IDX)
   7   Sniper — Sector Phase     SRS RECOVERING sector + PSA APPROVED (constituent stock)
   8   Sniper — Metals MR        MMR TRANCHE_2 + PSA APPROVED (same symbol)
   9   Timeframe Confluence      MTFA STRONG + any confirming signal (IDX/UOA/PSA/PEAD)
-  10  Sniper — Ultimate         IDX STRONG + UOA/PEAD + PSA APPROVED + MTFA STRONG
+  10  Sniper — Ultimate         IDX (any) + PSA APPROVED + UOA STRONG + PEAD STRONG
 
 Staleness framework (WO-PRIME-SCENARIOS-UX-01 Phase 1 — silence = retraction):
   - All strategies: scan_ts date < today (ET midnight) → VETOED (hard 1-session veto)
@@ -198,7 +198,7 @@ def _is_strong(signal: Dict[str, Any]) -> bool:
     if strategy == "IDX":
         return "STRONG" in tier
     if strategy in ("UOA", "PEAD"):
-        return tier == "STRONG" or signal.get("status", "") == "APPROVED"
+        return tier == "STRONG"
     if strategy == "MTFA":
         return tier == "STRONG"
     return False
@@ -324,20 +324,26 @@ def detect_scenarios(
         idx_all    = [s for s in dir_sigs if s["strategy"] == "IDX"]
         idx_strong = [s for s in idx_all if _is_strong(s)]
         uoa_pead   = [s for s in dir_sigs if s["strategy"] in ("UOA", "PEAD")]
+        # AUDIT-006: Types 3, 4, 6 require UOA/PEAD at STRONG tier specifically.
+        # uoa_pead (any tier) is kept for Type 9's tier-agnostic confirming signal.
+        uoa_pead_strong = [s for s in uoa_pead if _is_strong(s)]
         psa        = [s for s in dir_sigs if s["strategy"] == "PSA"
-                      and s.get("status") == "APPROVED"]
+                      and s.get("tier") in ("APPROVED", "STRONG")]
         srs        = [s for s in dir_sigs if s["strategy"] == "SRS"]
         mmr_t2     = [s for s in dir_sigs if s["strategy"] == "MMR" and _is_tranche2(s)]
         mtfa_strong = [s for s in dir_sigs if s["strategy"] == "MTFA" and _is_strong(s)]
+        uoa_strong  = [s for s in dir_sigs if s["strategy"] == "UOA" and _is_strong(s)]
+        pead_strong = [s for s in dir_sigs if s["strategy"] == "PEAD" and _is_strong(s)]
 
         # --- IDX-based types (Types 1-4, 10): PSA anchors the individual-stock symbol ---
         for psa_sig in psa:
             sym = psa_sig["symbol"]
-            mtfa_sym = [s for s in mtfa_strong if s["symbol"] == sym]
+            uoa_sym  = [s for s in uoa_strong  if s["symbol"] == sym]
+            pead_sym = [s for s in pead_strong if s["symbol"] == sym]
 
-            if idx_strong and uoa_pead and mtfa_sym:
-                # Type 10: IDX STRONG + UOA/PEAD + PSA APPROVED + MTFA STRONG (Ultimate)
-                constituents = [psa_sig, idx_strong[0], uoa_pead[0], mtfa_sym[0]]
+            if idx_all and uoa_sym and pead_sym:
+                # Type 10: IDX (any) + PSA APPROVED + UOA STRONG + PEAD STRONG (all same symbol)
+                constituents = [psa_sig, idx_all[0], uoa_sym[0], pead_sym[0]]
                 st = _overall_staleness(constituents)
                 sc = _build_scenario("10", direction, sym, constituents, st, detected_at)
                 scenarios.append(sc)
@@ -345,9 +351,9 @@ def detect_scenarios(
                     anchored_ids.add(s.get("signal_id"))
                 continue
 
-            if idx_strong and uoa_pead:
-                # Type 4: IDX STRONG + UOA/PEAD + PSA
-                constituents = [psa_sig, idx_strong[0], uoa_pead[0]]
+            if idx_strong and uoa_pead_strong:
+                # Type 4: IDX STRONG + UOA/PEAD STRONG + PSA
+                constituents = [psa_sig, idx_strong[0], uoa_pead_strong[0]]
                 st = _overall_staleness(constituents)
                 sc = _build_scenario("4", direction, sym, constituents, st, detected_at)
                 scenarios.append(sc)
@@ -355,9 +361,9 @@ def detect_scenarios(
                     anchored_ids.add(s.get("signal_id"))
                 continue
 
-            if idx_all and uoa_pead:
-                # Type 3: IDX (any) + UOA/PEAD + PSA
-                constituents = [psa_sig, idx_all[0], uoa_pead[0]]
+            if idx_all and uoa_pead_strong:
+                # Type 3: IDX (any) + UOA/PEAD STRONG + PSA
+                constituents = [psa_sig, idx_all[0], uoa_pead_strong[0]]
                 st = _overall_staleness(constituents)
                 sc = _build_scenario("3", direction, sym, constituents, st, detected_at)
                 scenarios.append(sc)
@@ -375,9 +381,9 @@ def detect_scenarios(
                     anchored_ids.add(s.get("signal_id"))
                 continue
 
-            if uoa_pead:
-                # Type 6: UOA/PEAD + PSA on same symbol (no IDX)
-                matching_inst = [s for s in uoa_pead if s["symbol"] == sym]
+            if uoa_pead_strong:
+                # Type 6: UOA/PEAD STRONG + PSA on same symbol (no IDX)
+                matching_inst = [s for s in uoa_pead_strong if s["symbol"] == sym]
                 if matching_inst:
                     constituents = [psa_sig, matching_inst[0]]
                     st = _overall_staleness(constituents)

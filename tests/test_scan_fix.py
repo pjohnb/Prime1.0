@@ -123,6 +123,81 @@ class TestPythonpathEnv:
             assert str(routes._PROJECT_ROOT_PATH) in pythonpath
 
 
+class TestAudit008ScenarioDetectionOnScheduledScans:
+    """AUDIT-008 — individual scheduled scanner runs must trigger scenario detection.
+
+    Before this fix, _auto_detect_scenarios() was only called from the parallel
+    deep-scan coordinator; individual APScheduler jobs (scan_job_uoa, scan_job_idx,
+    etc.) ran the scanner + bridge but never refreshed scenarios, so the Scenarios
+    tab only updated after a manual Run All.
+    """
+
+    def _run_with_mocks(self, monkeypatch, tmp_path, scanner, module,
+                         bridge_rc=0, scanner_rc=0):
+        from prime_api import prime_api_routes as routes
+
+        def fake_popen(args, env=None, stdout=None, stderr=None, **kwargs):
+            mock = MagicMock()
+            mock.pid = 99
+            mock.wait.return_value = scanner_rc
+            mock.returncode = scanner_rc
+            mock.stdout = iter([])
+            return mock
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+        bridge_calls = []
+
+        def fake_run(args, **kwargs):
+            bridge_calls.append(args)
+            result = MagicMock()
+            result.returncode = bridge_rc
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        detect_calls = []
+        monkeypatch.setattr(routes, "_auto_detect_scenarios", lambda: detect_calls.append(True))
+
+        original_logs_dir = routes._LOGS_DIR
+        routes._LOGS_DIR = tmp_path / "logs"
+        (tmp_path / "logs").mkdir()
+        try:
+            routes._run_scanner_bg(scanner, module)
+        finally:
+            routes._LOGS_DIR = original_logs_dir
+        return detect_calls, bridge_calls
+
+    def test_scenario_detection_fires_after_successful_bridge(self, monkeypatch, tmp_path):
+        detect_calls, bridge_calls = self._run_with_mocks(
+            monkeypatch, tmp_path, "uoa", "prime_scanners.prime_uoa_scanner", bridge_rc=0,
+        )
+        assert len(bridge_calls) == 1, "Bridge subprocess must run for a bridged scanner"
+        assert len(detect_calls) == 1, "Scenario detection must fire after a successful bridge run"
+
+    def test_scenario_detection_skipped_when_bridge_fails(self, monkeypatch, tmp_path):
+        detect_calls, bridge_calls = self._run_with_mocks(
+            monkeypatch, tmp_path, "uoa", "prime_scanners.prime_uoa_scanner", bridge_rc=1,
+        )
+        assert len(detect_calls) == 0, "Scenario detection must NOT fire when bridge rc != 0"
+
+    def test_scenario_detection_fires_for_psa_scheduled_run(self, monkeypatch, tmp_path):
+        detect_calls, bridge_calls = self._run_with_mocks(
+            monkeypatch, tmp_path, "psa", "prime_scanners.prime_psa_scanner", bridge_rc=0,
+        )
+        assert len(detect_calls) == 1, "Scheduled PSA run must trigger scenario detection"
+
+    def test_scenario_detection_fires_directly_for_idx_no_bridge_path(self, monkeypatch, tmp_path):
+        # IDX has no signal-bridge step; scenario detection fires directly off scanner rc.
+        detect_calls, bridge_calls = self._run_with_mocks(
+            monkeypatch, tmp_path, "idx", "prime_scanners.prime_idx_scanner", scanner_rc=0,
+        )
+        assert len(bridge_calls) == 0, "IDX scanner has no bridge subprocess call"
+        assert len(detect_calls) == 1, "Scenario detection must fire directly for IDX"
+
+
 class TestPolygonKeyWarning:
 
     def test_startup_warns_if_polygon_key_missing(self):

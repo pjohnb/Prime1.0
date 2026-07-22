@@ -33,8 +33,12 @@ def _run(signals):
 
 _IDX_STRONG = {"strategy": "IDX", "tier": "STRONG_LONG", "status": "APPROVED"}
 _IDX_WEAK   = {"strategy": "IDX", "tier": "WEAK_LONG",   "status": "APPROVED"}
-_PSA_APPR   = {"strategy": "PSA", "tier": "PSA_CONFIRMED", "status": "APPROVED"}
-_PSA_WATCH  = {"strategy": "PSA", "tier": "PSA_WATCH",     "status": "WATCH"}
+# AUDIT-005: real bridge_psa_result() output only ever carries tier
+# WATCH/APPROVED/STRONG — these fixtures previously used stale placeholder
+# tier strings ("PSA_CONFIRMED"/"PSA_WATCH") that predate the tier-based
+# evaluateScenarioAchievability() check and never matched it.
+_PSA_APPR   = {"strategy": "PSA", "tier": "APPROVED", "status": "APPROVED"}
+_PSA_WATCH  = {"strategy": "PSA", "tier": "WATCH",     "status": "APPROVED"}
 _UOA_STRONG = {"strategy": "UOA", "tier": "STRONG",   "status": "APPROVED"}
 _PEAD_STRONG = {"strategy": "PEAD", "tier": "STRONG",  "status": "APPROVED"}
 _MTFA_STRONG = {"strategy": "MTFA", "tier": "STRONG",  "status": "APPROVED"}

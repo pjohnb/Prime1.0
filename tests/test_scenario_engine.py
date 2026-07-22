@@ -59,8 +59,11 @@ def _idx(tier="STRONG-LONG", symbol="SPY", scan_ts=None):
     return _sig("IDX", tier=tier, direction=direction, symbol=symbol, scan_ts=scan_ts)
 
 
-def _psa(symbol="AAPL", direction="LONG", scan_ts=None):
-    return _sig("PSA", tier="APPROVED", direction=direction, symbol=symbol,
+def _psa(symbol="AAPL", direction="LONG", scan_ts=None, tier="APPROVED"):
+    # AUDIT-005: bridge_psa_result() always writes status='APPROVED' regardless
+    # of approval tier (WATCH/APPROVED/STRONG) — status is deliberately constant
+    # here too so tests exercise the real tier-gate, not a status shortcut.
+    return _sig("PSA", tier=tier, direction=direction, symbol=symbol,
                 status="APPROVED", scan_ts=scan_ts)
 
 
@@ -68,8 +71,11 @@ def _uoa(symbol="AAPL", tier="STRONG", direction="LONG", scan_ts=None):
     return _sig("UOA", tier=tier, direction=direction, symbol=symbol, scan_ts=scan_ts)
 
 
-def _pead(symbol="NVDA", direction="LONG", scan_ts=None):
-    return _sig("PEAD", tier="APPROVED", direction=direction, symbol=symbol,
+def _pead(symbol="NVDA", tier="STRONG", direction="LONG", scan_ts=None):
+    # AUDIT-006: real bridge_pead_result() output only ever carries tier
+    # STRONG/WATCH/SUPPRESSED (via guidance-flag mapping) — default to STRONG
+    # so this helper matches the tier gate Types 3/4/6 actually enforce.
+    return _sig("PEAD", tier=tier, direction=direction, symbol=symbol,
                 status="APPROVED", scan_ts=scan_ts)
 
 
@@ -415,6 +421,222 @@ class TestType9TimeframeConfluence(unittest.TestCase):
         self.assertGreater(len(t9), 0, "MTFA STRONG + PSA APPROVED must emit Type 9")
         self.assertEqual(t9[0]["primary_symbol"], "NVDA")
         self.assertEqual(t9[0]["direction"], "LONG")
+
+
+# ---------------------------------------------------------------------------
+# WO-PRIME-AUDIT-FIX-02 — AUDIT-005: PSA tier gate
+# ---------------------------------------------------------------------------
+
+class TestAudit005PSATierGate(unittest.TestCase):
+    """AUDIT-005: PSA WATCH must never anchor a scenario; only APPROVED/STRONG."""
+
+    def test_psa_watch_does_not_anchor_type2(self):
+        signals = [_idx("WEAK-LONG", "SPY"), _psa("AAPL", tier="WATCH")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "2"]), 0,
+                          "PSA WATCH must not anchor Type 2")
+
+    def test_psa_watch_does_not_anchor_any_type_even_with_full_confirmation(self):
+        # IDX STRONG + UOA STRONG + PEAD STRONG all present on AAPL, but PSA is
+        # only WATCH tier — no IDX/PSA-anchored type (2/3/4/10) may fire.
+        signals = [
+            _idx("STRONG-LONG", "SPY"),
+            _uoa("AAPL", tier="STRONG"),
+            _pead("AAPL", tier="STRONG"),
+            _psa("AAPL", tier="WATCH"),
+        ]
+        result = detect_scenarios(signals, now=_now())
+        anchored_types = {s["type_num"] for s in result if s["primary_symbol"] == "AAPL"}
+        self.assertTrue(anchored_types.isdisjoint({"2", "3", "4", "6", "10"}),
+                         f"PSA WATCH must not anchor any scenario, got types {anchored_types}")
+
+    def test_psa_approved_tier_anchors_type2(self):
+        signals = [_idx("WEAK-LONG", "SPY"), _psa("AAPL", tier="APPROVED")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "2"]), 0)
+
+    def test_psa_strong_tier_also_anchors_type2(self):
+        # STRONG is a valid PSA approval tier per bridge_psa_result and must
+        # qualify the same as APPROVED.
+        signals = [_idx("WEAK-LONG", "SPY"), _psa("AAPL", tier="STRONG")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "2"]), 0)
+
+    def test_psa_approved_anchors_type3(self):
+        signals = [_idx("WEAK-LONG"), _uoa("AAPL", tier="STRONG"), _psa("AAPL", tier="APPROVED")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "3"]), 0)
+
+    def test_psa_approved_anchors_type4(self):
+        signals = [_idx("STRONG-LONG"), _uoa("AAPL", tier="STRONG"), _psa("AAPL", tier="APPROVED")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "4"]), 0)
+
+    def test_psa_approved_anchors_type6(self):
+        signals = [_uoa("TSLA", tier="STRONG"), _psa("TSLA", tier="APPROVED")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "6"]), 0)
+
+    def test_psa_approved_anchors_type7(self):
+        signals = [_srs("XLK"), _psa("AAPL", tier="APPROVED")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "7"]), 0)
+
+    def test_psa_approved_anchors_type8(self):
+        signals = [_mmr("GLD", "TRANCHE_2"), _psa("GLD", tier="APPROVED")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "8"]), 0)
+
+    def test_psa_approved_anchors_type10(self):
+        signals = [
+            _idx("WEAK-LONG", "SPY"),
+            _uoa("AAPL", tier="STRONG"),
+            _pead("AAPL", tier="STRONG"),
+            _psa("AAPL", tier="APPROVED"),
+        ]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "10"]), 0)
+
+
+# ---------------------------------------------------------------------------
+# WO-PRIME-AUDIT-FIX-02 — AUDIT-006: UOA/PEAD STRONG tier enforcement
+# ---------------------------------------------------------------------------
+
+class TestAudit006UOAPEADStrongGate(unittest.TestCase):
+    """AUDIT-006: only STRONG-tier UOA/PEAD may satisfy Types 3, 4, 6."""
+
+    def test_uoa_watch_does_not_satisfy_type3(self):
+        signals = [_idx("WEAK-LONG"), _uoa("AAPL", tier="WATCH"), _psa("AAPL")]
+        result = detect_scenarios(signals, now=_now())
+        t3 = [s for s in result if s["type_num"] == "3"]
+        self.assertEqual(len(t3), 0, "UOA WATCH must not satisfy Type 3")
+        # Falls back to Type 2 (IDX any + PSA APPROVED) since UOA doesn't qualify.
+        t2 = [s for s in result if s["type_num"] == "2"]
+        self.assertGreater(len(t2), 0, "Should fall back to Type 2 without a qualifying UOA/PEAD")
+
+    def test_uoa_strong_satisfies_type3(self):
+        signals = [_idx("WEAK-LONG"), _uoa("AAPL", tier="STRONG"), _psa("AAPL")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "3"]), 0)
+
+    def test_uoa_watch_does_not_satisfy_type4(self):
+        signals = [_idx("STRONG-LONG"), _uoa("AAPL", tier="WATCH"), _psa("AAPL")]
+        result = detect_scenarios(signals, now=_now())
+        t4 = [s for s in result if s["type_num"] == "4"]
+        self.assertEqual(len(t4), 0, "UOA WATCH must not satisfy Type 4")
+
+    def test_uoa_strong_satisfies_type4(self):
+        signals = [_idx("STRONG-LONG"), _uoa("AAPL", tier="STRONG"), _psa("AAPL")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "4"]), 0)
+
+    def test_uoa_watch_does_not_satisfy_type6(self):
+        signals = [_uoa("TSLA", tier="WATCH"), _psa("TSLA")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "6"]), 0,
+                          "UOA WATCH must not satisfy Type 6")
+
+    def test_uoa_strong_satisfies_type6(self):
+        signals = [_uoa("TSLA", tier="STRONG"), _psa("TSLA")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "6"]), 0)
+
+    def test_pead_watch_does_not_satisfy_type3(self):
+        signals = [_idx("WEAK-LONG"), _pead("MSFT", tier="WATCH"), _psa("MSFT")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "3"]), 0,
+                          "PEAD WATCH must not satisfy Type 3")
+
+    def test_pead_strong_satisfies_type3(self):
+        signals = [_idx("WEAK-LONG"), _pead("MSFT", tier="STRONG"), _psa("MSFT")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "3"]), 0)
+
+    def test_pead_watch_does_not_satisfy_type4(self):
+        signals = [_idx("STRONG-LONG"), _pead("MSFT", tier="WATCH"), _psa("MSFT")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "4"]), 0,
+                          "PEAD WATCH must not satisfy Type 4")
+
+    def test_pead_strong_satisfies_type4(self):
+        signals = [_idx("STRONG-LONG"), _pead("MSFT", tier="STRONG"), _psa("MSFT")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "4"]), 0)
+
+    def test_pead_watch_does_not_satisfy_type6(self):
+        signals = [_pead("MSFT", tier="WATCH"), _psa("MSFT")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "6"]), 0,
+                          "PEAD WATCH must not satisfy Type 6")
+
+    def test_pead_strong_satisfies_type6(self):
+        signals = [_pead("MSFT", tier="STRONG"), _psa("MSFT")]
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "6"]), 0)
+
+    def test_is_strong_true_only_for_strong_tier_not_approved_status(self):
+        from prime_scenarios.prime_scenario_engine import _is_strong
+        watch_with_approved_status = {"strategy": "UOA", "tier": "WATCH", "status": "APPROVED"}
+        strong_signal = {"strategy": "UOA", "tier": "STRONG", "status": "APPROVED"}
+        self.assertFalse(_is_strong(watch_with_approved_status),
+                          "_is_strong() must not shortcut on status=='APPROVED'")
+        self.assertTrue(_is_strong(strong_signal))
+
+
+# ---------------------------------------------------------------------------
+# WO-PRIME-AUDIT-FIX-02 — AUDIT-007: Type 10 Sniper Ultimate signal requirements
+# ---------------------------------------------------------------------------
+
+class TestAudit007Type10Ultimate(unittest.TestCase):
+    """AUDIT-007: Type 10 = IDX (any) + PSA APPROVED + UOA STRONG + PEAD STRONG, same symbol."""
+
+    def _full_set(self, idx_tier="WEAK-LONG", uoa_tier="STRONG", pead_tier="STRONG",
+                  psa_tier="APPROVED", symbol="AAPL"):
+        return [
+            _idx(idx_tier, "SPY"),
+            _uoa(symbol, tier=uoa_tier),
+            _pead(symbol, tier=pead_tier),
+            _psa(symbol, tier=psa_tier),
+        ]
+
+    def test_all_four_present_fires_type10(self):
+        result = detect_scenarios(self._full_set(), now=_now())
+        t10 = [s for s in result if s["type_num"] == "10"]
+        self.assertGreater(len(t10), 0)
+        self.assertEqual(t10[0]["primary_symbol"], "AAPL")
+        self.assertEqual(t10[0]["conviction"], "HIGHEST")
+
+    def test_missing_pead_strong_does_not_fire_type10(self):
+        signals = self._full_set(pead_tier="WATCH")
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "10"]), 0,
+                          "Type 10 must not fire when PEAD STRONG is absent")
+
+    def test_missing_uoa_strong_does_not_fire_type10(self):
+        signals = self._full_set(uoa_tier="WATCH")
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "10"]), 0,
+                          "Type 10 must not fire when UOA STRONG is absent")
+
+    def test_missing_psa_approved_does_not_fire_type10(self):
+        signals = self._full_set(psa_tier="WATCH")
+        result = detect_scenarios(signals, now=_now())
+        self.assertEqual(len([s for s in result if s["type_num"] == "10"]), 0,
+                          "Type 10 must not fire when PSA APPROVED is absent")
+
+    def test_type10_does_not_require_mtfa(self):
+        # No MTFA signal at all — Type 10 must still fire on IDX+PSA+UOA+PEAD alone.
+        signals = self._full_set()
+        self.assertFalse(any(s["strategy"] == "MTFA" for s in signals))
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "10"]), 0)
+
+    def test_type10_does_not_require_idx_strong(self):
+        # IDX WEAK (not STRONG) must be sufficient for Type 10's "IDX any" requirement.
+        signals = self._full_set(idx_tier="WEAK-LONG")
+        result = detect_scenarios(signals, now=_now())
+        self.assertGreater(len([s for s in result if s["type_num"] == "10"]), 0,
+                          "IDX WEAK must satisfy Type 10's IDX-any requirement")
 
 
 # ---------------------------------------------------------------------------

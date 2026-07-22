@@ -284,9 +284,10 @@ class TestScenarioTypes(unittest.TestCase):
 
     def test_type_9_mtfa_plus_psa(self):
         """Type 9: MTFA STRONG + PSA APPROVED on same symbol."""
+        # AUDIT-005: PSA gate is tier-based (WATCH/APPROVED/STRONG), not status-based.
         signals = [
             _sig("MTFA", tier="STRONG", symbol="AAPL"),
-            _sig("PSA", tier="", symbol="AAPL", status="APPROVED"),
+            _sig("PSA", tier="APPROVED", symbol="AAPL", status="APPROVED"),
         ]
         scenarios = detect_scenarios(signals)
         types = [s["type_num"] for s in scenarios]
@@ -300,26 +301,29 @@ class TestScenarioTypes(unittest.TestCase):
         self.assertNotIn("9", types)
 
     def test_type_10_ultimate(self):
-        """Type 10: IDX STRONG + UOA + PSA APPROVED + MTFA STRONG."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        """AUDIT-007: Type 10 = IDX (any) + PSA APPROVED + UOA STRONG + PEAD STRONG.
+
+        MTFA is not part of the Type 10 definition and IDX does not need STRONG tier.
+        """
         signals = [
-            _sig("IDX", tier="STRONG-LONG", direction="LONG", symbol="SPY"),
+            _sig("IDX", tier="WEAK-LONG", direction="LONG", symbol="SPY"),
             _sig("UOA", tier="STRONG", symbol="AAPL"),
-            _sig("PSA", tier="", symbol="AAPL", status="APPROVED"),
-            _sig("MTFA", tier="STRONG", symbol="AAPL"),
+            _sig("PEAD", tier="STRONG", symbol="AAPL"),
+            _sig("PSA", tier="APPROVED", symbol="AAPL", status="APPROVED"),
         ]
         scenarios = detect_scenarios(signals)
         types = [s["type_num"] for s in scenarios]
         self.assertIn("10", types)
-        # Type 10 should supersede Type 4 for the same symbol set
+        # Type 10 should supersede Type 3/4 for the same symbol set
+        self.assertNotIn("3", types)
         self.assertNotIn("4", types)
 
-    def test_type_10_falls_back_to_type4_without_mtfa(self):
-        """Without MTFA, the same signal set fires Type 4, not Type 10."""
+    def test_type_10_falls_back_to_type4_without_pead_strong(self):
+        """AUDIT-007: without PEAD STRONG, IDX STRONG + UOA STRONG + PSA falls back to Type 4."""
         signals = [
             _sig("IDX", tier="STRONG-LONG", direction="LONG", symbol="SPY"),
             _sig("UOA", tier="STRONG", symbol="AAPL"),
-            _sig("PSA", tier="", symbol="AAPL", status="APPROVED"),
+            _sig("PSA", tier="APPROVED", symbol="AAPL", status="APPROVED"),
         ]
         scenarios = detect_scenarios(signals)
         types = [s["type_num"] for s in scenarios]
