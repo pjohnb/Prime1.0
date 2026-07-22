@@ -261,12 +261,22 @@ def submit_order(
         if resp.status_code not in (200, 201):
             reason = ""
             try:
-                reason = resp.json().get("message", "")
+                err_body = resp.json()
+                logger.error("Schwab order rejected HTTP %s: %s", resp.status_code, err_body)
+                reason = (
+                    err_body.get("message")
+                    or err_body.get("error")
+                    or str(err_body)
+                ) or ""
             except Exception:
-                pass
+                try:
+                    reason = resp.text[:500]
+                except Exception:
+                    pass
+                logger.error("Schwab order rejected HTTP %s (non-JSON): %s", resp.status_code, reason)
             raise OrderGateError(
                 "SCHWAB_REJECT",
-                f"Schwab rejected order: HTTP {resp.status_code} {reason}".strip(),
+                f"Schwab rejected order: HTTP {resp.status_code} — {reason}".strip(),
             )
 
         # Order ID lives in the Location header
@@ -340,6 +350,31 @@ def _build_stop_order_raw(
     }
 
 
+def _build_trailing_stop_order_raw(
+    symbol: str, qty: int, instruction: str, trail_pct: float
+) -> dict:
+    """Raw Schwab TRAILING_STOP order dict (GTC, percent-based).
+
+    Schwab trails from the last price by trail_pct percent. The stop price
+    adjusts automatically as price moves favorably; it never degrades.
+    trail_pct is the percentage as a number (e.g. 3.0 for 3%).
+    """
+    return {
+        "orderType":           "TRAILING_STOP",
+        "session":             "NORMAL",
+        "duration":            "GOOD_TILL_CANCEL",
+        "orderStrategyType":   "SINGLE",
+        "stopPriceLinkBasis":  "LAST",
+        "stopPriceLinkType":   "PERCENT",
+        "stopPriceOffset":     round(float(trail_pct), 2),
+        "orderLegCollection": [{
+            "instruction": instruction,
+            "quantity":    int(qty),
+            "instrument":  {"symbol": symbol, "assetType": "EQUITY"},
+        }],
+    }
+
+
 def attach_stop_order(
     symbol: str,
     qty: int,
@@ -349,6 +384,7 @@ def attach_stop_order(
     schwab_client,
     db_path: Optional[Path] = None,
     min_stop_price: Optional[float] = None,
+    trail_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Submit a protective STOP order to Schwab as a guaranteed follow-up after entry.
 
@@ -391,16 +427,25 @@ def attach_stop_order(
                 f"{_floor:.2f} for SHORT {symbol} — would degrade escalated trailing stop",
             )
 
-    if not symbol or int(qty) <= 0 or stop_price <= 0 or not account_hash:
+    _use_trailing = trail_pct is not None and float(trail_pct) > 0
+    if not symbol or int(qty) <= 0 or not account_hash:
         raise OrderGateError(
             "STOP_PARAMS",
             f"attach_stop_order: invalid params — symbol={symbol!r} qty={qty} "
-            f"stop_price={stop_price} account_hash={bool(account_hash)}",
+            f"account_hash={bool(account_hash)}",
+        )
+    if not _use_trailing and stop_price <= 0:
+        raise OrderGateError(
+            "STOP_PARAMS",
+            f"attach_stop_order: stop_price required for fixed stop (got {stop_price})",
         )
     if schwab_client is None:
         raise OrderGateError("NO_CLIENT", "attach_stop_order: no Schwab client available")
 
-    raw = _build_stop_order_raw(symbol, int(qty), instruction, stop_price)
+    if _use_trailing:
+        raw = _build_trailing_stop_order_raw(symbol, int(qty), instruction, float(trail_pct) * 100.0)
+    else:
+        raw = _build_stop_order_raw(symbol, int(qty), instruction, stop_price)
     try:
         resp = schwab_client.client.place_order(account_hash, raw)
     except Exception as exc:
@@ -409,32 +454,50 @@ def attach_stop_order(
     if resp.status_code not in (200, 201):
         reason = ""
         try:
-            reason = resp.json().get("message", "")
+            err_body = resp.json()
+            logger.error("Schwab stop order rejected HTTP %s: %s", resp.status_code, err_body)
+            reason = (
+                err_body.get("message")
+                or err_body.get("error")
+                or str(err_body)
+            ) or ""
         except Exception:
-            pass
+            try:
+                reason = resp.text[:500]
+            except Exception:
+                pass
+            logger.error("Schwab stop order rejected HTTP %s (non-JSON): %s", resp.status_code, reason)
         raise OrderGateError(
             "SCHWAB_REJECT",
-            f"Schwab rejected stop order: HTTP {resp.status_code} {reason}".strip(),
+            f"Schwab rejected stop order: HTTP {resp.status_code} — {reason}".strip(),
         )
 
     import time as _time
     location = resp.headers.get("Location") or resp.headers.get("location") or ""
     stop_order_id = location.rstrip("/").split("/")[-1] if location else str(int(_time.time()))
 
-    logger.info(
-        "Stop order attached: %s %d %s STOP=%.2f order_id=%s",
-        symbol, qty, direction, stop_price, stop_order_id,
-    )
+    if _use_trailing:
+        logger.info(
+            "Trailing stop attached: %s %d %s trail=%.1f%% order_id=%s",
+            symbol, qty, direction, float(trail_pct) * 100.0, stop_order_id,
+        )
+    else:
+        logger.info(
+            "Stop order attached: %s %d %s STOP=%.2f order_id=%s",
+            symbol, qty, direction, stop_price, stop_order_id,
+        )
     try:
         from prime_data.prime_db import log_ops_event
+        _stop_detail = (
+            f"direction={direction} qty={qty} trail_pct={float(trail_pct)*100:.1f}% order_id={stop_order_id}"
+            if _use_trailing else
+            f"direction={direction} qty={qty} stop_price={stop_price:.2f} order_id={stop_order_id}"
+        )
         log_ops_event(
             event_type="STOP_ORDER_ATTACHED",
             component="prime_schwab_orders",
             symbol=symbol,
-            detail=(
-                f"direction={direction} qty={qty} stop_price={stop_price:.2f} "
-                f"order_id={stop_order_id}"
-            ),
+            detail=_stop_detail,
             severity="INFO",
             db_path=db_path,
         )

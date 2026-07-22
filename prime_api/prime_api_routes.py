@@ -446,14 +446,23 @@ def execute_signal_endpoint(signal_id):
     _live_profile = (getattr(cfg.ops, "mata_profile", "") or "").strip().lower()
     _live_profile_all = not _live_profile or _live_profile == "all"
 
+    _acct_err: str = ""
+
     if mode_cfg == "LIVE" and schwab_client is not None:
         # Fetch live buying power per account.
         try:
             acct_numbers_resp = schwab_client.client.get_account_numbers()
             if acct_numbers_resp.status_code == 200:
-                for acct in acct_numbers_resp.json():
+                _acct_list = acct_numbers_resp.json() or []
+                if not _acct_list:
+                    _acct_err = "Schwab returned empty account list"
+                    logger.error("execute_signal: %s", _acct_err)
+                for acct in _acct_list:
                     suffix = (acct.get("accountNumber") or "")[-4:]
                     hash_val = acct.get("hashValue", "")
+                    if not hash_val:
+                        logger.warning("execute_signal: account %s has no hashValue — skipping", suffix)
+                        continue
                     # Check if this account is in MATA profile; default weight=1.
                     mata_entry = next(
                         (a for a in mata_accounts if str(a.get("name", "")).endswith(suffix)), None
@@ -542,6 +551,7 @@ def execute_signal_endpoint(signal_id):
                                         stop_price=_exec_stop_price,
                                         account_hash=hash_val,
                                         schwab_client=schwab_client,
+                                        trail_pct=_exec_trail_pct if stop_type_param == "TRAILING" else None,
                                     )
                                     if stop_type_param == "TRAILING" and _exec_trail_pct is not None and log_id:
                                         from prime_data.prime_db import update_trailing_stop
@@ -559,8 +569,14 @@ def execute_signal_endpoint(signal_id):
                             "status": "FAILED",
                             "error": str(order_err),
                         })
+            else:
+                _acct_err = (
+                    f"Schwab get_account_numbers HTTP {acct_numbers_resp.status_code}"
+                )
+                logger.error("execute_signal: %s", _acct_err)
         except Exception as e:
             logger.error("execute_signal: account iteration error: %s", e)
+            _acct_err = f"account iteration error: {e}"
 
     else:
         # PAPER mode: simulate across MATA accounts (or one synthetic account).
@@ -664,6 +680,11 @@ def execute_signal_endpoint(signal_id):
             except Exception as e:
                 logger.error("execute_signal: staged entry registration failed: %s", e)
 
+    if not orders_placed:
+        err_msg = _acct_err or "no orders submitted — check server log for details"
+        logger.error("execute_signal: no orders placed for %s/%s: %s", symbol, target_account or "all", err_msg)
+        return jsonify({"error": err_msg}), 400
+
     return jsonify({
         "signal_id":       signal_id,
         "symbol":          symbol,
@@ -676,7 +697,7 @@ def execute_signal_endpoint(signal_id):
         "stage_trigger":   stage_trigger if staged_entry_on else None,
         "stop_price":      _exec_stop_price if _exec_stop_price > 0 else None,
         "stop_type":       stop_type_param if stop_type_param else None,
-    }), 200 if orders_placed else 400
+    }), 200
 
 
 def _schedule_staged_entry_time_job(signal_id: str, interval_min: int) -> None:
