@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-sonnet-4-6-20250514"
+CLAUDE_MODEL = "claude-sonnet-5"
 
 SETTINGS_SYSTEM_PROMPT = """You are the PRIME AI Settings Advisor. Analyze scan performance
 metrics and current scanner configuration, then suggest parameter adjustments.

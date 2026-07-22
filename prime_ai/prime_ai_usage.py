@@ -6,8 +6,8 @@ Provides aggregated cost stats for the Dashboard AI Cost card and
 the Settings AI Usage section. Uses Anthropic's exact field names:
 input_tokens, output_tokens (matching the Anthropic Console).
 
-Cost rate: $3.00/1M input tokens, $15.00/1M output tokens
-(claude-sonnet-4-6 pricing as of 2026-06-24).
+Cost rate: $2.00/1M input tokens, $10.00/1M output tokens
+(claude-sonnet-5 introductory pricing as of 2026-07-22).
 """
 
 import sqlite3
@@ -18,8 +18,8 @@ from typing import Any, Dict, List, Optional
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_DB = _PROJECT_ROOT / "data" / "prime_ai_usage.db"
 
-INPUT_COST_PER_M  = 3.0
-OUTPUT_COST_PER_M = 15.0
+INPUT_COST_PER_M  = 2.0
+OUTPUT_COST_PER_M = 10.0
 
 
 def _get_db_path(db_path: Optional[Path] = None) -> Path:

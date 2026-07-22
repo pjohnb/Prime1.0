@@ -19,7 +19,7 @@ from prime_intelligence.prime_portfolio_factor import (
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-sonnet-4-6-20250514"
+CLAUDE_MODEL = "claude-sonnet-5"
 
 REBALANCE_SYSTEM_PROMPT = """You are the PRIME AI Portfolio Rebalance Advisor. Analyze the
 portfolio snapshot and provide structured rebalancing suggestions.
@@ -167,7 +167,7 @@ def get_rebalance_advice(
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1000,
+            max_tokens=1300,
             system=REBALANCE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
         )

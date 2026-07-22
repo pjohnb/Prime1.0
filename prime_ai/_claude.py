@@ -19,7 +19,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Per Sprint 15 work order.
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-sonnet-5"
 MAX_TOKENS = 1500
 
 
@@ -55,7 +55,7 @@ def call_claude(
     api_key: Optional[str] = None,
     max_tokens: int = MAX_TOKENS,
 ) -> str:
-    """Call claude-sonnet-4 and return the response text.
+    """Call claude-sonnet-5 and return the response text.
 
     Raises ClaudeUnavailable on missing key, missing library, or any API error.
     Token usage is logged automatically to prime_ai_usage.db.
