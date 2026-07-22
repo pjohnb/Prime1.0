@@ -296,6 +296,21 @@ def execute_signal_endpoint(signal_id):
 
     # WO-PRIME-SCENARIO-EXECUTE-01: optional per-execution overrides (all backward-compatible).
     target_account  = (payload.get("target_account") or "").strip()  # 4-char suffix; routes to this account only
+
+    # WO-PRIME-EXECUTE-MATA-01: MATA route — frontend pre-computes per-account share quantities.
+    # mata_qtys maps account suffix → share count (e.g. {"926": 10, "461": 5, "779": 8}).
+    _mata_qtys_raw = payload.get("mata_qtys") or {}
+    _mata_qtys: dict = {}
+    if isinstance(_mata_qtys_raw, dict):
+        for _k, _v in _mata_qtys_raw.items():
+            try:
+                _mata_qtys[str(_k)] = int(_v)
+            except (TypeError, ValueError):
+                pass
+    is_mata_route = target_account.upper() == "MATA"
+    if is_mata_route:
+        target_account = ""  # clear so existing account-suffix filter passes all accounts
+
     direction_param = (payload.get("direction") or "LONG").strip().upper()
     if direction_param not in ("LONG", "SHORT"):
         direction_param = "LONG"
@@ -485,7 +500,10 @@ def execute_signal_endpoint(signal_id):
                             buying_power = 0.0
                     except Exception:
                         buying_power = 0.0
-                    shares = user_qty if user_qty > 0 else int(buying_power * max_order_pct / execution_price)
+                    if is_mata_route:
+                        shares = _mata_qtys.get(suffix, 0)
+                    else:
+                        shares = user_qty if user_qty > 0 else int(buying_power * max_order_pct / execution_price)
                     if shares <= 0:
                         continue
                     try:
@@ -594,10 +612,14 @@ def execute_signal_endpoint(signal_id):
                 paper_accounts = _ta_filtered
         for acct in paper_accounts:
             bp = float(acct.get("buying_power", 100000) or 100000)
-            shares = user_qty if user_qty > 0 else int(bp * max_order_pct / execution_price)
+            acct_name = str(acct.get("name", "PAPER"))
+            if is_mata_route:
+                _pa_suffix = acct_name[-4:] if len(acct_name) >= 4 else acct_name
+                shares = _mata_qtys.get(_pa_suffix, 0)
+            else:
+                shares = user_qty if user_qty > 0 else int(bp * max_order_pct / execution_price)
             if shares <= 0:
                 continue
-            acct_name = str(acct.get("name", "PAPER"))
             try:
                 log_id = insert_trade(
                     strategy=strategy,

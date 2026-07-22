@@ -57,6 +57,27 @@ const _SCENARIO_BUDGETS = {
 const _scenarioRegistry = {};
 let _pendingScenarioExec = null;
 
+// WO-PRIME-EXECUTE-MATA-01: MATA account list cache (loaded once from settings).
+// Each entry: {name, type, buying_power, margin_available, weight}.
+// Ordered to match the dropdown option order: Joint(926), Custodial(461), IRA(779).
+let _mataAccountsCache = null;
+const _MATA_ACCT_SUFFIXES = ['926', '461', '779'];
+
+async function _loadMataAccounts() {
+  if (_mataAccountsCache !== null) return _mataAccountsCache;
+  try {
+    const API = (window.PRIME_CONFIG && window.PRIME_CONFIG.apiBase) || 'http://localhost:5001/api/v1';
+    const resp = await fetch(API + '/settings');
+    const data = resp.ok ? await resp.json() : {};
+    _mataAccountsCache = Array.isArray(data.mata_accounts) && data.mata_accounts.length
+      ? data.mata_accounts
+      : [];
+  } catch (e) {
+    _mataAccountsCache = [];
+  }
+  return _mataAccountsCache;
+}
+
 function getScenarioMaxRows() {
   return parseInt(localStorage.getItem('prime_scenario_max_rows') || '20', 10);
 }
@@ -439,10 +460,13 @@ function _escHtml(str) {
 
 // ── WO-PRIME-SCENARIO-EXECUTE-01: Execute dialog ─────────────────────────────
 
-function openScenarioExecute(scenarioId) {
+async function openScenarioExecute(scenarioId) {
   const sc = _scenarioRegistry[scenarioId];
   if (!sc) return;
   _pendingScenarioExec = sc;
+
+  // Pre-load MATA accounts so _scExecUpdate() can render the breakdown synchronously.
+  await _loadMataAccounts();
 
   const constituents   = sc.constituent_signals || [];
   const ep             = _scEntryPrice(constituents) || 0;
@@ -461,7 +485,7 @@ function openScenarioExecute(scenarioId) {
   const defaultStopPct = _STOP_DEFAULTS[sc.conviction] || '3';
 
   document.getElementById('scen-exec-budget').value     = defaultBudget;
-  document.getElementById('scen-exec-account').value    = '';
+  document.getElementById('scen-exec-account').value    = (_mataAccountsCache && _mataAccountsCache.length) ? 'MATA' : '';
   document.getElementById('scen-exec-stop-type').value  = 'TRAILING';
   document.getElementById('scen-exec-stop-pct').value   = defaultStopPct;
 
@@ -491,9 +515,29 @@ function _scExecUpdate() {
   const budget  = parseFloat(document.getElementById('scen-exec-budget').value) || 0;
   const qty     = (ep > 0 && budget > 0) ? Math.floor(budget / ep) : 0;
   const stopPct = parseFloat(document.getElementById('scen-exec-stop-pct').value) || 3;
+  const acct    = (document.getElementById('scen-exec-account').value || '').trim();
 
-  const qtyEl = document.getElementById('scen-exec-qty');
-  if (qtyEl) qtyEl.textContent = qty > 0 ? String(qty) : '—';
+  // MATA breakdown
+  const qtyEl       = document.getElementById('scen-exec-qty');
+  const breakdownEl = document.getElementById('scen-exec-mata-breakdown');
+  if (acct === 'MATA') {
+    const mataAccts = _mataAccountsCache || [];
+    if (mataAccts.length) {
+      const parts = mataAccts.map((a, i) => {
+        const w      = parseFloat(a.weight) || 0;
+        const shares = qty > 0 ? Math.floor(qty * w / 100) : 0;
+        const label  = a.name + ' (' + w + '%)';
+        return shares > 0 ? label + ': ' + shares + ' sh' : label;
+      });
+      if (breakdownEl) { breakdownEl.textContent = parts.join(' · '); breakdownEl.style.display = 'block'; }
+    } else {
+      if (breakdownEl) { breakdownEl.textContent = 'Configure MATA distribution in Settings first.'; breakdownEl.style.display = 'block'; }
+    }
+    if (qtyEl) qtyEl.textContent = qty > 0 ? qty + ' total' : '—';
+  } else {
+    if (breakdownEl) breakdownEl.style.display = 'none';
+    if (qtyEl) qtyEl.textContent = qty > 0 ? String(qty) : '—';
+  }
 
   let stopPrice = 0;
   if (ep > 0 && stopPct > 0) {
@@ -502,7 +546,6 @@ function _scExecUpdate() {
   const stopEl = document.getElementById('scen-exec-stop-price');
   if (stopEl) stopEl.textContent = stopPrice > 0 ? '$' + stopPrice.toFixed(2) : '—';
 
-  const acct       = (document.getElementById('scen-exec-account').value || '').trim();
   const confirmBtn = document.getElementById('scen-exec-confirm-btn');
   if (confirmBtn) confirmBtn.disabled = !acct;
 }
@@ -557,6 +600,20 @@ async function submitScenarioExecute() {
   if (stopType === 'TRAILING') payload.trailing_stop_pct = stopPct / 100.0;
   if (!rth && ep > 0) payload.limit_price = ep;
 
+  // WO-PRIME-EXECUTE-MATA-01: when MATA is selected, compute per-account share
+  // quantities from configured weights and send as mata_qtys so the backend can
+  // place the correctly-sized order on each account without needing weight logic.
+  if (acct === 'MATA' && _mataAccountsCache && _mataAccountsCache.length) {
+    const mataQtys = {};
+    _mataAccountsCache.forEach((a, i) => {
+      if (i < _MATA_ACCT_SUFFIXES.length) {
+        const w = parseFloat(a.weight) || 0;
+        mataQtys[_MATA_ACCT_SUFFIXES[i]] = Math.floor(qty * w / 100);
+      }
+    });
+    payload.mata_qtys = mataQtys;
+  }
+
   try {
     const resp = await fetch(API + '/signals/' + encodeURIComponent(signalId) + '/execute', {
       method:  'POST',
@@ -570,8 +627,15 @@ async function submitScenarioExecute() {
       const fillPrice  = data.execution_price || ep;
       const acctLabels = { '926': 'Joint (...926)', '461': 'Custodial (...461)', '779': 'IRA (...779)' };
       if (msgEl) {
-        msgEl.textContent = mode + ': ' + qty + ' shares @ $' + Number(fillPrice).toFixed(2) +
-          ' — ' + (acctLabels[acct] || '...' + acct);
+        let successMsg;
+        if (acct === 'MATA') {
+          const n = Array.isArray(data.orders_placed) ? data.orders_placed.length : 0;
+          successMsg = mode + ': MATA — ' + n + ' order' + (n !== 1 ? 's' : '') + ' placed';
+        } else {
+          successMsg = mode + ': ' + qty + ' shares @ $' + Number(fillPrice).toFixed(2) +
+            ' — ' + (acctLabels[acct] || '...' + acct);
+        }
+        msgEl.textContent = successMsg;
         msgEl.style.color = 'var(--green)';
       }
       _scExecMarkExecuted(sc.scenario_id, {
