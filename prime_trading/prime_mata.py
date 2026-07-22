@@ -55,7 +55,21 @@ def load_accounts(config_path: Optional[Path] = None) -> List[Dict[str, Any]]:
         if config_path.exists():
             data = json.loads(config_path.read_text())
             accts = data.get("mata_accounts", [])
-            return accts if isinstance(accts, list) else []
+            if not isinstance(accts, list):
+                return []
+            if not accts:
+                logger.warning(
+                    "MATA: mata_accounts is empty in ops_config.json — MATA routing will produce 0 orders"
+                )
+            else:
+                total_weight = sum(float(a.get("weight", 0)) for a in accts if isinstance(a, dict))
+                if abs(total_weight - 100.0) > 1.0:
+                    logger.warning(
+                        "MATA: mata_accounts weights sum to %.1f%% (expected 100%%) — "
+                        "MATA allocation may be incorrect",
+                        total_weight,
+                    )
+            return accts
     except Exception:
         pass
     return []

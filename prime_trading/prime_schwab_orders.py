@@ -529,7 +529,7 @@ def has_open_stop_order(
                 "PENDING_ACTIVATION", "QUEUED", "WORKING", "PENDING_REPLACE",
             ):
                 continue
-            if (o.get("orderType") or "").upper() not in ("STOP", "STOP_LIMIT"):
+            if (o.get("orderType") or "").upper() not in ("STOP", "STOP_LIMIT", "TRAILING_STOP", "TRAILING_STOP_LIMIT"):
                 continue
             for leg in (o.get("orderLegCollection") or []):
                 if (leg.get("instrument", {}).get("symbol") or "").upper() == symbol:

@@ -320,5 +320,109 @@ class TestPaperModeNeverLogsOrder(unittest.TestCase):
         self.assertEqual(live_events, [])
 
 
+class TestHasOpenStopOrderAudit003(unittest.TestCase):
+    """AUDIT-003: has_open_stop_order must detect TRAILING_STOP orders."""
+
+    from prime_trading.prime_schwab_orders import has_open_stop_order
+
+    def _make_order(self, order_type, status="WORKING", symbol="AAPL"):
+        return {
+            "orderType": order_type,
+            "status": status,
+            "orderLegCollection": [{"instrument": {"symbol": symbol}}],
+        }
+
+    def _make_client(self, orders):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = orders
+        inner = MagicMock()
+        inner.get_orders_for_account.return_value = resp
+        client = MagicMock()
+        client.client = inner
+        return client
+
+    def test_trailing_stop_detected(self):
+        from prime_trading.prime_schwab_orders import has_open_stop_order
+        client = self._make_client([self._make_order("TRAILING_STOP")])
+        self.assertTrue(has_open_stop_order("AAPL", "hash", client))
+
+    def test_trailing_stop_limit_detected(self):
+        from prime_trading.prime_schwab_orders import has_open_stop_order
+        client = self._make_client([self._make_order("TRAILING_STOP_LIMIT")])
+        self.assertTrue(has_open_stop_order("AAPL", "hash", client))
+
+    def test_stop_detected(self):
+        from prime_trading.prime_schwab_orders import has_open_stop_order
+        client = self._make_client([self._make_order("STOP")])
+        self.assertTrue(has_open_stop_order("AAPL", "hash", client))
+
+    def test_no_stop_returns_false(self):
+        from prime_trading.prime_schwab_orders import has_open_stop_order
+        client = self._make_client([self._make_order("MARKET")])
+        self.assertFalse(has_open_stop_order("AAPL", "hash", client))
+
+    def test_empty_orders_returns_false(self):
+        from prime_trading.prime_schwab_orders import has_open_stop_order
+        client = self._make_client([])
+        self.assertFalse(has_open_stop_order("AAPL", "hash", client))
+
+
+class TestFillPollerAudit002(unittest.TestCase):
+    """AUDIT-002: poll_fill used for stop-gate confirmation."""
+
+    def _mock_client(self, responses):
+        """Returns a SchwabClient mock whose get_order_status returns responses in sequence."""
+        call_count = [0]
+        def _get_status(order_id):
+            i = call_count[0]
+            call_count[0] += 1
+            if i < len(responses):
+                return responses[i]
+            return {"status": "WORKING"}
+
+        client = MagicMock()
+        client.get_order_status = _get_status
+        return client
+
+    def test_filled_after_one_poll(self):
+        from prime_trading.prime_fill_poller import poll_fill
+        client = self._mock_client([
+            {"status": "FILLED", "filledPrice": 61.14, "filledQuantity": 14}
+        ])
+        result = poll_fill("ord-1", client, timeout_sec=30, poll_interval=0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["fill_price"], 61.14)
+        self.assertEqual(result["shares_filled"], 14)
+
+    def test_filled_after_two_polls(self):
+        from prime_trading.prime_fill_poller import poll_fill
+        client = self._mock_client([
+            {"status": "WORKING", "filledQuantity": 0},
+            {"status": "FILLED", "filledPrice": 61.14, "filledQuantity": 14},
+        ])
+        result = poll_fill("ord-2", client, timeout_sec=30, poll_interval=0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["shares_filled"], 14)
+
+    def test_timeout_returns_none(self):
+        from prime_trading.prime_fill_poller import poll_fill
+        client = self._mock_client([{"status": "WORKING"}])
+        result = poll_fill("ord-3", client, timeout_sec=0, poll_interval=0)
+        self.assertIsNone(result)
+
+    def test_rejected_returns_none(self):
+        from prime_trading.prime_fill_poller import poll_fill
+        client = self._mock_client([{"status": "REJECTED"}])
+        result = poll_fill("ord-4", client, timeout_sec=30, poll_interval=0)
+        self.assertIsNone(result)
+
+    def test_canceled_returns_none(self):
+        from prime_trading.prime_fill_poller import poll_fill
+        client = self._mock_client([{"status": "CANCELED"}])
+        result = poll_fill("ord-5", client, timeout_sec=30, poll_interval=0)
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

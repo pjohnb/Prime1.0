@@ -606,10 +606,9 @@ async function submitScenarioExecute() {
   if (acct === 'MATA' && _mataAccountsCache && _mataAccountsCache.length) {
     const mataQtys = {};
     _mataAccountsCache.forEach((a, i) => {
-      if (i < _MATA_ACCT_SUFFIXES.length) {
-        const w = parseFloat(a.weight) || 0;
-        mataQtys[_MATA_ACCT_SUFFIXES[i]] = Math.floor(qty * w / 100);
-      }
+      const w = parseFloat(a.weight) || 0;
+      const sfx = a.suffix || _MATA_ACCT_SUFFIXES[i];
+      if (sfx) mataQtys[sfx] = Math.floor(qty * w / 100);
     });
     payload.mata_qtys = mataQtys;
   }
@@ -994,7 +993,7 @@ function evaluateScenarioAchievability(signals) {
   const idxAny    = idxSigs.length > 0;
   const idxStrong = idxSigs.some(isIdxStrong);
   const psaAny    = psaSigs.length > 0;
-  const psaApproved = psaSigs.some(s => s.status === 'APPROVED');
+  const psaApproved = psaSigs.some(s => s.tier === 'APPROVED' || s.tier === 'STRONG');
   const uoaAny    = uoaSigs.length > 0;
   const uoaStrong = uoaSigs.some(isTierStrong);
   const peadAny   = peadSigs.length > 0;
@@ -1055,8 +1054,8 @@ function _renderScanSummaryStatus(el, signals, scanners) {
         tier = strong ? strong.tier : (sigs[0].tier || 'WEAK');
         tierColor = strong ? 'var(--green,#22c55e)' : 'var(--yellow,#eab308)';
       } else if (name === 'PSA') {
-        const approved = sigs.find(s => s.status === 'APPROVED');
-        tier = approved ? 'APPROVED' : 'WATCH';
+        const approved = sigs.find(s => s.tier === 'APPROVED' || s.tier === 'STRONG');
+        tier = approved ? approved.tier : 'WATCH';
         tierColor = approved ? 'var(--green,#22c55e)' : 'var(--yellow,#eab308)';
       } else {
         const strong = sigs.find(s => s.tier && s.tier.toUpperCase().includes('STRONG'));
@@ -1096,7 +1095,7 @@ function _renderScanSummaryMatrix(el, signals) {
   const idxAny     = idxSigs.length > 0;
   const idxStrong  = idxSigs.some(isIdxStrong);
   const psaAny     = psaSigs.length > 0;
-  const psaApproved = psaSigs.some(s => s.status === 'APPROVED');
+  const psaApproved = psaSigs.some(s => s.tier === 'APPROVED' || s.tier === 'STRONG');
   const uoaAny    = uoaSigs.length > 0;
   const uoaStrong = uoaSigs.some(isTierStrong);
   const peadAny   = peadSigs.length > 0;

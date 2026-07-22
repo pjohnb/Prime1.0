@@ -132,5 +132,79 @@ class TestMataAllAccountsProfile(unittest.TestCase):
         self.assertIn("Rollover IRA", out["excluded_ira"])
 
 
+class TestLoadAccountsAudit001(unittest.TestCase):
+    """AUDIT-001: load_accounts() validation and ops_config parsing."""
+
+    def _write_config(self, tmp_dir, data):
+        import json
+        p = Path(tmp_dir) / "ops_config.json"
+        p.write_text(json.dumps(data))
+        return p
+
+    def test_returns_three_accounts_from_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._write_config(d, {"mata_accounts": [
+                {"name": "Joint Brokerage", "suffix": "7926", "type": "BROKERAGE", "weight": 60},
+                {"name": "Custodial",       "suffix": "0461", "type": "BROKERAGE", "weight": 20},
+                {"name": "Rollover IRA",    "suffix": "8779", "type": "ROLLOVER_IRA", "weight": 20},
+            ]})
+            accts = mata.load_accounts(config_path=cfg)
+            self.assertEqual(len(accts), 3)
+            self.assertEqual(accts[0]["suffix"], "7926")
+            self.assertEqual(accts[2]["type"], "ROLLOVER_IRA")
+
+    def test_returns_empty_when_mata_accounts_absent(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._write_config(d, {})
+            with self.assertLogs("prime_mata", level="WARNING") as cm:
+                accts = mata.load_accounts(config_path=cfg)
+            self.assertEqual(accts, [])
+            self.assertTrue(any("empty" in m for m in cm.output))
+
+    def test_warns_when_weights_do_not_sum_to_100(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._write_config(d, {"mata_accounts": [
+                {"name": "Joint", "suffix": "7926", "weight": 50},
+                {"name": "Custodial", "suffix": "0461", "weight": 10},
+            ]})
+            with self.assertLogs("prime_mata", level="WARNING") as cm:
+                accts = mata.load_accounts(config_path=cfg)
+            self.assertEqual(len(accts), 2)
+            self.assertTrue(any("60.0" in m or "sum" in m.lower() or "weight" in m.lower() for m in cm.output))
+
+    def test_correct_weights_no_warning(self):
+        import tempfile, logging
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._write_config(d, {"mata_accounts": [
+                {"name": "Joint",    "suffix": "7926", "weight": 60},
+                {"name": "Custodial","suffix": "0461", "weight": 20},
+                {"name": "IRA",      "suffix": "8779", "weight": 20},
+            ]})
+            with self.assertLogs("prime_mata", level="DEBUG") as cm:
+                logging.getLogger("prime_mata").debug("probe")  # ensure logger active
+                accts = mata.load_accounts(config_path=cfg)
+            self.assertEqual(len(accts), 3)
+            self.assertFalse(any("WARNING" in m and "weight" in m.lower() for m in cm.output))
+
+    def test_mata_qty_allocation_60_20_20(self):
+        """$1,500 budget at $61.14 → 24 total shares → Joint=14, Custodial=4, IRA=4."""
+        accts = [
+            {"name": "Joint",    "suffix": "7926", "weight": 60},
+            {"name": "Custodial","suffix": "0461", "weight": 20},
+            {"name": "IRA",      "suffix": "8779", "weight": 20},
+        ]
+        budget = 1500
+        price  = 61.14
+        qty    = int(budget / price)   # 24
+        qtys = {a["suffix"]: int(qty * a["weight"] / 100) for a in accts}
+        self.assertEqual(qtys["7926"], 14)
+        self.assertEqual(qtys["0461"], 4)
+        self.assertEqual(qtys["8779"], 4)
+        self.assertEqual(sum(qtys.values()), 22)  # floor arithmetic — 22 of 24 allocated
+
+
 if __name__ == "__main__":
     unittest.main()

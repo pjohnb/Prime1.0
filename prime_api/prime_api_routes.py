@@ -480,7 +480,10 @@ def execute_signal_endpoint(signal_id):
                         continue
                     # Check if this account is in MATA profile; default weight=1.
                     mata_entry = next(
-                        (a for a in mata_accounts if str(a.get("name", "")).endswith(suffix)), None
+                        (a for a in mata_accounts if (
+                            str(a.get("name", "")).endswith(suffix)
+                            or str(a.get("suffix", "")) == suffix
+                        )), None
                     )
                     if mata_accounts and mata_entry is None:
                         continue  # account not in MATA profile — skip
@@ -551,8 +554,51 @@ def execute_signal_endpoint(signal_id):
                             "status": "SUBMITTED",
                         })
                         total_allocated += shares
-                        # WO-PRIME-SCENARIO-EXECUTE-01: attach protective stop after fill.
+                        # AUDIT-002: poll for fill confirmation before attaching stop.
+                        _fill_confirmed = True
                         if _exec_stop_price > 0:
+                            try:
+                                from prime_trading.prime_fill_poller import (
+                                    poll_fill, update_trade_on_fill,
+                                )
+                                _is_mkt = order_type.upper() == "MARKET"
+                                _poll = poll_fill(
+                                    order_id=result.get("order_id", ""),
+                                    client=schwab_client,
+                                    timeout_sec=30 if _is_mkt else 300,
+                                    poll_interval=2 if _is_mkt else 5,
+                                )
+                                if _poll:
+                                    if _poll.get("fill_price") and log_id:
+                                        update_trade_on_fill(
+                                            log_id,
+                                            _poll["fill_price"],
+                                            _poll["shares_filled"],
+                                        )
+                                    orders_placed[-1]["status"] = "FILLED"
+                                    orders_placed[-1]["fill_price"] = _poll.get("fill_price", 0.0)
+                                    logger.info(
+                                        "execute_signal: order %s FILLED for %s/%s — attaching stop",
+                                        result.get("order_id"), symbol, suffix,
+                                    )
+                                else:
+                                    _fill_confirmed = False
+                                    logger.warning(
+                                        "execute_signal: order %s not confirmed filled for %s/%s"
+                                        " — stop not attached",
+                                        result.get("order_id"), symbol, suffix,
+                                    )
+                                    orders_placed[-1]["fill_note"] = (
+                                        "stop withheld — order not confirmed filled"
+                                    )
+                            except Exception as _poll_err:
+                                logger.warning(
+                                    "execute_signal: fill poll error for %s/%s: %s — proceeding without stop",
+                                    symbol, suffix, _poll_err,
+                                )
+                                _fill_confirmed = False
+                        # WO-PRIME-SCENARIO-EXECUTE-01: attach protective stop after fill.
+                        if _exec_stop_price > 0 and _fill_confirmed:
                             try:
                                 from prime_trading.prime_schwab_orders import (
                                     attach_stop_order, has_open_stop_order,
@@ -614,7 +660,7 @@ def execute_signal_endpoint(signal_id):
             bp = float(acct.get("buying_power", 100000) or 100000)
             acct_name = str(acct.get("name", "PAPER"))
             if is_mata_route:
-                _pa_suffix = acct_name[-4:] if len(acct_name) >= 4 else acct_name
+                _pa_suffix = str(acct.get("suffix", acct_name[-4:] if len(acct_name) >= 4 else acct_name))
                 shares = _mata_qtys.get(_pa_suffix, 0)
             else:
                 shares = user_qty if user_qty > 0 else int(bp * max_order_pct / execution_price)
@@ -2778,6 +2824,10 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
                 if bridge_proc.stderr:
                     lf.write(bridge_proc.stderr)
 
+            # AUDIT-008: fire scenario detection after every successful bridge run
+            if bridge_proc.returncode == 0:
+                _auto_detect_scenarios()
+
             # Factor D: after PSA bridge writes APPROVED signals, spawn a
             # targeted single-symbol MTFA check for any APPROVED symbol that
             # MTFA has not yet analysed today.  Runs in a daemon thread so
@@ -2804,6 +2854,10 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
                         logger.info("MTFA targeted: spawned for %d symbol(s)", len(_need))
                 except Exception as _exc:
                     logger.warning("MTFA targeted trigger failed: %s", _exc)
+
+        elif not skip_bridge and proc.returncode == 0:
+            # IDX has no bridge — fire scenario detection directly after successful scan
+            _auto_detect_scenarios()
 
         # Count new signals from bridge output
         signals = 0
