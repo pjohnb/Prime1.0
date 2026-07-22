@@ -959,8 +959,17 @@ def get_scenarios_endpoint():
       type_num=1..9
       active_only=false  (default: true, only active scenarios)
       limit=N            (default: 100)
+
+    WO-PRIME-STALENESS-GATE-01: staleness is re-evaluated at read time against each
+    constituent signal's scan_ts and the configured recency windows. A scenario detected
+    at 03:38 with a 120-min PSA window will show VETOED (and be filtered) by 05:38,
+    not continue to show FRESH for the rest of the trading day.
+    Silence = retraction: VETOED scenarios are excluded when active_only=True.
     """
     from prime_scenarios.prime_scenarios_db import get_scenarios, init_scenarios_table
+    from prime_scenarios.prime_scenario_engine import (
+        get_signal_staleness, _load_recency_windows,
+    )
     try:
         init_scenarios_table()  # idempotent — ensures table exists before first query
         direction = request.args.get("direction")
@@ -973,7 +982,27 @@ def get_scenarios_endpoint():
             direction=direction or None,
             type_num=type_num or None,
         )
-        return jsonify({"scenarios": scenarios, "count": len(scenarios)}), 200
+
+        # Re-evaluate staleness at read time.  The stored staleness_status reflects
+        # the moment the scenario was first detected; signals age continuously after
+        # that, so we must recheck each constituent's scan_ts against the recency
+        # window right now.  This is the correct "silence = retraction" behaviour.
+        windows = _load_recency_windows()
+        result = []
+        for sc in scenarios:
+            constituents = sc.get("constituent_signals") or []
+            for c in constituents:
+                c["staleness"] = get_signal_staleness(c, recency_windows=windows)
+            sc["staleness_status"] = (
+                "VETOED"
+                if any(c.get("staleness") == "VETOED" for c in constituents)
+                else "FRESH"
+            )
+            if active_only and sc["staleness_status"] == "VETOED":
+                continue  # silence = retraction — stale scenario suppressed
+            result.append(sc)
+
+        return jsonify({"scenarios": result, "count": len(result)}), 200
     except Exception as e:
         logger.error("scenarios endpoint error: %s", e)
         return jsonify({"error": str(e)}), 500
