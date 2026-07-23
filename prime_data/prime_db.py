@@ -140,6 +140,7 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     try:
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(_PRIME_TRADE_LOG_SCHEMA)
         conn.execute(_PRIME_OPS_HEALTH_SCHEMA)
         conn.execute(_PRIME_POSITION_HEALTH_SCHEMA)
@@ -211,6 +212,7 @@ def get_connection(db_path: Optional[Path] = None):
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
     finally:
@@ -245,6 +247,7 @@ def _migrate_add_column_ml_dataset(
     try:
         path = _db_path(db_path)
         conn = sqlite3.connect(str(path))
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             existing = [row[1] for row in conn.execute("PRAGMA table_info(prime_ml_dataset)").fetchall()]
             if column not in existing:
@@ -263,6 +266,7 @@ def _migrate_add_column_trade_log(
     try:
         path = _db_path(db_path)
         conn = sqlite3.connect(str(path))
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             existing = [row[1] for row in conn.execute("PRAGMA table_info(prime_trade_log)").fetchall()]
             if column not in existing:
