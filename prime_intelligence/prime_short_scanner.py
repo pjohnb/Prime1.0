@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Set
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+from prime_analytics.prime_signals_db import init_signals_table, upsert_signal_by_session
 from prime_intelligence.prime_index_scanner import compute_sma, SMA_FAST
 from prime_trading.prime_schwab_borrow import check_borrow
 
@@ -236,7 +236,7 @@ def run_short_scan(
     if symbols is None:
         symbols = _default_universe()
     if scan_ts is None:
-        scan_ts = datetime.utcnow().isoformat()
+        scan_ts = datetime.now().isoformat()
     uoa_by_symbol = uoa_by_symbol or {}
     pead_by_symbol = pead_by_symbol or {}
     now = now or datetime.now()
@@ -358,7 +358,7 @@ def run_short_scan(
                 "dk_state": dk_state or "NEUTRAL",
                 "dk_conviction": sym_dk.get("conviction"),
             }
-            insert_signal_dedup(
+            upsert_signal_by_session(
                 symbol=symbol, strategy="SHORT", scan_ts=scan_ts,
                 entry_price=metrics["price"], score=0.0,
                 sector="Unknown", tier=verdict["tier"], status="APPROVED",

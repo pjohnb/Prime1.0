@@ -158,6 +158,57 @@ class TestScanOrchestration(unittest.TestCase):
         self.assertTrue(s["rth_blocked"])
         self.assertEqual(get_signals(strategy="SHORT", db_path=self.db), [])
 
+    # -- AUDIT-032: default scan_ts is machine-local (ET), not UTC --
+    def test_default_scan_ts_is_local_not_utc(self):
+        s = self._run(uoa_by_symbol={"WEAK": _GOOD_UOA}, scan_ts=None)
+        before = datetime.now()
+        recorded = datetime.fromisoformat(s["scan_ts"])
+        self.assertLess(abs((recorded - before).total_seconds()), 5)
+
+
+class TestScanDedup(unittest.TestCase):
+    """AUDIT-032: SHORT scan uses upsert_signal_by_session so two runs on the
+    same calendar day update one row instead of inserting a duplicate."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_short_dedup.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+        self.bars = {"SPY": _flat_spy(), "WEAK": _falling_bars()}
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _run(self, scan_ts):
+        return ss.run_short_scan(
+            symbols=["WEAK"], bars_by_symbol=self.bars,
+            uoa_by_symbol={"WEAK": _GOOD_UOA},
+            borrow_fn=lambda s: {"borrowable": True, "rate_pct": 1.0},
+            dk_signals=set(), now=RTH_NOW, db_path=self.db, scan_ts=scan_ts,
+        )
+
+    def test_second_run_same_day_does_not_add_rows(self):
+        self._run("2026-06-03T08:00:00")
+        self._run("2026-06-03T12:50:00")
+        rows = get_signals(strategy="SHORT", db_path=self.db)
+        self.assertEqual(len(rows), 1)
+
+    def test_second_run_updates_scan_ts(self):
+        self._run("2026-06-03T08:00:00")
+        self._run("2026-06-03T12:50:00")
+        rows = get_signals(strategy="SHORT", db_path=self.db)
+        self.assertEqual(rows[0]["symbol"], "WEAK")
+        self.assertIn("12:50", rows[0]["scan_ts"])
+
+    def test_different_day_creates_new_row(self):
+        self._run("2026-06-03T08:00:00")
+        self._run("2026-06-04T08:00:00")
+        rows = get_signals(strategy="SHORT", db_path=self.db)
+        self.assertEqual(len(rows), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

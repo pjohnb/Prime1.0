@@ -167,7 +167,7 @@ def bridge_uoa_rows(rows: List[Dict[str, Any]], db_path: Optional[Path] = None) 
                 "total_volume": _to_float(row.get("total_volume"), None),
             },
         }
-        if signal["symbol"] and _insert(signal, db_path):
+        if signal["symbol"] and _upsert(signal, db_path):
             count += 1
     return count
 
@@ -199,7 +199,7 @@ def bridge_uoa_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
                 "total_volume": _to_float(sig.get("total_volume"), None),
             },
         }
-        if signal["symbol"] and _insert(signal, db_path):
+        if signal["symbol"] and _upsert(signal, db_path):
             count += 1
     return count
 

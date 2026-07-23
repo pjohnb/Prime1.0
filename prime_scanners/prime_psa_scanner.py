@@ -291,6 +291,11 @@ def analyze_symbol(
     if len(bars) < total_needed:
         return {"approved": False, "reason": "insufficient_bars"}
 
+    # AUDIT-033: callers fetch a buffer beyond total_needed (e.g. total_bars + 5);
+    # trim to the trailing total_needed bars so segment boundaries below always
+    # land on the true latest bars, not a stale window from the buffer's start.
+    bars = bars[-total_needed:]
+
     closes = [b["close"] for b in bars]
     volumes = [b["volume"] for b in bars]
     highs = [b["high"] for b in bars]
@@ -662,7 +667,7 @@ def apply_signal_led_psa(scan_result: Dict[str, Any],
         if use_signal_led:
             ts = psa_trigger_source(sig.get("symbol"), db_path=db_path, ref_ts=ref_ts)
         else:
-            ts = "NONE"
+            ts = "PSA_ONLY"
         sig["trigger_source"] = ts
         if not use_signal_led or ts != "NONE":
             sig["approval_status"] = "APPROVED"

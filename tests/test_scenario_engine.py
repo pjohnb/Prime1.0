@@ -265,6 +265,57 @@ class TestType4Trifecta(unittest.TestCase):
         self.assertTrue(any(s["direction"] == "SHORT" for s in t4))
 
 
+class TestAudit036CrossSymbolContamination(unittest.TestCase):
+    """AUDIT-036: Types 3/4 must not attach a UOA/PEAD signal for a different
+    symbol than the PSA signal being scored -- uoa_pead_strong spans every
+    symbol in the direction, so it must be filtered to the PSA signal's own
+    symbol before being used as a constituent."""
+
+    def test_type3_ignores_mismatched_symbol_uoa(self):
+        # PSA approved for AAPL, IDX WEAK (any), UOA STRONG for an unrelated symbol.
+        signals = [_idx("WEAK-LONG"), _psa("AAPL"), _uoa("TSLA", tier="STRONG")]
+        result = detect_scenarios(signals, now=_now())
+        t3_aapl = [s for s in result if s["type_num"] == "3" and s["primary_symbol"] == "AAPL"]
+        self.assertEqual(t3_aapl, [], "Type 3 must not fire for AAPL using TSLA's UOA signal")
+
+    def test_type3_fires_when_uoa_matches_symbol(self):
+        signals = [_idx("WEAK-LONG"), _psa("AAPL"), _uoa("AAPL", tier="STRONG")]
+        result = detect_scenarios(signals, now=_now())
+        t3_aapl = [s for s in result if s["type_num"] == "3" and s["primary_symbol"] == "AAPL"]
+        self.assertGreater(len(t3_aapl), 0)
+
+    def test_type4_ignores_mismatched_symbol_uoa(self):
+        # PSA approved for AAPL, IDX STRONG (any), UOA STRONG for an unrelated symbol.
+        signals = [_idx("STRONG-LONG"), _psa("AAPL"), _uoa("TSLA", tier="STRONG")]
+        result = detect_scenarios(signals, now=_now())
+        t4_aapl = [s for s in result if s["type_num"] == "4" and s["primary_symbol"] == "AAPL"]
+        self.assertEqual(t4_aapl, [], "Type 4 must not fire for AAPL using TSLA's UOA signal")
+
+    def test_type4_fires_when_uoa_matches_symbol(self):
+        signals = [_idx("STRONG-LONG"), _psa("AAPL"), _uoa("AAPL", tier="STRONG")]
+        result = detect_scenarios(signals, now=_now())
+        t4_aapl = [s for s in result if s["type_num"] == "4" and s["primary_symbol"] == "AAPL"]
+        self.assertGreater(len(t4_aapl), 0)
+
+    def test_no_scenario_carries_mismatched_constituent_symbol(self):
+        # Broader sweep: whatever scenario fires for AAPL, none of its
+        # constituent signals may belong to a different symbol.
+        signals = [_idx("STRONG-LONG"), _psa("AAPL"), _uoa("TSLA", tier="STRONG"),
+                   _pead("MSFT", tier="STRONG")]
+        result = detect_scenarios(signals, now=_now())
+        for sc in result:
+            if sc["primary_symbol"] != "AAPL":
+                continue
+            uoa_pead_constituents = [
+                c for c in sc.get("constituent_signals", [])
+                if c["strategy"] in ("UOA", "PEAD")
+            ]
+            for constituent in uoa_pead_constituents:
+                self.assertEqual(constituent["symbol"], "AAPL",
+                                  f"scenario {sc['type_num']} for AAPL carried a "
+                                  f"{constituent['symbol']} UOA/PEAD constituent")
+
+
 class TestType5Watch(unittest.TestCase):
     """Type 5: Single signal watch."""
 

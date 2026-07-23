@@ -188,6 +188,58 @@ class TestAnalyzeSymbol(unittest.TestCase):
             self.assertIn(key, result)
 
 
+class TestBufferTrim(unittest.TestCase):
+    """AUDIT-033: callers fetch total_bars + 5 as an upstream buffer; analyze_symbol
+    must trim to the trailing total_needed bars so the C-D window always evaluates
+    the true latest bars, not a stale window from the buffer's start."""
+
+    def _default_thresholds(self):
+        return {
+            "momentum": DEFAULT_MOMENTUM_THRESHOLD,
+            "volume": DEFAULT_VOLUME_THRESHOLD,
+            "volatility": DEFAULT_VOLATILITY_THRESHOLD,
+        }
+
+    def _analyze(self, bars):
+        return analyze_symbol(
+            bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
+            DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
+            self._default_thresholds(), DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+
+    def test_buffered_fetch_matches_pre_trimmed_fetch(self):
+        total_needed = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
+        # True latest window: flat baseline/long segment, sharply rising C-D segment.
+        true_window = [100.0] * (total_needed - DEFAULT_SHORT_PERIODS) + [100.0, 200.0, 400.0]
+        # Stale buffer bars a caller may fetch ahead of the true window (total_bars + 5).
+        stale_prefix = [100.0] * 5
+        bars_with_buffer = _make_bars(stale_prefix + true_window)  # 39 bars
+        bars_no_buffer = _make_bars(true_window)  # 34 bars, no buffer
+
+        with_buffer = self._analyze(bars_with_buffer)
+        no_buffer = self._analyze(bars_no_buffer)
+
+        self.assertEqual(with_buffer["momentum_pct"], no_buffer["momentum_pct"])
+        self.assertEqual(with_buffer["trend_cd_drawdown"], no_buffer["trend_cd_drawdown"])
+
+    def test_cd_window_reflects_latest_bars_not_stale_prefix(self):
+        total_needed = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
+        # If the buffer were NOT trimmed, the C-D window would fall entirely
+        # inside this flat stale prefix and momentum_pct would read 0.
+        true_window = [100.0] * (total_needed - DEFAULT_SHORT_PERIODS) + [100.0, 200.0, 400.0]
+        stale_prefix = [100.0] * 5
+        bars = _make_bars(stale_prefix + true_window)
+        result = self._analyze(bars)
+        self.assertGreater(result["momentum_pct"], 0)
+
+    def test_exact_total_needed_bars_unaffected(self):
+        # No upstream buffer at all -- trim is a no-op, existing fixtures unchanged.
+        n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
+        bars = _make_bars([100.0] * n)
+        result = self._analyze(bars)
+        self.assertFalse(result["approved"])
+
+
 class TestPatternDetection(unittest.TestCase):
 
     def test_breakout(self):

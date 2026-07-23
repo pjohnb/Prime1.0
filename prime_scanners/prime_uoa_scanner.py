@@ -430,15 +430,17 @@ def persist_uoa_signals(
     Mirrors prime_signal_bridge.bridge_uoa_rows' field mapping but is driven by
     the scanner's own result dicts, so a scan persists without the CSV->bridge
     round-trip. Approved = tier in STRONG/WATCH. Deduplication is handled by
-    insert_signal_dedup's deterministic signal_id (strategy|symbol|scan_ts), so
-    re-running a scan with the same scan_ts never creates duplicate rows.
+    upsert_signal_by_session (symbol, strategy, session date), so multiple
+    scans on the same calendar day update one row instead of inserting a new
+    one per run (AUDIT-031).
 
-    scan_ts is normalized to isoformat() so the hash matches bridge_uoa_result
-    which reads "scan_time" from the JSON result (AUDIT-021).
+    scan_ts is normalized to isoformat() for display consistency with
+    bridge_uoa_result which reads "scan_time" from the JSON result (AUDIT-021).
 
-    Returns the number of new rows inserted (duplicates skipped).
+    Returns the number of new rows inserted (updates to an existing session
+    row are not counted).
     """
-    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+    from prime_analytics.prime_signals_db import init_signals_table, upsert_signal_by_session
 
     # AUDIT-021: normalize to isoformat so signal_id matches bridge hash.
     scan_ts = scan_ts.replace(" ", "T")
@@ -462,7 +464,7 @@ def persist_uoa_signals(
             "call_put_ratio": s.get("call_put_ratio"),
             "total_volume": s.get("total_volume"),
         })
-        result = insert_signal_dedup(
+        result = upsert_signal_by_session(
             symbol=symbol,
             strategy="UOA",
             scan_ts=scan_ts,

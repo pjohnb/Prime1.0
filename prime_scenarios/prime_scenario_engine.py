@@ -223,7 +223,8 @@ def _build_scenario(
     detected_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     spec = SCENARIO_TYPES[type_num]
-    ts = detected_at or datetime.utcnow().isoformat()
+    # AUDIT-049: naive timestamps are ET per the tz.js contract (FIX-04).
+    ts = detected_at or datetime.now().isoformat()
     slim_constituents = [
         {
             "signal_id": s.get("signal_id", ""),
@@ -300,7 +301,8 @@ def detect_scenarios(
       Type 8 (MMR TRANCHE_2 + PSA, same symbol)
       Type 5 (single signal watch — emitted only when no higher type fires)
     """
-    detected_at = (now or datetime.utcnow()).isoformat()
+    # AUDIT-049: naive timestamps are ET per the tz.js contract (FIX-04).
+    detected_at = (now or datetime.now()).isoformat()
 
     # Annotate each signal with staleness and resolve direction
     annotated: List[Dict[str, Any]] = []
@@ -329,7 +331,11 @@ def detect_scenarios(
         uoa_pead_strong = [s for s in uoa_pead if _is_strong(s)]
         psa        = [s for s in dir_sigs if s["strategy"] == "PSA"
                       and s.get("tier") in ("APPROVED", "STRONG")]
-        srs        = [s for s in dir_sigs if s["strategy"] == "SRS"]
+        # AUDIT-046: defense-in-depth tier check, matching Type 8's MMR TRANCHE_2
+        # re-check below — do not rely solely on the bridge only ever inserting
+        # RECOVERING-phase rows.
+        srs        = [s for s in dir_sigs if s["strategy"] == "SRS"
+                      and s.get("tier") == "RECOVERING"]
         mmr_t2     = [s for s in dir_sigs if s["strategy"] == "MMR" and _is_tranche2(s)]
         mtfa_strong = [s for s in dir_sigs if s["strategy"] == "MTFA" and _is_strong(s)]
         uoa_strong  = [s for s in dir_sigs if s["strategy"] == "UOA" and _is_strong(s)]
@@ -351,9 +357,15 @@ def detect_scenarios(
                     anchored_ids.add(s.get("signal_id"))
                 continue
 
-            if idx_strong and uoa_pead_strong:
-                # Type 4: IDX STRONG + UOA/PEAD STRONG + PSA
-                constituents = [psa_sig, idx_strong[0], uoa_pead_strong[0]]
+            # AUDIT-036: uoa_pead_strong spans all symbols for this direction;
+            # filter to this PSA signal's own symbol before attaching as a
+            # constituent, else Types 3/4 can attach an unrelated ticker's
+            # UOA/PEAD signal (pattern matches Type 6 below).
+            uoa_pead_strong_sym = [s for s in uoa_pead_strong if s["symbol"] == sym]
+
+            if idx_strong and uoa_pead_strong_sym:
+                # Type 4: IDX STRONG + UOA/PEAD STRONG + PSA (same symbol)
+                constituents = [psa_sig, idx_strong[0], uoa_pead_strong_sym[0]]
                 st = _overall_staleness(constituents)
                 sc = _build_scenario("4", direction, sym, constituents, st, detected_at)
                 scenarios.append(sc)
@@ -361,9 +373,9 @@ def detect_scenarios(
                     anchored_ids.add(s.get("signal_id"))
                 continue
 
-            if idx_all and uoa_pead_strong:
-                # Type 3: IDX (any) + UOA/PEAD STRONG + PSA
-                constituents = [psa_sig, idx_all[0], uoa_pead_strong[0]]
+            if idx_all and uoa_pead_strong_sym:
+                # Type 3: IDX (any) + UOA/PEAD STRONG + PSA (same symbol)
+                constituents = [psa_sig, idx_all[0], uoa_pead_strong_sym[0]]
                 st = _overall_staleness(constituents)
                 sc = _build_scenario("3", direction, sym, constituents, st, detected_at)
                 scenarios.append(sc)
