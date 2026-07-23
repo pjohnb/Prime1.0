@@ -19,6 +19,8 @@ from typing import Any, Dict, List
 
 from flask import Blueprint, jsonify, request
 
+from prime_trading.prime_schwab_orders import _is_rth
+
 logger = logging.getLogger(__name__)
 
 api_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
@@ -235,21 +237,6 @@ def dismiss_signal_endpoint(signal_id):
     if result == "ALREADY_DISMISSED":
         return jsonify({"error": "signal already dismissed"}), 409
     return jsonify({"signal_id": signal_id, "status": "DISMISSED"}), 200
-
-
-def _is_rth() -> bool:
-    """True if the current ET wall-clock time falls within RTH (09:30–16:00 Mon–Fri)."""
-    import zoneinfo
-    from datetime import timezone as _tz
-    try:
-        et = datetime.now(zoneinfo.ZoneInfo("America/New_York"))
-    except Exception:
-        # Fallback: UTC-4 (EDT) if zoneinfo unavailable
-        et = datetime.now(_tz(timedelta(hours=-4)))
-    if et.weekday() >= 5:
-        return False
-    mins = et.hour * 60 + et.minute
-    return 9 * 60 + 30 <= mins <= 16 * 60
 
 
 @api_bp.route("/signals/<string:signal_id>/execute", methods=["POST"])

@@ -48,7 +48,12 @@ class OrderGateError(Exception):
 # ---------------------------------------------------------------------------
 
 def _is_rth() -> bool:
-    """True if current ET wall-clock time is within RTH Mon–Fri 09:30–16:00."""
+    """True if current ET wall-clock time is within RTH Mon–Fri 09:30–16:00.
+
+    AUDIT-048: single shared implementation — market close is exclusive
+    (last valid trade is before 16:00:00 ET). prime_api_routes imports this
+    rather than maintaining its own copy.
+    """
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
