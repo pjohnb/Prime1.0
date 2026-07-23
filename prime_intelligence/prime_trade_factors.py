@@ -16,6 +16,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from prime_intelligence.prime_dark_pool import DarkPoolEvaluation, DarkPoolScanner
@@ -205,19 +206,127 @@ def _build_exit_triggers(signal: Dict[str, Any], strategy: str, duration: str) -
     return triggers
 
 
+# CALC-TRADE_FACTORS_ML-2: TIP Section 2.3 nullifier rules for the factors
+# that were unwired or dead code -- only the dark-pool nullifier was
+# load-bearing before this fix.
+_STATUS_RANK = {"CLEAR": 0, "SUSPECT": 1, "NULLIFIED": 2}
+
+
+def _check_covered_call_nullifier(signal: Dict[str, Any]) -> tuple:
+    """Covered-call: vol/OI < 1.5 + strikes clustered within 2% above price ->
+    nullifier for ST, SUSPECT for LT (TIP Section 2.3). UOA's own
+    detect_covered_call() already computes this exactly; it was just never
+    read outside UOA's own CLI print. Not recomputed here -- reads the result
+    UOA already attached to the signal dict as covered_call_eval."""
+    cc = signal.get("covered_call_eval") or {}
+    status = cc.get("status")
+    if status in ("NULLIFIED", "SUSPECT"):
+        return status, "COVERED_CALL", cc.get("rationale", "Covered-call pattern detected")
+    return "CLEAR", None, None
+
+
+def _check_contradictory_signal_nullifier(
+    symbol: str, strategy: str, signal: Dict[str, Any], db_path: Optional[Path],
+) -> tuple:
+    """An active opposing-direction signal from another PRIME strategy on the
+    same symbol is a nullifier (TIP Section 2.3), e.g. IDX LONG + UOA PUT."""
+    direction = (signal.get("direction") or "LONG").upper()
+    try:
+        from prime_analytics.prime_signals_db import get_signals
+        others = get_signals(symbol=symbol, db_path=db_path, limit=50)
+    except Exception as e:
+        logger.debug("Contradictory-signal check skipped for %s: %s", symbol, e)
+        return "CLEAR", None, None
+
+    for other in others:
+        if (other.get("strategy") or "").upper() == strategy:
+            continue
+        other_direction = (other.get("direction") or "LONG").upper()
+        if other_direction and other_direction != direction:
+            return (
+                "NULLIFIED", "CONTRADICTORY_SIGNAL",
+                f"Opposing {other_direction} signal from {other.get('strategy')} "
+                f"on {symbol} contradicts this {direction} thesis",
+            )
+    return "CLEAR", None, None
+
+
+def _check_sector_regime_nullifier(signal: Dict[str, Any], db_path: Optional[Path]) -> tuple:
+    """Confirmed broad-decline SRS regime + LONG signal overrides signal
+    quality, except high-conviction signals (score > 75) (TIP Section 2.3).
+
+    Reuses prime_srs_scanner's real regime infrastructure (get_broad_regime,
+    bearish_regime_nullifier -- wired by CALC-SRS-2/3) rather than a
+    signal['sector_regime'] key nothing in the codebase ever sets.
+    """
+    direction = (signal.get("direction") or "LONG").upper()
+    if direction != "LONG":
+        return "CLEAR", None, None
+
+    score = signal.get("score", 0.0) or 0.0
+    try:
+        from prime_scanners.prime_srs_scanner import get_broad_regime, bearish_regime_nullifier
+        regime = get_broad_regime(db_path)
+    except Exception as e:
+        logger.debug("Sector-regime nullifier check skipped: %s", e)
+        return "CLEAR", None, None
+
+    if not bearish_regime_nullifier(regime, score):
+        return "CLEAR", None, None
+
+    return (
+        "NULLIFIED", "SECTOR_REGIME_BEARISH",
+        f"Confirmed broad-decline sector regime ({regime}) overrides this LONG "
+        f"signal (score={score} does not meet the high-conviction exception)",
+    )
+
+
 def _run_nullifier_check(
     symbol: str,
     signal: Dict[str, Any],
     duration: str,
+    strategy: str = "",
+    db_path: Optional[Path] = None,
 ) -> tuple:
-    """Run dark pool nullifier check and return (status, flags, rationale, dp_eval_dict)."""
+    """Run all nullifier checks and return (status, flags, rationale, dp_eval_dict).
+
+    Combines the dark-pool nullifier (unchanged -- load-bearing) with the
+    covered-call, contradictory-signal, and sector-regime checks that were
+    previously unwired or dead code (CALC-TRADE_FACTORS_ML-2). Overall status
+    is the worst of the four (NULLIFIED > SUSPECT > CLEAR); flags/rationale
+    are the union of whichever checks fired.
+    """
     signal_with_duration = {**signal, "duration_class": duration}
     dp_eval = _dark_pool_scanner.evaluate(symbol, signal_with_duration)
 
+    checks = [
+        (dp_eval.status, dp_eval.flags, dp_eval.rationale),
+        _check_covered_call_nullifier(signal),
+        _check_contradictory_signal_nullifier(symbol, strategy, signal, db_path),
+        _check_sector_regime_nullifier(signal, db_path),
+    ]
+
+    overall_status = "CLEAR"
+    all_flags: List[str] = []
+    rationales: List[str] = []
+    for status, flags, rationale in checks:
+        all_flags.extend(flags if isinstance(flags, list) else [flags] if flags else [])
+        if rationale:
+            rationales.append(rationale)
+        if _STATUS_RANK[status] > _STATUS_RANK[overall_status]:
+            overall_status = status
+
+    combined_rationale = " | ".join(rationales) if rationales else dp_eval.rationale
+
+    logger.info(
+        "NULLIFIER check %s: status=%s flags=%s",
+        symbol, overall_status, all_flags or "none",
+    )
+
     return (
-        dp_eval.status,
-        dp_eval.flags,
-        dp_eval.rationale,
+        overall_status,
+        all_flags,
+        combined_rationale,
         dp_eval.to_dict(),
     )
 
@@ -251,32 +360,34 @@ def _build_maintenance_flags(signal: Dict[str, Any], strategy: str) -> List[str]
 # Public evaluation functions -- one per strategy
 # ---------------------------------------------------------------------------
 
-def evaluate_uoa(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+def evaluate_uoa(symbol: str, signal: Dict[str, Any], db_path: Optional[Path] = None) -> TradeFactorEvaluation:
     """Evaluate trade factors for a UOA signal."""
-    return _evaluate("UOA", symbol, signal)
+    return _evaluate("UOA", symbol, signal, db_path=db_path)
 
 
-def evaluate_pead(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+def evaluate_pead(symbol: str, signal: Dict[str, Any], db_path: Optional[Path] = None) -> TradeFactorEvaluation:
     """Evaluate trade factors for a PEAD signal."""
-    return _evaluate("PEAD", symbol, signal)
+    return _evaluate("PEAD", symbol, signal, db_path=db_path)
 
 
-def evaluate_mmr(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+def evaluate_mmr(symbol: str, signal: Dict[str, Any], db_path: Optional[Path] = None) -> TradeFactorEvaluation:
     """Evaluate trade factors for an MMR (Metals Mean-Reversion) signal."""
-    return _evaluate("MMR", symbol, signal)
+    return _evaluate("MMR", symbol, signal, db_path=db_path)
 
 
-def evaluate_srs(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+def evaluate_srs(symbol: str, signal: Dict[str, Any], db_path: Optional[Path] = None) -> TradeFactorEvaluation:
     """Evaluate trade factors for an SRS (Sector Recovery Strategy) signal."""
-    return _evaluate("SRS", symbol, signal)
+    return _evaluate("SRS", symbol, signal, db_path=db_path)
 
 
-def evaluate_index(symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+def evaluate_index(symbol: str, signal: Dict[str, Any], db_path: Optional[Path] = None) -> TradeFactorEvaluation:
     """Evaluate trade factors for an Index strategy signal."""
-    return _evaluate("IDX", symbol, signal)
+    return _evaluate("IDX", symbol, signal, db_path=db_path)
 
 
-def _evaluate(strategy: str, symbol: str, signal: Dict[str, Any]) -> TradeFactorEvaluation:
+def _evaluate(
+    strategy: str, symbol: str, signal: Dict[str, Any], db_path: Optional[Path] = None,
+) -> TradeFactorEvaluation:
     """Core evaluation logic shared by all strategies."""
     timestamp = datetime.utcnow().isoformat()
     direction = signal.get("direction", "LONG")
@@ -295,7 +406,7 @@ def _evaluate(strategy: str, symbol: str, signal: Dict[str, Any]) -> TradeFactor
     entry_method, entry_trigger, entry_rationale = _determine_entry(signal, dur_class)
     exit_triggers = _build_exit_triggers(signal, strategy, dur_class)
     null_status, null_flags, null_rationale, dp_eval = _run_nullifier_check(
-        symbol, signal, dur_class,
+        symbol, signal, dur_class, strategy=strategy, db_path=db_path,
     )
     maint_flags = _build_maintenance_flags(signal, strategy)
 

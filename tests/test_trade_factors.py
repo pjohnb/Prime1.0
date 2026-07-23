@@ -205,5 +205,139 @@ class TestEvaluateIndex(unittest.TestCase):
         self.assertIsNotNone(result.dark_pool_eval)
 
 
+class TestCalcTradeFactorsML2NullifierCoverage(unittest.TestCase):
+    """CALC-TRADE_FACTORS_ML-2: covered-call, contradictory-signal, and
+    sector-regime nullifiers must actually affect nullifier_status, not just
+    append a cosmetic maintenance flag."""
+
+    def test_covered_call_nullifier_status_propagates(self):
+        signal = {
+            "direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+            "session_open_price": 100.0,
+            "covered_call_eval": {"status": "NULLIFIED", "rationale": "CC pattern"},
+        }
+        result = evaluate_uoa("AAPL", signal)
+        self.assertEqual(result.nullifier_status, "NULLIFIED")
+        self.assertIn("COVERED_CALL", result.nullifier_flags)
+
+    def test_covered_call_suspect_does_not_escalate_to_nullified(self):
+        signal = {
+            "direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+            "session_open_price": 100.0,
+            "covered_call_eval": {"status": "SUSPECT", "rationale": "CC pattern LT"},
+        }
+        result = evaluate_uoa("AAPL", signal)
+        self.assertEqual(result.nullifier_status, "SUSPECT")
+
+    def test_covered_call_clear_does_not_affect_status(self):
+        signal = {
+            "direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+            "session_open_price": 100.0,
+            "covered_call_eval": {"status": "CLEAR"},
+        }
+        result = evaluate_uoa("AAPL", signal)
+        self.assertEqual(result.nullifier_status, "CLEAR")
+
+
+def test_contradictory_signal_nullifies_opposing_direction(tmp_path):
+    from prime_data.prime_db import init_db
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+    from prime_intelligence.prime_trade_factors import evaluate_uoa
+
+    db = tmp_path / "contradictory.db"
+    init_db(db)
+    init_signals_table(db)
+    insert_signal_dedup(
+        symbol="AAPL", strategy="IDX", scan_ts="2026-07-23 09:00:00",
+        direction="SHORT", status="APPROVED", db_path=db,
+    )
+
+    signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+              "session_open_price": 100.0}
+    result = evaluate_uoa("AAPL", signal, db_path=db)
+    assert result.nullifier_status == "NULLIFIED"
+    assert "CONTRADICTORY_SIGNAL" in result.nullifier_flags
+
+
+def test_no_contradictory_signal_when_same_direction(tmp_path):
+    from prime_data.prime_db import init_db
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+    from prime_intelligence.prime_trade_factors import evaluate_uoa
+
+    db = tmp_path / "concordant.db"
+    init_db(db)
+    init_signals_table(db)
+    insert_signal_dedup(
+        symbol="AAPL", strategy="IDX", scan_ts="2026-07-23 09:00:00",
+        direction="LONG", status="APPROVED", db_path=db,
+    )
+
+    signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+              "session_open_price": 100.0}
+    result = evaluate_uoa("AAPL", signal, db_path=db)
+    assert "CONTRADICTORY_SIGNAL" not in result.nullifier_flags
+
+
+def test_contradictory_signal_ignores_same_strategy(tmp_path):
+    """An opposing-direction row from the SAME strategy (e.g. a stale prior
+    UOA run) must not self-contradict."""
+    from prime_data.prime_db import init_db
+    from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup
+    from prime_intelligence.prime_trade_factors import evaluate_uoa
+
+    db = tmp_path / "self.db"
+    init_db(db)
+    init_signals_table(db)
+    insert_signal_dedup(
+        symbol="AAPL", strategy="UOA", scan_ts="2026-07-22 09:00:00",
+        direction="SHORT", status="APPROVED", db_path=db,
+    )
+
+    signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+              "session_open_price": 100.0}
+    result = evaluate_uoa("AAPL", signal, db_path=db)
+    assert "CONTRADICTORY_SIGNAL" not in result.nullifier_flags
+
+
+def test_sector_regime_nullifies_long_signal_in_bearish_regime(tmp_path, monkeypatch):
+    from prime_intelligence.prime_trade_factors import evaluate_uoa
+
+    monkeypatch.setattr(
+        "prime_scanners.prime_srs_scanner.get_broad_regime",
+        lambda db_path=None: "BROAD_DECLINE",
+    )
+    signal = {"direction": "LONG", "score": 50.0, "price_at_scan": 100.0,
+              "session_open_price": 100.0}
+    result = evaluate_uoa("AAPL", signal, db_path=tmp_path / "regime.db")
+    assert result.nullifier_status == "NULLIFIED"
+    assert "SECTOR_REGIME_BEARISH" in result.nullifier_flags
+
+
+def test_sector_regime_high_conviction_exception_clears(tmp_path, monkeypatch):
+    from prime_intelligence.prime_trade_factors import evaluate_uoa
+
+    monkeypatch.setattr(
+        "prime_scanners.prime_srs_scanner.get_broad_regime",
+        lambda db_path=None: "BROAD_DECLINE",
+    )
+    signal = {"direction": "LONG", "score": 80.0, "price_at_scan": 100.0,
+              "session_open_price": 100.0}
+    result = evaluate_uoa("AAPL", signal, db_path=tmp_path / "regime2.db")
+    assert "SECTOR_REGIME_BEARISH" not in result.nullifier_flags
+
+
+def test_sector_regime_does_not_affect_short_signals(tmp_path, monkeypatch):
+    from prime_intelligence.prime_trade_factors import evaluate_uoa
+
+    monkeypatch.setattr(
+        "prime_scanners.prime_srs_scanner.get_broad_regime",
+        lambda db_path=None: "BROAD_DECLINE",
+    )
+    signal = {"direction": "SHORT", "score": 50.0, "price_at_scan": 100.0,
+              "session_open_price": 100.0}
+    result = evaluate_uoa("AAPL", signal, db_path=tmp_path / "regime3.db")
+    assert "SECTOR_REGIME_BEARISH" not in result.nullifier_flags
+
+
 if __name__ == "__main__":
     unittest.main()
