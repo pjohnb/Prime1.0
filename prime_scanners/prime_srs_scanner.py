@@ -295,6 +295,10 @@ def main():
         logger.warning("SRS: Polygon unavailable — skipping scan")
         return
 
+    from prime_data.prime_db import init_db, log_ops_event
+    init_db()
+    log_ops_event("SCAN_START", "srs_scanner")
+
     scan_data = run_srs_scan(api_key)
 
     print(f"\nSRS Scan: regime={scan_data['regime']}")
@@ -304,6 +308,9 @@ def main():
               f"5d {m.get('chg_5d_pct', 0):+5.1f}%")
 
     save_results(scan_data)
+
+    log_ops_event("SCAN_COMPLETE", "srs_scanner",
+                  detail=f"signals={len(scan_data['summary']['recovering'])}")
 
 
 if __name__ == "__main__":
