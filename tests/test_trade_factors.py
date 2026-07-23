@@ -18,6 +18,8 @@ from prime_intelligence.prime_trade_factors import (
     evaluate_pead,
     evaluate_srs,
     evaluate_uoa,
+    _evaluate,
+    _normalize_score,
 )
 
 
@@ -203,6 +205,58 @@ class TestEvaluateIndex(unittest.TestCase):
         }
         result = evaluate_index("SPY", signal)
         self.assertIsNotNone(result.dark_pool_eval)
+
+
+class TestCalcTradeFactorsML3ScoreNormalization(unittest.TestCase):
+    """CALC-TRADE_FACTORS_ML-3: entry-modifier thresholds assumed a 0-10
+    score scale, making IMMEDIATE_HALF/SCALED unreachable for PEAD/MMR and
+    IMMEDIATE_FULL rare for IDX. Scores are now normalized to 0-100 before
+    the (now 80/60) thresholds are applied."""
+
+    def test_psa_score_normalizes_and_hits_immediate_half(self):
+        self.assertEqual(_normalize_score("PSA", 500.0), 50.0)
+        signal = {"direction": "LONG", "score": 500.0, "price_at_scan": 100.0,
+                  "session_open_price": 100.0}
+        result = _evaluate("PSA", "AAPL", signal)
+        self.assertEqual(result.normalized_score, 50.0)
+        self.assertEqual(result.entry_method, "IMMEDIATE_HALF")
+
+    def test_mtfa_score_passes_through_unchanged(self):
+        self.assertEqual(_normalize_score("MTFA", 66.7), 66.7)
+        signal = {"direction": "LONG", "score": 66.7, "price_at_scan": 100.0,
+                  "session_open_price": 100.0}
+        result = _evaluate("MTFA", "AAPL", signal)
+        self.assertEqual(result.normalized_score, 66.7)
+
+    def test_idx_high_score_hits_immediate_full_after_normalization(self):
+        signal = {"direction": "LONG", "score": 83.3, "price_at_scan": 100.0,
+                  "session_open_price": 100.0}
+        result = evaluate_index("SPY", signal)
+        self.assertEqual(result.entry_method, "IMMEDIATE_FULL")
+
+    def test_uoa_watch_tier_sizzle_reaches_mid_band(self):
+        # WATCH_THRESHOLD sizzle=4.0 -> normalized 64 (SCALED/FULL band, not HALF).
+        self.assertEqual(_normalize_score("UOA", 4.0), 64.0)
+
+    def test_uoa_extreme_sizzle_clamps_to_100(self):
+        self.assertEqual(_normalize_score("UOA", 300.85), 100.0)
+
+    def test_immediate_half_reachable_for_pead(self):
+        # PEAD's own MIN_SIGNAL_SCORE floor is 50; a near-floor score must
+        # now be able to land below the 60 threshold (was structurally
+        # unreachable under the old 0-10-scale 6.0/8.0 thresholds).
+        signal = {"direction": "LONG", "score": 52.0, "price_at_scan": 100.0,
+                  "session_open_price": 100.0, "days_since_earnings": 1}
+        result = evaluate_pead("MSFT", signal)
+        self.assertEqual(result.entry_method, "IMMEDIATE_HALF")
+
+    def test_scaled_reachable_for_uoa_lt_mid_band(self):
+        # weighted_dte > 30 -> LT duration; sizzle 4.5 -> normalized 72 (60-80 band).
+        signal = {"direction": "LONG", "score": 4.5, "price_at_scan": 100.0,
+                  "session_open_price": 100.0, "weighted_dte": 45}
+        result = evaluate_uoa("AAPL", signal)
+        self.assertEqual(result.duration_class, "LT")
+        self.assertEqual(result.entry_method, "SCALED")
 
 
 class TestCalcTradeFactorsML2NullifierCoverage(unittest.TestCase):

@@ -58,6 +58,7 @@ class TradeFactorEvaluation:
 
     # Score
     signal_score: float = 0.0
+    normalized_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -84,6 +85,7 @@ class TradeFactorEvaluation:
             "dark_pool_eval": self.dark_pool_eval,
             "maintenance_flags": self.maintenance_flags,
             "signal_score": self.signal_score,
+            "normalized_score": self.normalized_score,
         }
 
 
@@ -122,24 +124,59 @@ def _classify_duration(signal: Dict[str, Any], strategy: str) -> tuple:
         return "MT", "LOW", f"Unknown strategy {strategy} -> default MT"
 
 
-def _determine_entry(signal: Dict[str, Any], duration: str) -> tuple:
+# CALC-TRADE_FACTORS_ML-3: UOA's STRONG_THRESHOLD (5.0x sizzle) lands at
+# exactly 80 (the IMMEDIATE_FULL threshold below); WATCH_THRESHOLD (4.0x)
+# lands at 64 (the SCALED/FULL band).
+UOA_SIZZLE_NORMALIZE_SCALE = 16.0
+
+
+def _normalize_score(strategy: str, score: float) -> float:
+    """Normalize a strategy's raw score to a common 0-100 scale.
+
+    Raw scanner score scales are wildly inconsistent: PSA's momentum_pct is
+    an unbounded percentage observed up to ~1000; UOA's sizzle_index is an
+    unbounded ratio. MTFA/IDX/PEAD/MMR/SRS scores are already effectively
+    0-100 (or a small fixed tier ceiling), so they pass through unchanged.
+    Without this, IMMEDIATE_HALF/SCALED were structurally unreachable for
+    PEAD/MMR (always >=6-8x the old 0-10 thresholds) and IMMEDIATE_FULL was
+    rare for IDX (small additive counter, max ~8.5).
+    """
+    if strategy == "PSA":
+        normalized = score / 10.0
+    elif strategy == "UOA":
+        normalized = score * UOA_SIZZLE_NORMALIZE_SCALE
+    else:
+        normalized = score
+    return max(0.0, min(normalized, 100.0))
+
+
+def _determine_entry(signal: Dict[str, Any], duration: str, strategy: str) -> tuple:
     """Determine entry method based on signal characteristics."""
     score = signal.get("score", 0.0)
+    normalized_score = _normalize_score(strategy, score)
     session = signal.get("session_type", "REGULAR")
 
     if session in ("PRE_MARKET", "AFTER_HOURS"):
-        return "WAIT", "market_open", f"Signal in {session} -- wait for regular session confirmation"
+        return ("WAIT", "market_open",
+                f"Signal in {session} -- wait for regular session confirmation", normalized_score)
 
-    if score >= 8.0:
-        return "IMMEDIATE_FULL", "", f"High conviction (score={score}) -> full entry"
-    elif score >= 6.0:
+    if normalized_score >= 80.0:
+        return ("IMMEDIATE_FULL", "",
+                f"High conviction (score={score}, normalized={normalized_score:.1f}) -> full entry",
+                normalized_score)
+    elif normalized_score >= 60.0:
         if duration == "LT":
-            return "SCALED", "tranche_2_on_confirmation", (
-                f"Score={score} on LT thesis -> enter half, add on confirmation"
-            )
-        return "IMMEDIATE_FULL", "", f"Score={score} -> full entry"
+            return ("SCALED", "tranche_2_on_confirmation", (
+                f"Score={score} (normalized={normalized_score:.1f}) on LT thesis -- "
+                f"enter half, add on confirmation"
+            ), normalized_score)
+        return ("IMMEDIATE_FULL", "",
+                f"Score={score} (normalized={normalized_score:.1f}) -> full entry",
+                normalized_score)
     else:
-        return "IMMEDIATE_HALF", "", f"Moderate conviction (score={score}) -> half position"
+        return ("IMMEDIATE_HALF", "",
+                f"Moderate conviction (score={score}, normalized={normalized_score:.1f}) -> half position",
+                normalized_score)
 
 
 def _build_exit_triggers(signal: Dict[str, Any], strategy: str, duration: str) -> List[Dict[str, str]]:
@@ -403,7 +440,9 @@ def _evaluate(
     )
 
     dur_class, dur_conf, dur_rationale = _classify_duration(signal, strategy)
-    entry_method, entry_trigger, entry_rationale = _determine_entry(signal, dur_class)
+    entry_method, entry_trigger, entry_rationale, normalized_score = _determine_entry(
+        signal, dur_class, strategy,
+    )
     exit_triggers = _build_exit_triggers(signal, strategy, dur_class)
     null_status, null_flags, null_rationale, dp_eval = _run_nullifier_check(
         symbol, signal, dur_class, strategy=strategy, db_path=db_path,
@@ -428,4 +467,5 @@ def _evaluate(
         dark_pool_eval=dp_eval,
         maintenance_flags=maint_flags,
         signal_score=score,
+        normalized_score=normalized_score,
     )
