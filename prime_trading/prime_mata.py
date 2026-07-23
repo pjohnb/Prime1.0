@@ -131,34 +131,72 @@ def allocate_trade(
 
     if use_weights:
         # CIL-NEW-13: proportional by weight — used by the All Accounts profile.
-        total_weight = sum(float(a.get("weight", 1) or 1) for a in eligible)
-        if total_weight <= 0:
-            total_weight = len(eligible)
-        allocs: List[Dict[str, Any]] = []
-        remaining = target_shares
+        # CALC-MATA-1: `weight or 1` silently coerced an explicit weight=0 (or a
+        # missing/None weight) back to 1, letting a deliberately-excluded account
+        # still receive shares. Filter those out before computing total_weight.
+        weighted: List[tuple] = []
         for a in eligible:
-            w = float(a.get("weight", 1) or 1)
-            raw = int(target_shares * w / total_weight)
-            cap_dollars = float(a.get(capacity_field, 0) or 0)
-            cap_shares = int(cap_dollars // price) if price > 0 else raw
-            take = min(raw, cap_shares, remaining) if cap_shares > 0 else 0
-            allocs.append({"account": a.get("name"), "type": a.get("type"),
-                           "_take": take, "_cap": cap_shares, "_acct": a})
-            remaining -= take
-        # Redistribute residual to any account still below its cap.
-        if remaining > 0:
-            for slot in allocs:
-                if remaining <= 0:
-                    break
-                extra = min(remaining, slot["_cap"] - slot["_take"])
-                if extra > 0:
-                    slot["_take"] += extra
-                    remaining -= extra
+            w_raw = a.get("weight")
+            try:
+                w = float(w_raw) if w_raw is not None else 0.0
+            except (TypeError, ValueError):
+                w = 0.0
+            if w <= 0:
+                logger.warning(
+                    "MATA: account %s has weight=%s — excluded from allocation",
+                    a.get("name"), w_raw,
+                )
+                continue
+            weighted.append((a, w))
+
+        total_weight = sum(w for _, w in weighted)
+        allocs: List[Dict[str, Any]] = []
+        if total_weight > 0:
+            for a, w in weighted:
+                ideal = target_shares * w / total_weight
+                floor_take = int(ideal)  # floor — ideal is always >= 0 here
+                cap_dollars = float(a.get(capacity_field, 0) or 0)
+                cap_shares = int(cap_dollars // price) if price > 0 else floor_take
+                take = min(floor_take, cap_shares) if cap_shares > 0 else 0
+                allocs.append({
+                    "account": a.get("name"), "type": a.get("type"),
+                    "_take": take, "_cap": cap_shares,
+                    "_fractional": ideal - floor_take,
+                })
+            remaining = target_shares - sum(s["_take"] for s in allocs)
+            # CALC-MATA-2: largest-remainder method — hand out the leftover
+            # shares ONE AT A TIME, in descending fractional-shortfall order,
+            # not whichever account happens to appear first in ops_config.json.
+            # (Awarding the whole remainder to the top-ranked slot in one shot
+            # would just relocate the list-order bias to the sort key instead
+            # of removing it.) Capacity can force more than one pass — e.g. if
+            # a top-ranked account is already at its cap — so loop until either
+            # the remainder is exhausted or no slot has headroom left.
+            ranked = sorted(allocs, key=lambda s: s["_fractional"], reverse=True)
+            while remaining > 0:
+                gave_any = False
+                for slot in ranked:
+                    if remaining <= 0:
+                        break
+                    if slot["_take"] < slot["_cap"]:
+                        slot["_take"] += 1
+                        remaining -= 1
+                        gave_any = True
+                if not gave_any:
+                    break  # every account is at cap — remainder can't be placed
         result["allocations"] = [
             {"account": s["account"], "type": s["type"],
              "shares": s["_take"], "notional": round(s["_take"] * price, 2)}
             for s in allocs if s["_take"] > 0
         ]
+        if result["allocations"] and target_shares > 0:
+            logger.info(
+                "MATA allocation: %s",
+                ", ".join(
+                    f"{a['account']}={a['shares']} ({100 * a['shares'] / target_shares:.1f}%)"
+                    for a in result["allocations"]
+                ),
+            )
     else:
         # Legacy greedy fill: largest capacity first.
         remaining = target_shares
