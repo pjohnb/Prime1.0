@@ -20,6 +20,7 @@ from prime_intelligence.prime_trade_factors import (
     evaluate_uoa,
     _evaluate,
     _normalize_score,
+    _data_completeness,
 )
 
 
@@ -257,6 +258,53 @@ class TestCalcTradeFactorsML3ScoreNormalization(unittest.TestCase):
         result = evaluate_uoa("AAPL", signal)
         self.assertEqual(result.duration_class, "LT")
         self.assertEqual(result.entry_method, "SCALED")
+
+
+class TestCalcTradeFactorsML8MissingDataConfidence(unittest.TestCase):
+    """CALC-TRADE_FACTORS_ML-8: a signal missing key fields entirely must not
+    be classified with the same confidence as a fully-populated one."""
+
+    def test_two_of_five_fields_produces_low_confidence(self):
+        signal = {"direction": "LONG", "score": 5.0}
+        result = _evaluate("UOA", "AAPL", signal)
+        self.assertEqual(result.duration_confidence, "LOW")
+        self.assertAlmostEqual(result.data_completeness_pct, 40.0)
+
+    def test_four_of_five_fields_produces_high_confidence(self):
+        signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+                  "weighted_dte": 5}
+        result = _evaluate("UOA", "AAPL", signal)
+        self.assertEqual(result.duration_confidence, "HIGH")
+        self.assertAlmostEqual(result.data_completeness_pct, 80.0)
+
+    def test_missing_fields_logged_with_warning(self):
+        signal = {"direction": "LONG", "score": 5.0}
+        with self.assertLogs("prime_intelligence.prime_trade_factors", level="WARNING") as cm:
+            _evaluate("UOA", "AAPL", signal)
+        self.assertTrue(any("classification degraded" in m for m in cm.output))
+
+    def test_fully_populated_signal_unaffected(self):
+        signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+                  "weighted_dte": 5, "session_open_price": 100.0}
+        result = _evaluate("UOA", "AAPL", signal)
+        self.assertEqual(result.duration_confidence, "HIGH")
+        self.assertEqual(result.data_completeness_pct, 100.0)
+
+    def test_legitimately_zero_field_counts_as_populated(self):
+        # weighted_dte=0 is a real value (ST classification), not "missing".
+        signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+                  "weighted_dte": 0, "session_open_price": 100.0}
+        populated, total, pct = _data_completeness(signal, "UOA")
+        self.assertEqual(populated, 5)
+        self.assertEqual(pct, 100.0)
+
+    def test_completeness_never_upgrades_existing_low_confidence(self):
+        # SRS BOTTOMING phase is already LOW confidence per _classify_duration;
+        # full data completeness must not upgrade it.
+        signal = {"direction": "LONG", "score": 5.0, "price_at_scan": 100.0,
+                  "sector_phase": "BOTTOMING", "session_open_price": 100.0}
+        result = _evaluate("SRS", "XLK", signal)
+        self.assertEqual(result.duration_confidence, "LOW")
 
 
 class TestCalcTradeFactorsML2NullifierCoverage(unittest.TestCase):

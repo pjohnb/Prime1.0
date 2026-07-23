@@ -59,6 +59,7 @@ class TradeFactorEvaluation:
     # Score
     signal_score: float = 0.0
     normalized_score: float = 0.0
+    data_completeness_pct: float = 100.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -86,7 +87,46 @@ class TradeFactorEvaluation:
             "maintenance_flags": self.maintenance_flags,
             "signal_score": self.signal_score,
             "normalized_score": self.normalized_score,
+            "data_completeness_pct": self.data_completeness_pct,
         }
+
+
+# CALC-TRADE_FACTORS_ML-8: fields whose ABSENCE (not "legitimately zero")
+# should downgrade classification confidence, keyed by strategy since not
+# every field is relevant to every strategy's classification.
+_COMPLETENESS_FIELDS: Dict[str, List[str]] = {
+    "UOA": ["direction", "score", "price_at_scan", "weighted_dte", "session_open_price"],
+    "PEAD": ["direction", "score", "price_at_scan", "days_since_earnings", "session_open_price"],
+    "MMR": ["direction", "score", "price_at_scan", "session_open_price"],
+    "SRS": ["direction", "score", "price_at_scan", "sector_phase", "session_open_price"],
+    "IDX": ["direction", "score", "price_at_scan", "session_open_price"],
+}
+_DEFAULT_COMPLETENESS_FIELDS = ["direction", "score", "price_at_scan", "session_open_price"]
+
+_CONFIDENCE_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def _data_completeness(signal: Dict[str, Any], strategy: str) -> tuple:
+    """Return (populated_count, total_count, completeness_pct).
+
+    A field counts as populated only if it is present AND not None --
+    distinguishing a truly-absent field from one that is legitimately 0 or
+    an empty string (e.g. signal.get('weighted_dte') is None vs 0).
+    """
+    fields = _COMPLETENESS_FIELDS.get(strategy, _DEFAULT_COMPLETENESS_FIELDS)
+    populated = sum(1 for f in fields if signal.get(f) is not None)
+    total = len(fields)
+    pct = (populated / total * 100.0) if total else 100.0
+    return populated, total, pct
+
+
+def _completeness_confidence(pct: float) -> str:
+    """>=80% -> HIGH (current behavior), 60-80% -> MEDIUM, <60% -> LOW."""
+    if pct >= 80.0:
+        return "HIGH"
+    elif pct >= 60.0:
+        return "MEDIUM"
+    return "LOW"
 
 
 def _classify_duration(signal: Dict[str, Any], strategy: str) -> tuple:
@@ -440,6 +480,22 @@ def _evaluate(
     )
 
     dur_class, dur_conf, dur_rationale = _classify_duration(signal, strategy)
+
+    # CALC-TRADE_FACTORS_ML-8: a signal missing key fields entirely was
+    # previously classified with the same confidence as a fully-populated
+    # one (bare .get(key, 0) treats "absent" and "legitimately 0" alike).
+    # Cap duration_confidence by data completeness so degraded data can
+    # never masquerade as a fully-confident classification.
+    populated, total, completeness_pct = _data_completeness(signal, strategy)
+    completeness_conf = _completeness_confidence(completeness_pct)
+    if _CONFIDENCE_RANK[completeness_conf] < _CONFIDENCE_RANK[dur_conf]:
+        if completeness_conf == "LOW":
+            logger.warning(
+                "Trade factor classification degraded: only %d/%d fields "
+                "populated for %s", populated, total, symbol,
+            )
+        dur_conf = completeness_conf
+
     entry_method, entry_trigger, entry_rationale, normalized_score = _determine_entry(
         signal, dur_class, strategy,
     )
@@ -468,4 +524,5 @@ def _evaluate(
         maintenance_flags=maint_flags,
         signal_score=score,
         normalized_score=normalized_score,
+        data_completeness_pct=completeness_pct,
     )
