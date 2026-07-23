@@ -17,6 +17,7 @@ from prime_notifications.prime_push_signal import (
     push_signal_alerts,
     _format_signal_alert_text,
     _process_single_signal,
+    _resolve_strategy,
 )
 
 
@@ -127,6 +128,31 @@ class TestAdvisoryFallback(unittest.TestCase):
         self.assertIn("advisory", alert)
 
 
+class TestResolveStrategy(unittest.TestCase):
+    """CALC-TRADE_FACTORS_ML-1: strategy resolution must not fall back to '???'
+    for signals that only carry a 'scanner' key (only IDX reliably sets
+    'strategy' upstream)."""
+
+    def test_uses_strategy_key_when_present(self):
+        self.assertEqual(_resolve_strategy({"strategy": "IDX"}), "IDX")
+
+    def test_falls_back_to_scanner_key(self):
+        self.assertEqual(_resolve_strategy({"scanner": "uoa"}), "UOA")
+
+    def test_normalizes_case(self):
+        self.assertEqual(_resolve_strategy({"strategy": "pead"}), "PEAD")
+
+    def test_no_strategy_or_scanner_falls_back_to_placeholder(self):
+        self.assertEqual(_resolve_strategy({}), "???")
+
+    def test_process_single_signal_routes_scanner_key_signal(self):
+        signal = {"symbol": "AAA", "scanner": "uoa", "score": 7.5,
+                  "price_at_scan": 100.0, "direction": "LONG"}
+        with patch("prime_notifications.prime_push_signal._executor"):
+            alert = _process_single_signal(signal)
+        self.assertEqual(alert["strategy"], "UOA")
+
+
 class TestSchedulerIntegration(unittest.TestCase):
     """Scheduler trigger with mocked scanner output."""
 
@@ -159,6 +185,49 @@ class TestSchedulerIntegration(unittest.TestCase):
         mock_push.assert_called_once()
         pushed_signals = mock_push.call_args[0][0]
         self.assertEqual(len(pushed_signals), 2)
+
+    @patch("prime_notifications.prime_push_signal.push_signal_alerts")
+    @patch("prime_notifications.prime_notifier.send_digest")
+    @patch("prime_notifications.prime_digest.assemble_digest")
+    @patch("prime_data.prime_db.get_open_positions")
+    def test_post_scan_notify_stamps_missing_strategy(
+        self, mock_positions, mock_assemble, mock_send, mock_push
+    ):
+        """CALC-TRADE_FACTORS_ML-1: a signal with no 'strategy' key (the real
+        shape for UOA/PEAD/MMR/SRS/PSA/MTFA) gets one stamped from
+        scanner_name before reaching push_signal_alerts."""
+        from prime_ops.prime_scheduler import post_scan_notify
+
+        mock_positions.return_value = []
+        mock_assemble.return_value = ({"scanner": "uoa", "signal_count": 1}, "text")
+        mock_send.return_value = True
+        mock_push.return_value = []
+
+        scan_data = {"signals": [{"symbol": "AAPL", "score": 8.0, "price_at_scan": 190.0}]}
+        post_scan_notify("uoa", scan_data)
+
+        pushed_signals = mock_push.call_args[0][0]
+        self.assertEqual(pushed_signals[0]["strategy"], "UOA")
+
+    @patch("prime_notifications.prime_push_signal.push_signal_alerts")
+    @patch("prime_notifications.prime_notifier.send_digest")
+    @patch("prime_notifications.prime_digest.assemble_digest")
+    @patch("prime_data.prime_db.get_open_positions")
+    def test_post_scan_notify_does_not_override_existing_strategy(
+        self, mock_positions, mock_assemble, mock_send, mock_push
+    ):
+        from prime_ops.prime_scheduler import post_scan_notify
+
+        mock_positions.return_value = []
+        mock_assemble.return_value = ({"scanner": "idx", "signal_count": 1}, "text")
+        mock_send.return_value = True
+        mock_push.return_value = []
+
+        scan_data = {"signals": [{"symbol": "SPY", "strategy": "IDX", "score": 8.0}]}
+        post_scan_notify("idx", scan_data)
+
+        pushed_signals = mock_push.call_args[0][0]
+        self.assertEqual(pushed_signals[0]["strategy"], "IDX")
 
     @patch("prime_notifications.prime_push_signal.push_signal_alerts")
     @patch("prime_notifications.prime_notifier.send_digest")

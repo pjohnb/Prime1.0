@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prime_push")
 
 
+def _resolve_strategy(signal: Dict[str, Any]) -> str:
+    """CALC-TRADE_FACTORS_ML-1: resolve the strategy key with a scanner-name
+    fallback so a signal missing 'strategy' (only IDX reliably sets it) still
+    routes to its strategy-specific Trade Factor Registry branch instead of
+    the generic '???' else-branch."""
+    strategy = signal.get("strategy") or signal.get("scanner") or "???"
+    return str(strategy).strip().upper()
+
+
 def build_signal_alert(
     signal: Dict[str, Any],
     factors: Dict[str, Any],
@@ -23,7 +32,7 @@ def build_signal_alert(
 ) -> Dict[str, Any]:
     """Assemble per-signal alert with full factor evaluation and Claude advisory."""
     symbol = signal.get("symbol", "???")
-    strategy = signal.get("strategy", "???")
+    strategy = _resolve_strategy(signal)
     score = signal.get("score", 0.0)
 
     nullifier = factors.get("nullifier", {})
@@ -102,7 +111,7 @@ def _format_signal_alert_text(alert: Dict[str, Any]) -> str:
 def _process_single_signal(signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Process a single signal: evaluate factors, get advisory, build alert."""
     symbol = signal.get("symbol", "???")
-    strategy = signal.get("strategy", "???")
+    strategy = _resolve_strategy(signal)
 
     try:
         from prime_intelligence.prime_trade_factors import _evaluate

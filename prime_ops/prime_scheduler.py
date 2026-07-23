@@ -170,6 +170,17 @@ def post_scan_notify(scanner_name: str, scan_data: Dict[str, Any]) -> None:
         signals = scan_data.get("signals", [])
         open_positions = get_open_positions()
 
+        # CALC-TRADE_FACTORS_ML-1: UOA/PEAD/MMR/SRS/PSA/MTFA never stamp a
+        # per-signal 'strategy' key (only IDX does), so the Trade Factor
+        # Registry's strategy=signal.get('strategy', '???') resolution falls
+        # into the generic branch for every other scanner. This is the one
+        # place that reliably knows the scanner identity for every signal
+        # shape, so stamp it here -- before push_signal_alerts/ML capture --
+        # rather than touching each of the six scanners individually.
+        strategy_name = (scanner_name or "").strip().upper()
+        for sig in signals:
+            sig.setdefault("strategy", strategy_name)
+
         digest, text = assemble_digest(scanner_name, signals, open_positions)
         send_digest(digest, text)
 

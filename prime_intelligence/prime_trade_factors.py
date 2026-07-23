@@ -282,6 +282,15 @@ def _evaluate(strategy: str, symbol: str, signal: Dict[str, Any]) -> TradeFactor
     direction = signal.get("direction", "LONG")
     score = signal.get("score", 0.0)
 
+    # CALC-TRADE_FACTORS_ML-1: make strategy routing visible in the server
+    # log so a regression (a signal falling back into the generic branch)
+    # is observable without inspecting trade_factors JSON.
+    known_branch = strategy in ("UOA", "PEAD", "MMR", "SRS", "IDX")
+    logger.info(
+        "Trade factor routing: strategy=%s symbol=%s branch=%s",
+        strategy, symbol, strategy if known_branch else "GENERIC(unknown strategy)",
+    )
+
     dur_class, dur_conf, dur_rationale = _classify_duration(signal, strategy)
     entry_method, entry_trigger, entry_rationale = _determine_entry(signal, dur_class)
     exit_triggers = _build_exit_triggers(signal, strategy, dur_class)
