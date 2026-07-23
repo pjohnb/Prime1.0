@@ -94,6 +94,7 @@ class TestManipulationPatterns(unittest.TestCase):
             "strategy": "UOA",
             "price_at_scan": 104.0,
             "session_open_price": 100.0,
+            "call_volume": 60_000,
             "duration_class": "MT",
         }
         result = self.scanner.evaluate("EXTEND", signal)
@@ -105,10 +106,25 @@ class TestManipulationPatterns(unittest.TestCase):
             "strategy": "UOA",
             "price_at_scan": 104.0,
             "session_open_price": 100.0,
+            "call_volume": 60_000,
             "duration_class": "MT",
         }
         result = self.scanner.evaluate("SHORTDIR", signal)
         self.assertNotIn("CALL_VOLUME_PRICE_EXTENDED", result.flags)
+
+    def test_pattern2_no_flag_without_call_volume_evidence(self):
+        """CALC-DK-3: price move alone (Pattern 1's evidence) must not also
+        trip Pattern 2 -- it needs independent call_volume evidence."""
+        signal = {
+            "direction": "LONG",
+            "strategy": "UOA",
+            "price_at_scan": 104.0,
+            "session_open_price": 100.0,
+            "duration_class": "MT",
+        }
+        result = self.scanner.evaluate("NOVOL", signal)
+        self.assertNotIn("CALL_VOLUME_PRICE_EXTENDED", result.flags)
+        self.assertEqual(result.flag_count, 1, "Only Pattern 1 should fire, not both")
 
     def test_pattern3_block_print_against_direction(self):
         signal = {
@@ -208,6 +224,42 @@ class TestIntegrationRuleDualFlags(unittest.TestCase):
                 result.nullified,
                 f"Expected NULLIFIED for 2+ flags at duration={duration}",
             )
+
+
+class TestPattern1Pattern2Decoupling(unittest.TestCase):
+    """CALC-DK-3: Pattern 1 and Pattern 2 must be independent evidence, not
+    the same price move re-cut at two thresholds."""
+
+    def test_price_move_alone_does_not_trip_both_patterns(self):
+        scanner = DarkPoolScanner()
+        # >=3% LONG move with no call_volume evidence -- only Pattern 1 should fire.
+        signal = {
+            "direction": "LONG",
+            "strategy": "UOA",
+            "price_at_scan": 106.0,
+            "session_open_price": 100.0,
+            "duration_class": "LT",
+        }
+        result = scanner.evaluate("SOLOMOVE", signal)
+        self.assertEqual(result.flag_count, 1)
+        self.assertEqual(result.status, "SUSPECT",
+                          "A lone Pattern 1 flag on an LT signal must be SUSPECT, not NULLIFIED")
+
+    def test_price_move_plus_call_volume_produces_two_independent_flags(self):
+        scanner = DarkPoolScanner()
+        signal = {
+            "direction": "LONG",
+            "strategy": "UOA",
+            "price_at_scan": 106.0,
+            "session_open_price": 100.0,
+            "call_volume": 75_000,
+            "duration_class": "LT",
+        }
+        result = scanner.evaluate("BOTHFLAGS", signal)
+        self.assertIn("PRICE_SPIKE_INTO_SIGNAL", result.flags)
+        self.assertIn("CALL_VOLUME_PRICE_EXTENDED", result.flags)
+        self.assertEqual(result.flag_count, 2)
+        self.assertEqual(result.status, "NULLIFIED")
 
 
 class TestDarkPoolEvalStorage(unittest.TestCase):

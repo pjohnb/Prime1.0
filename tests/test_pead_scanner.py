@@ -190,6 +190,25 @@ class TestCalculatePeadSignal(unittest.TestCase):
         signal = calculate_pead_signal(earnings, None, analyst_count=5)
         self.assertEqual(signal["direction"], "NEUTRAL")
 
+    def test_session_open_price_wired_from_price_data(self):
+        """CALC-DK-4: session_open_price feeds the DK nullifier's price-move
+        patterns -- previously absent, so PEAD's nullifier was always CLEAR."""
+        earnings = self._make_earnings(surprise_pct=8.0)
+        price = {"pct_change": 4.0, "days": 3, "open_after": 50.0, "close_latest": 52.0}
+        signal = calculate_pead_signal(earnings, price, analyst_count=4)
+        self.assertEqual(signal["session_open_price"], 50.0)
+
+    def test_session_open_price_defaults_to_zero_without_price_data(self):
+        earnings = self._make_earnings(surprise_pct=10.0)
+        signal = calculate_pead_signal(earnings, None, analyst_count=0)
+        self.assertEqual(signal["session_open_price"], 0.0)
+
+    def test_block_prints_present_and_empty(self):
+        earnings = self._make_earnings(surprise_pct=8.0)
+        price = {"pct_change": 4.0, "days": 3, "open_after": 50.0, "close_latest": 52.0}
+        signal = calculate_pead_signal(earnings, price, analyst_count=4)
+        self.assertEqual(signal["block_prints"], [])
+
     def test_factors_structure(self):
         earnings = self._make_earnings()
         signal = calculate_pead_signal(earnings, None, analyst_count=5)

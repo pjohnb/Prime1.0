@@ -507,6 +507,12 @@ def calculate_pead_signal(
         "price_change_pct": price_change,
         "days_since_earnings": price_data["days"] if price_data else 0,
         "momentum_pending": (price_data["days"] if price_data else 0) <= 1,
+        # CALC-DK-4: post-earnings-day open feeds the DK nullifier's
+        # price-move patterns as PEAD's session_open_price equivalent.
+        "session_open_price": price_data["open_after"] if price_data else 0.0,
+        # block_prints is honestly empty -- PEAD has no real equity
+        # tape-print data source (that proxy is still a stub).
+        "block_prints": [],
     }
 
 

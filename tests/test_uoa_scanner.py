@@ -251,6 +251,51 @@ class TestCalcUOA1FlatBaselineWarning(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# CALC-DK-4: session_open_price / block_prints wiring
+# ---------------------------------------------------------------------------
+
+class TestCalcDK4FieldWiring(unittest.TestCase):
+    """CALC-DK-4: UOA signal dicts must carry session_open_price and
+    block_prints so the DK nullifier's pattern checkers no longer
+    unconditionally short-circuit to None for UOA."""
+
+    def _fake_client(self, last_price=110.0, open_price=100.0):
+        client = MagicMock()
+        chain_resp = MagicMock(status_code=200)
+        chain_resp.json.return_value = {
+            "callExpDateMap": {
+                "2026-08-01:9": {
+                    "100.0": [{"totalVolume": 60000, "openInterest": 5000,
+                               "strikePrice": 100.0}],
+                },
+            },
+            "putExpDateMap": {},
+        }
+        quote_resp = MagicMock(status_code=200)
+        quote_resp.json.return_value = {
+            "AAPL": {"quote": {"lastPrice": last_price, "closePrice": last_price,
+                                "openPrice": open_price}},
+        }
+        client.get_option_chain.return_value = chain_resp
+        client.get_quote.return_value = quote_resp
+        return client
+
+    def test_scan_symbol_carries_session_open_price(self):
+        client = self._fake_client()
+        result = scan_symbol("AAPL", baseline=1000.0, today=datetime(2026, 7, 20),
+                              group="Top50", client=client)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["session_open_price"], 100.0)
+
+    def test_scan_symbol_carries_empty_block_prints(self):
+        client = self._fake_client()
+        result = scan_symbol("AAPL", baseline=1000.0, today=datetime(2026, 7, 20),
+                              group="Top50", client=client)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["block_prints"], [])
+
+
+# ---------------------------------------------------------------------------
 # Architectural constraints
 # ---------------------------------------------------------------------------
 

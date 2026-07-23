@@ -142,6 +142,9 @@ def _check_price_spike_into_signal(
     return None
 
 
+CALL_VOLUME_SPIKE_THRESHOLD = 50_000  # matches UOA's own unusual-volume floor
+
+
 def _check_call_volume_price_extended(
     symbol: str,
     signal: Dict[str, Any],
@@ -151,11 +154,19 @@ def _check_call_volume_price_extended(
     If a stock is already up 3-5% on the day when unusual call volume appears,
     the call buyer may have driven it up and is now positioning to exit into
     retail enthusiasm.
+
+    CALC-DK-3: this used to re-derive the identical move_pct as Pattern 1 from
+    the same two fields (price_at_scan, session_open_price), differing only in
+    threshold -- so any >=3% LONG move tripped both patterns simultaneously,
+    forcing a hard NULLIFIED from a single genuine price fact. Requiring
+    call_volume >= CALL_VOLUME_SPIKE_THRESHOLD as well makes this pattern's
+    evidence genuinely independent of Pattern 1's price-only check.
     """
     price_at_scan = signal.get("price_at_scan", 0.0)
     session_open_price = signal.get("session_open_price", 0.0)
     direction = signal.get("direction", "LONG").upper()
     strategy = signal.get("strategy", "").upper()
+    call_volume = signal.get("call_volume", 0) or 0
 
     if direction != "LONG" or strategy not in ("UOA", ""):
         return None
@@ -163,12 +174,15 @@ def _check_call_volume_price_extended(
     if not price_at_scan or not session_open_price or session_open_price <= 0:
         return None
 
+    if call_volume < CALL_VOLUME_SPIKE_THRESHOLD:
+        return None
+
     day_move_pct = ((price_at_scan - session_open_price) / session_open_price) * 100
 
     if day_move_pct >= 3.0:
         return (
             f"CALL_VOLUME_PRICE_EXTENDED: {symbol} already up {day_move_pct:.1f}% "
-            f"when unusual call volume appeared -- possible distribution setup"
+            f"when unusual call volume ({call_volume:,}) appeared -- possible distribution setup"
         )
 
     return None
@@ -245,6 +259,13 @@ class DarkPoolScanner:
             evaluation.status = "CLEAR"
             evaluation.warning = f"Scanner error: {e} -- defaulting to CLEAR"
             evaluation.rationale = "Dark pool evaluation failed; proceeding without constraint"
+
+        # CALC-DK-4: make the nullifier's actual result visible in the server
+        # log for every evaluation, not just failures.
+        logger.info(
+            "DK nullifier: %s -- flags fired: %s (%s)",
+            evaluation.status, evaluation.flags or "none", symbol,
+        )
 
         return evaluation
 

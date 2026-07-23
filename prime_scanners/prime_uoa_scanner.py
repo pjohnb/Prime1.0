@@ -199,22 +199,29 @@ def fetch_options_volume(
 
 def fetch_underlying_quote(symbol: str, client) -> float:
     """Fetch underlying last-trade price via Schwab quote endpoint."""
+    return fetch_underlying_quote_full(symbol, client)["price"]
+
+
+def fetch_underlying_quote_full(symbol: str, client) -> Dict[str, float]:
+    """Fetch underlying last-trade price and session open price in one call.
+
+    CALC-DK-4: session_open_price feeds the DK nullifier's price-move
+    patterns; both fields come off the same Schwab quote response already
+    fetched for price_at_scan, so this adds no extra API call.
+    """
     if client is None:
-        return 0.0
+        return {"price": 0.0, "session_open_price": 0.0}
     try:
         resp = client.get_quote(symbol)
         if resp.status_code != 200:
-            return 0.0
+            return {"price": 0.0, "session_open_price": 0.0}
         data = resp.json()
-        quote_data = data.get(symbol, {})
-        price = (
-            quote_data.get("quote", {}).get("lastPrice")
-            or quote_data.get("quote", {}).get("closePrice")
-            or 0.0
-        )
-        return float(price)
+        quote = data.get(symbol, {}).get("quote", {})
+        price = quote.get("lastPrice") or quote.get("closePrice") or 0.0
+        open_price = quote.get("openPrice") or 0.0
+        return {"price": float(price), "session_open_price": float(open_price)}
     except Exception:
-        return 0.0
+        return {"price": 0.0, "session_open_price": 0.0}
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +367,8 @@ def scan_symbol(
     legs = opts.get("legs", [])
     dte_result = classify_dte(legs)
 
-    price = fetch_underlying_quote(symbol, client)
+    quote = fetch_underlying_quote_full(symbol, client)
+    price = quote["price"]
     cc_result = detect_covered_call(price, legs, dte_result["dte_class"])
 
     return {
@@ -378,6 +386,11 @@ def scan_symbol(
         "baseline_volume": int(baseline),
         "score": round(sizzle, 1),
         "price_at_scan": price,
+        # CALC-DK-4: feed the DK nullifier's price-move patterns. block_prints
+        # is honestly empty -- UOA has no real equity tape-print data source
+        # (that proxy is still a stub); Pattern 3 stays CLEAR until one exists.
+        "session_open_price": quote["session_open_price"],
+        "block_prints": [],
         "weighted_dte": dte_result["weighted_dte"],
         "dte_classification": dte_result,
         "covered_call_eval": cc_result,
