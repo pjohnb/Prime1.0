@@ -103,12 +103,26 @@ def compute_sma(closes: List[float], period: int) -> Optional[float]:
 
 
 def _sma_at(closes: List[float], period: int, offset_from_end: int) -> Optional[float]:
-    """SMA computed as of `offset_from_end` bars before the latest bar."""
+    """SMA computed as of `offset_from_end` bars before the latest bar.
+
+    CALC-IDX-6: detect_sma_crossover() needs both the "now" (offset 0) and
+    "prev" (offset 1) SMA-200 readings. A strict period-sized window at
+    offset 1 requires period+1 total closes (201 for SMA_SLOW=200), so with
+    exactly the standard 200-bar fetch the "prev" reading was always None,
+    silently zeroing trend_score's crossover component. compute_metrics()'s
+    own sufficiency gate (len(closes) >= SMA_SLOW, i.e. >= 200) already
+    promises a full result at 200 bars, so clamp the window's start to 0
+    instead of rejecting outright -- the "prev" SMA-200 falls back to a
+    199-point average only in this exact one-bar-short case; every other
+    case (>= period+1 closes) is unaffected and uses the full-period window.
+    """
     end = len(closes) - offset_from_end
-    if end < period:
+    if end <= 0:
         return None
-    window = closes[end - period:end]
-    return sum(window) / period
+    window = closes[max(0, end - period):end]
+    if not window:
+        return None
+    return sum(window) / len(window)
 
 
 def detect_sma_crossover(closes: List[float], fast: int = SMA_FAST,
