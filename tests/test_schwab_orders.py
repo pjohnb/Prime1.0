@@ -374,7 +374,7 @@ class TestFillPollerAudit002(unittest.TestCase):
     def _mock_client(self, responses):
         """Returns a SchwabClient mock whose get_order_status returns responses in sequence."""
         call_count = [0]
-        def _get_status(order_id):
+        def _get_status(order_id, account_hash=None):
             i = call_count[0]
             call_count[0] += 1
             if i < len(responses):
@@ -422,6 +422,41 @@ class TestFillPollerAudit002(unittest.TestCase):
         client = self._mock_client([{"status": "CANCELED"}])
         result = poll_fill("ord-5", client, timeout_sec=30, poll_interval=0)
         self.assertIsNone(result)
+
+
+class TestGetOrderStatusAccountHash(unittest.TestCase):
+    """AUDIT-034: SchwabClient.get_order_status() must query the account_hash
+    passed by the caller, not always self.account_hash (bound to accounts[0]
+    at connect() time) — otherwise every non-default MATA account's fill
+    lookup silently queries the wrong account and times out."""
+
+    def _make_client(self, bound_hash="hash-default-joint"):
+        from prime_trading.prime_schwab import SchwabClient
+        sc = SchwabClient.__new__(SchwabClient)  # bypass __init__ (no config needed)
+        sc.connected = True
+        sc.account_hash = bound_hash
+        inner = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"status": "FILLED"}
+        inner.get_order.return_value = resp
+        sc.client = inner
+        return sc
+
+    def test_uses_passed_account_hash_not_bound_default(self):
+        sc = self._make_client(bound_hash="hash-default-joint")
+        sc.get_order_status("order-1", account_hash="hash-ira-8779")
+        sc.client.get_order.assert_called_with("order-1", "hash-ira-8779")
+
+    def test_falls_back_to_bound_hash_when_omitted(self):
+        sc = self._make_client(bound_hash="hash-default-joint")
+        sc.get_order_status("order-1")
+        sc.client.get_order.assert_called_with("order-1", "hash-default-joint")
+
+    def test_returns_none_when_not_connected(self):
+        sc = self._make_client()
+        sc.connected = False
+        self.assertIsNone(sc.get_order_status("order-1", account_hash="hash-ira-8779"))
 
 
 if __name__ == "__main__":

@@ -555,9 +555,12 @@ def execute_signal_endpoint(signal_id):
                         }
                         for ctx in _acct_ctx
                     ]
+                    if user_qty > 0:
+                        _mata_base_shares = user_qty
+                    else:
+                        _mata_base_shares = int(sum(_mata_qtys.values()))
                     _server_mata_qtys = _compute_mata_qtys(
-                        symbol, direction_param,
-                        user_qty if user_qty > 0 else int(sum(_mata_qtys.values())),
+                        symbol, direction_param, _mata_base_shares,
                         execution_price, _alloc_accounts,
                     )
 
@@ -746,9 +749,12 @@ def execute_signal_endpoint(signal_id):
                     "buying_power": float(a.get("buying_power") or 100000),
                     "margin_available": float(a.get("margin_available") or 100000),
                 })
+            if user_qty > 0:
+                _mata_base_shares = user_qty
+            else:
+                _mata_base_shares = int(sum(_mata_qtys.values()))
             _server_mata_qtys = _compute_mata_qtys(
-                symbol, direction_param,
-                user_qty if user_qty > 0 else int(sum(_mata_qtys.values())),
+                symbol, direction_param, _mata_base_shares,
                 execution_price, _alloc_accounts,
             )
 

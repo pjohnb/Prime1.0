@@ -31,8 +31,15 @@ def poll_fill(
     client,
     timeout_sec: int = POLL_TIMEOUT,
     poll_interval: int = POLL_INTERVAL,
+    account_hash: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Poll Schwab order status until FILLED or timeout.
+
+    account_hash: AUDIT-034 — must be passed for orders placed under a
+    non-default account (e.g. each account in a MATA multi-account execute
+    loop), since client.get_order_status() otherwise falls back to the
+    client's own bound account_hash (accounts[0]) and will never find the
+    order for any other account.
 
     Returns dict with fill_price and shares_filled, or None on timeout.
     """
@@ -40,7 +47,7 @@ def poll_fill(
 
     while elapsed < timeout_sec:
         try:
-            status = client.get_order_status(order_id)
+            status = client.get_order_status(order_id, account_hash=account_hash)
         except Exception as e:
             logger.warning("Order status poll error for %s: %s", order_id, e)
             time.sleep(poll_interval)

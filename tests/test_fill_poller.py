@@ -28,7 +28,7 @@ class MockSchwabClient:
         self._responses = list(responses)
         self._call_count = 0
 
-    def get_order_status(self, order_id):
+    def get_order_status(self, order_id, account_hash=None):
         if self._call_count < len(self._responses):
             resp = self._responses[self._call_count]
             self._call_count += 1
@@ -76,6 +76,26 @@ class TestPollFill(unittest.TestCase):
         ])
         result = poll_fill("order-4", client, timeout_sec=30, poll_interval=0)
         self.assertIsNone(result)
+
+    def test_account_hash_forwarded_to_get_order_status(self):
+        """AUDIT-034: poll_fill must pass the caller's account_hash through,
+        not rely on the client's own default (accounts[0]) hash."""
+        client = MagicMock()
+        client.get_order_status.return_value = {
+            "status": "FILLED", "filledPrice": 61.14, "filledQuantity": 14,
+        }
+        poll_fill("order-ira", client, timeout_sec=10, poll_interval=0,
+                  account_hash="hash-8779")
+        client.get_order_status.assert_called_with("order-ira", account_hash="hash-8779")
+
+    def test_account_hash_defaults_to_none(self):
+        """Omitting account_hash still queries (client falls back to its own default)."""
+        client = MagicMock()
+        client.get_order_status.return_value = {
+            "status": "FILLED", "filledPrice": 10.0, "filledQuantity": 1,
+        }
+        poll_fill("order-default", client, timeout_sec=10, poll_interval=0)
+        client.get_order_status.assert_called_with("order-default", account_hash=None)
 
     def test_rejected_order(self):
         client = MockSchwabClient([

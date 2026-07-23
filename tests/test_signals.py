@@ -187,8 +187,12 @@ class TestExecuteSignalEndpoint(_SignalsBase):
         """Execute returns 200 and orders_placed list for an APPROVED signal."""
         sid = self._insert(symbol="MU", strategy="PEAD", status="APPROVED", entry_price=200.0)
         # Patch RTH to True and Schwab to raise so we fall back to entry_price_scan.
+        # load_accounts mocked to [] so this single-account (non-MATA) execute
+        # isn't affected by whatever mata_accounts happen to be configured in
+        # this machine's local ops_config.json.
         with patch("prime_api.prime_api_routes._is_rth", return_value=True), \
-             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")):
+             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")), \
+             patch("prime_trading.prime_mata.load_accounts", return_value=[]):
             resp = self._post_execute(sid)
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
@@ -200,13 +204,74 @@ class TestExecuteSignalEndpoint(_SignalsBase):
         """PAPER mode: execute simulates order without calling Schwab."""
         sid = self._insert(symbol="NVDA", strategy="PEAD", status="APPROVED", entry_price=900.0)
         with patch("prime_api.prime_api_routes._is_rth", return_value=True), \
-             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")):
+             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")), \
+             patch("prime_trading.prime_mata.load_accounts", return_value=[]):
             resp = self._post_execute(sid)
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertEqual(data["mode"], "PAPER")
         statuses = [o.get("status") for o in data.get("orders_placed", [])]
         self.assertTrue(any("PAPER" in (s or "") for s in statuses))
+
+    @staticmethod
+    def _mata_accounts_cfg():
+        return [
+            {"name": "Joint Brokerage", "suffix": "7926", "type": "BROKERAGE", "weight": 60},
+            {"name": "Custodial",       "suffix": "0461", "type": "BROKERAGE", "weight": 20},
+            {"name": "Rollover IRA",    "suffix": "8779", "type": "ROLLOVER_IRA", "weight": 20},
+        ]
+
+    def test_execute_signal_mata_short_excludes_ira(self):
+        """AUDIT-035: server recomputes MATA shares via allocate_trade() — a
+        SHORT order must never route shares to the Rollover IRA, even when
+        the (legacy/compromised) client payload asks for it.
+
+        insert_trade is mocked here: prime_trade_log has a separate, pre-existing
+        partial unique index on (symbol, strategy, entry_time) WHERE status='OPEN'
+        (the CIL-095 double-execute guard) that every MATA multi-account order
+        collides with, since all accounts share one `now` for entry_time. That's
+        an unrelated bug outside this WO's scope — mocking the DB write isolates
+        the MATA share-computation logic (this fix) from that separate defect.
+        """
+        sid = self._insert(symbol="TSLA", strategy="PEAD", status="APPROVED", entry_price=100.0)
+        payload = {
+            "order_type": "MARKET", "confirmed": True, "direction": "SHORT",
+            "target_account": "MATA", "qty": 100,
+            # Client-computed mata_qtys is now only a fallback hint — this
+            # (pre-fix) shape would have sent nonzero shares to the IRA.
+            "mata_qtys": {"7926": 60, "0461": 20, "8779": 20},
+        }
+        with patch("prime_api.prime_api_routes._is_rth", return_value=True), \
+             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")), \
+             patch("prime_trading.prime_mata.load_accounts", return_value=self._mata_accounts_cfg()), \
+             patch("prime_data.prime_db.insert_trade", return_value="fake-log-id"):
+            resp = self._post_execute(sid, payload)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        by_account = {o["account"]: o["shares"] for o in data["orders_placed"]}
+        self.assertNotIn("Rollover IRA", by_account)
+        self.assertIn("Joint Brokerage", by_account)
+        self.assertGreater(by_account["Joint Brokerage"], 0)
+
+    def test_execute_signal_mata_long_includes_ira(self):
+        """LONG MATA orders route to all eligible accounts, including the IRA.
+        insert_trade is mocked — see docstring above for why."""
+        sid = self._insert(symbol="TSLA", strategy="PEAD", status="APPROVED", entry_price=100.0)
+        payload = {
+            "order_type": "MARKET", "confirmed": True, "direction": "LONG",
+            "target_account": "MATA", "qty": 100,
+            "mata_qtys": {"7926": 60, "0461": 20, "8779": 20},
+        }
+        with patch("prime_api.prime_api_routes._is_rth", return_value=True), \
+             patch("prime_trading.prime_schwab.SchwabClient.connect", side_effect=Exception("no token")), \
+             patch("prime_trading.prime_mata.load_accounts", return_value=self._mata_accounts_cfg()), \
+             patch("prime_data.prime_db.insert_trade", return_value="fake-log-id"):
+            resp = self._post_execute(sid, payload)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        by_account = {o["account"]: o["shares"] for o in data["orders_placed"]}
+        self.assertIn("Rollover IRA", by_account)
+        self.assertGreater(by_account["Rollover IRA"], 0)
 
     def test_execute_signal_after_hours_forces_limit(self):
         """Outside RTH: MARKET order returns 400 with after_hours error."""

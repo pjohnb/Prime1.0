@@ -94,17 +94,17 @@ function _scFormatTS(ts) {
 }
 
 function _scFormatDetected(ts) {
-  // detected_at is UTC from Python datetime.utcnow() — add 'Z' so JS parses as UTC, display in ET
+  // AUDIT-049: detected_at is naive ET (FIX-04) — parse as local time like
+  // _scFormatTS, no 'Z' re-appending (that workaround assumed naive UTC).
   if (!ts) return '--';
   try {
-    let s = ts.replace(' ', 'T');
-    if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+    const s = ts.replace(' ', 'T');  // no Z — local parse preserves ET value
     const dt = new Date(s);
     if (isNaN(dt)) return ts.substring(0, 16);
     return dt.toLocaleDateString('en-US', {
-      month: 'short', day: 'numeric', timeZone: 'America/New_York'
+      month: 'short', day: 'numeric'
     }) + ' ' + dt.toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false
+      hour: '2-digit', minute: '2-digit', hour12: false
     }) + ' ET';
   } catch(e) { return ts.substring(0, 16); }
 }
@@ -525,13 +525,23 @@ function _scExecUpdate() {
   if (acct === 'MATA') {
     const mataAccts = _mataAccountsCache || [];
     if (mataAccts.length) {
-      const parts = mataAccts.map((a, i) => {
-        const w      = parseFloat(a.weight) || 0;
-        const shares = qty > 0 ? Math.floor(qty * w / 100) : 0;
-        const label  = a.name + ' (' + w + '%)';
+      // AUDIT-035: SHORT cannot route to IRA — exclude and redistribute by weight.
+      const isShort  = dir === 'SHORT';
+      const eligible = mataAccts.filter(a => !(isShort && String(a.type || '').toUpperCase().includes('IRA')));
+      const totalW   = eligible.reduce((s, a) => s + (parseFloat(a.weight) || 0), 0) || 100;
+      const parts = mataAccts.map((a) => {
+        const isIra = String(a.type || '').toUpperCase().includes('IRA');
+        const w     = parseFloat(a.weight) || 0;
+        const label = a.name + ' (' + w + '%)';
+        if (isShort && isIra) return label + ': 0 sh (excluded)';
+        const shares = qty > 0 ? Math.floor(qty * w / totalW) : 0;
         return shares > 0 ? label + ': ' + shares + ' sh' : label;
       });
-      if (breakdownEl) { breakdownEl.textContent = parts.join(' · '); breakdownEl.style.display = 'block'; }
+      let breakdownText = parts.join(' · ');
+      if (isShort && eligible.length < mataAccts.length) {
+        breakdownText += ' — IRA account excluded from SHORT allocation per safety rules';
+      }
+      if (breakdownEl) { breakdownEl.textContent = breakdownText; breakdownEl.style.display = 'block'; }
     } else {
       if (breakdownEl) { breakdownEl.textContent = 'Configure MATA distribution in Settings first.'; breakdownEl.style.display = 'block'; }
     }
@@ -605,14 +615,28 @@ async function submitScenarioExecute() {
   // WO-PRIME-EXECUTE-MATA-01: when MATA is selected, compute per-account share
   // quantities from configured weights and send as mata_qtys so the backend can
   // place the correctly-sized order on each account without needing weight logic.
+  // AUDIT-035: this is now only a fallback/display hint — the server always
+  // recomputes authoritative shares via prime_mata.allocate_trade(), which
+  // enforces the IRA short-exclusion. Still exclude IRA here so the fallback
+  // itself is never unsafe if the server-side recompute is ever bypassed.
   if (acct === 'MATA' && _mataAccountsCache && _mataAccountsCache.length) {
+    const isShort  = dir === 'SHORT';
+    const eligible = _mataAccountsCache.filter(a => !(isShort && String(a.type || '').toUpperCase().includes('IRA')));
+    const totalW   = eligible.reduce((s, a) => s + (parseFloat(a.weight) || 0), 0) || 100;
     const mataQtys = {};
     _mataAccountsCache.forEach((a, i) => {
-      const w = parseFloat(a.weight) || 0;
       const sfx = a.suffix || _MATA_ACCT_SUFFIXES[i];
-      if (sfx) mataQtys[sfx] = Math.floor(qty * w / 100);
+      if (!sfx) return;
+      const isIra = String(a.type || '').toUpperCase().includes('IRA');
+      if (isShort && isIra) { mataQtys[sfx] = 0; return; }
+      const w = parseFloat(a.weight) || 0;
+      mataQtys[sfx] = Math.floor(qty * w / totalW);
     });
     payload.mata_qtys = mataQtys;
+    if (isShort && eligible.length < _mataAccountsCache.length && msgEl) {
+      msgEl.textContent = 'IRA account excluded from SHORT allocation per safety rules';
+      msgEl.style.color = 'var(--amber)';
+    }
   }
 
   try {

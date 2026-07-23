@@ -189,6 +189,42 @@ class TestLoadAccountsAudit001(unittest.TestCase):
             self.assertEqual(len(accts), 3)
             self.assertFalse(any("WARNING" in m and "weight" in m.lower() for m in cm.output))
 
+    def test_malformed_config_logs_warning(self):
+        """AUDIT-043: a parse error (not just an absent/empty list) must be logged,
+        not silently swallowed by the bare except -- otherwise it reproduces
+        AUDIT-001 symptoms (empty MATA routing) with no way to diagnose why."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "ops_config.json"
+            cfg.write_text("{ this is not valid json")
+            with self.assertLogs("prime_mata", level="WARNING") as cm:
+                accts = mata.load_accounts(config_path=cfg)
+            self.assertEqual(accts, [])
+            self.assertTrue(any("parse error" in m.lower() for m in cm.output))
+
+    def test_healthy_config_no_parse_warning(self):
+        import tempfile, logging
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._write_config(d, {"mata_accounts": [
+                {"name": "Joint", "suffix": "7926", "weight": 100},
+            ]})
+            with self.assertLogs("prime_mata", level="DEBUG") as cm:
+                logging.getLogger("prime_mata").debug("probe")
+                accts = mata.load_accounts(config_path=cfg)
+            self.assertEqual(len(accts), 1)
+            self.assertFalse(any("parse error" in m.lower() for m in cm.output))
+
+    def test_short_multiplier_malformed_config_logs_warning(self):
+        """AUDIT-043: same fix applied to _short_multiplier()'s except block."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "ops_config.json"
+            cfg.write_text("{ not valid json either")
+            with self.assertLogs("prime_mata", level="WARNING") as cm:
+                mult = mata._short_multiplier(cfg)
+            self.assertEqual(mult, mata.DEFAULT_SHORT_SIZE_MULTIPLIER)
+            self.assertTrue(any("parse error" in m.lower() for m in cm.output))
+
     def test_mata_qty_allocation_60_20_20(self):
         """$1,500 budget at $61.14 → 24 total shares → Joint=14, Custodial=4, IRA=4."""
         accts = [

@@ -137,11 +137,16 @@ class SchwabClient:
         ]
 
 
-    def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch status of a specific Schwab order."""
+    def get_order_status(self, order_id: str, account_hash: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch status of a specific Schwab order.
+
+        account_hash defaults to self.account_hash (accounts[0]) when omitted,
+        but callers polling orders placed under a different account (e.g. MATA
+        multi-account execution) must pass that account's own hash.
+        """
         if not self.connected:
             return None
-        resp = self.client.get_order(order_id, self.account_hash)
+        resp = self.client.get_order(order_id, account_hash or self.account_hash)
         if resp.status_code != 200:
             return None
         return resp.json()

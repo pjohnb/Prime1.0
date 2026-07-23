@@ -42,8 +42,10 @@ def _short_multiplier(config_path: Optional[Path]) -> float:
             v = data.get("short_size_multiplier")
             if v is not None:
                 return float(v)
-    except Exception:
-        pass
+    except Exception as e:
+        # AUDIT-043: log so a malformed ops_config.json isn't indistinguishable
+        # from "no override configured" — same silent-failure shape as AUDIT-001.
+        logger.warning("MATA short-multiplier config parse error: %s", e)
     return DEFAULT_SHORT_SIZE_MULTIPLIER
 
 
@@ -70,8 +72,10 @@ def load_accounts(config_path: Optional[Path] = None) -> List[Dict[str, Any]]:
                         total_weight,
                     )
             return accts
-    except Exception:
-        pass
+    except Exception as e:
+        # AUDIT-043: log so a malformed/unreadable ops_config.json doesn't
+        # silently reproduce AUDIT-001 symptoms (empty MATA routing, no clue why).
+        logger.warning("MATA config parse error: %s", e)
     return []
 
 
