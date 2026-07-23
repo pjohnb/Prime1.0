@@ -255,6 +255,7 @@ def run_short_scan(
         "scan_ts": scan_ts, "scanned": 0, "written": [], "rejected": [],
         "unconfirmed": [], "dk_blocked": [], "dk_upgraded": [],
         "borrow_blocked": [], "errors": [], "rth_blocked": False,
+        "spy_fetch_failed": False, "rc": 0,
     }
 
     if enforce_rth and not is_regular_hours(now):
@@ -281,7 +282,23 @@ def run_short_scan(
         return bars_by_symbol.get(sym) if bars_by_symbol is not None else None
 
     spy_bars = _bars(BENCHMARK)
-    spy_closes = [b["close"] for b in spy_bars] if spy_bars else []
+
+    # CALC-SHORT-1: a SPY benchmark fetch failure (Polygon outage, token
+    # expiry, network error -- returns None/empty) must never be allowed to
+    # masquerade as normal "unconfirmed" rejections. Without SPY closes,
+    # relative_strength_ratio() always returns None, so every candidate
+    # would silently fail technical confirmation. Abort loudly instead.
+    if not spy_bars:
+        summary["spy_fetch_failed"] = True
+        summary["rc"] = 1
+        error_detail = ("SPY benchmark fetch FAILED -- no bars returned. "
+                        "SHORT scan aborted, results unreliable.")
+        logger.error("SHORT scanner: %s", error_detail)
+        log_ops_event("SCAN_ERROR", "short_scanner", detail=error_detail,
+                      severity="ERROR", db_path=db_path)
+        return summary
+
+    spy_closes = [b["close"] for b in spy_bars]
 
     for symbol in symbols:
         if symbol == BENCHMARK:
@@ -292,16 +309,31 @@ def run_short_scan(
             # PRIMARY TRIGGER -- required. Technical-only candidates never enter.
             # Injected trigger dicts (tests) take precedence; otherwise read the
             # live UOA-put / PEAD-miss feed from prime_signals (Sprint 18 Item 2).
+            #
+            # CALC-SHORT-2 (Option B disclosure): the documented/tested contract
+            # (uoa_put_trigger/pead_short_trigger) requires premium/DTE/
+            # volume-surge evidence -- "FULL". The live feed
+            # (short_primary_triggers_from_signals) only has bare direction/
+            # ratio evidence available, since upstream UOA/PEAD scanners don't
+            # populate premium/DTE/volume fields -- "REDUCED". Full wiring
+            # (populating those fields at the bridge layer) is a follow-on WO;
+            # this fix only makes the reduced-evidence contract visible.
             if symbol in uoa_by_symbol or symbol in pead_by_symbol:
                 triggers = primary_triggers(uoa_by_symbol.get(symbol),
                                             pead_by_symbol.get(symbol))
+                trigger_contract = "FULL"
             else:
                 from prime_intelligence.prime_signal_triggers import (
                     short_primary_triggers_from_signals)
                 triggers = short_primary_triggers_from_signals(symbol, db_path, ref_ts)
+                trigger_contract = "REDUCED"
             if not triggers:
                 summary["rejected"].append(symbol)
                 continue
+            if trigger_contract == "REDUCED":
+                logger.warning(
+                    "SHORT PRIMARY TRIGGER: using reduced-evidence contract "
+                    "(premium/DTE/volume not available) for %s", symbol)
 
             bars = _bars(symbol)
             if not bars:
@@ -331,6 +363,7 @@ def run_short_scan(
             if verdict is None:
                 summary["rejected"].append(symbol)
                 continue
+            verdict["trigger_contract"] = trigger_contract
 
             # Sprint 20 Item 2: NULLIFYING = institutional selling confirms short.
             # Upgrade tier WATCH -> STRONG.
@@ -349,10 +382,22 @@ def run_short_scan(
                               detail="borrow_unavailable", severity="WARN", db_path=db_path)
                 continue
 
+            # CALC-SHORT-4: score was previously hardcoded to 0.0 for every
+            # SHORT signal regardless of conviction, so the Signals tab Score
+            # column showed 0.0 even for STRONG signals. No change to tier
+            # assignment logic -- only the score value written alongside it.
+            if trigger_contract == "FULL":
+                score = 100.0
+            elif verdict["tier"] == "STRONG":
+                score = 50.0
+            else:
+                score = 33.3
+
             factors = {
                 "classification": verdict["classification"],
                 "trigger_source": verdict["trigger_source"],
                 "triggers": verdict["triggers"],
+                "trigger_contract": trigger_contract,
                 "metrics": metrics,
                 "borrow_source": borrow.get("source"),
                 "dk_state": dk_state or "NEUTRAL",
@@ -360,7 +405,7 @@ def run_short_scan(
             }
             upsert_signal_by_session(
                 symbol=symbol, strategy="SHORT", scan_ts=scan_ts,
-                entry_price=metrics["price"], score=0.0,
+                entry_price=metrics["price"], score=score,
                 sector="Unknown", tier=verdict["tier"], status="APPROVED",
                 direction="SHORT", factors=json.dumps(factors),
                 instrument_type="EQUITY", borrow_rate_pct=borrow.get("rate_pct"),
@@ -407,6 +452,12 @@ def main():
     for sym in universe:
         bars_by_symbol.setdefault(sym, fetch_daily_bars(sym, cfg.polygon_api_key))
     summary = run_short_scan(symbols=universe, bars_by_symbol=bars_by_symbol)
+
+    # CALC-SHORT-1: run_short_scan already logged the SCAN_ERROR ops event and
+    # aborted before scanning any symbol; surface it at the CLI level too.
+    if summary.get("rc"):
+        sys.exit(summary["rc"])
+
     log_ops_event("SCAN_COMPLETE", "short_scanner",
                   detail="written={0} borrow_blocked={1} dk_blocked={2}".format(
                       len(summary["written"]), len(summary["borrow_blocked"]),

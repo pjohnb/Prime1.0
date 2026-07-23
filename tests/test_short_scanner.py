@@ -103,6 +103,30 @@ class TestScanOrchestration(unittest.TestCase):
         self.assertEqual(row["direction"], "SHORT")
         self.assertEqual(json.loads(row["factors"])["trigger_source"], "UOA_PUT")
 
+    # -- CALC-SHORT-2/4: trigger contract disclosure + non-zero score --
+
+    def test_injected_evidence_is_full_contract_score_100(self):
+        # Injected uoa_by_symbol/pead_by_symbol carry premium/DTE/volume --
+        # the documented/tested contract -- so trigger_contract == FULL.
+        s = self._run(uoa_by_symbol={"WEAK": _GOOD_UOA},
+                      pead_by_symbol={"WEAK": _GOOD_PEAD})
+        row = get_signals(strategy="SHORT", db_path=self.db)[0]
+        factors = json.loads(row["factors"])
+        self.assertEqual(factors["trigger_contract"], "FULL")
+        self.assertEqual(row["score"], 100.0)
+
+    def test_strong_signal_score_nonzero(self):
+        self._run(uoa_by_symbol={"WEAK": _GOOD_UOA}, pead_by_symbol={"WEAK": _GOOD_PEAD})
+        row = get_signals(strategy="SHORT", db_path=self.db)[0]
+        self.assertEqual(row["tier"], "STRONG")
+        self.assertGreater(row["score"], 0)
+
+    def test_watch_signal_score_nonzero(self):
+        self._run(uoa_by_symbol={"WEAK": _GOOD_UOA})
+        row = get_signals(strategy="SHORT", db_path=self.db)[0]
+        self.assertEqual(row["tier"], "WATCH")
+        self.assertGreater(row["score"], 0)
+
     def test_pead_alone_is_watch(self):
         s = self._run(pead_by_symbol={"WEAK": _GOOD_PEAD})
         row = get_signals(strategy="SHORT", db_path=self.db)[0]
@@ -208,6 +232,64 @@ class TestScanDedup(unittest.TestCase):
         self._run("2026-06-04T08:00:00")
         rows = get_signals(strategy="SHORT", db_path=self.db)
         self.assertEqual(len(rows), 2)
+
+
+class TestSpyBenchmarkFetchFailure(unittest.TestCase):
+    """CALC-SHORT-1: a SPY benchmark fetch failure must be an ops-visible
+    ERROR, never silently masqueraded as normal 'unconfirmed' rejections."""
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_short_spy_fail.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+        init_signals_table(self.db)
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def _run(self, bars_by_symbol):
+        return ss.run_short_scan(
+            symbols=["WEAK"], bars_by_symbol=bars_by_symbol,
+            uoa_by_symbol={"WEAK": _GOOD_UOA},
+            borrow_fn=lambda sym: {"borrowable": True, "rate_pct": 1.0},
+            now=RTH_NOW, db_path=self.db,
+        )
+
+    def test_missing_spy_key_aborts_with_rc_1(self):
+        s = self._run({"WEAK": _falling_bars()})
+        self.assertTrue(s["spy_fetch_failed"])
+        self.assertEqual(s["rc"], 1)
+        self.assertEqual(s["scanned"], 0)  # aborted before scanning any symbol
+        self.assertEqual(s["unconfirmed"], [])
+        self.assertEqual(get_signals(strategy="SHORT", db_path=self.db), [])
+
+    def test_empty_spy_bars_aborts_with_rc_1(self):
+        s = self._run({"SPY": [], "WEAK": _falling_bars()})
+        self.assertTrue(s["spy_fetch_failed"])
+        self.assertEqual(s["rc"], 1)
+        self.assertEqual(get_signals(strategy="SHORT", db_path=self.db), [])
+
+    def test_spy_failure_logs_error_event(self):
+        self._run({"WEAK": _falling_bars()})
+        events = get_ops_events(component="short_scanner", db_path=self.db)
+        error_events = [e for e in events if e.get("severity") == "ERROR"]
+        self.assertEqual(len(error_events), 1)
+        self.assertIn("SPY benchmark fetch FAILED", error_events[0]["detail"])
+
+    def test_normal_spy_fetch_unchanged(self):
+        s = self._run({"SPY": _flat_spy(), "WEAK": _falling_bars()})
+        self.assertFalse(s["spy_fetch_failed"])
+        self.assertEqual(s["rc"], 0)
+        self.assertEqual(s["written"], ["WEAK"])
+
+    def test_spy_failure_surfaces_as_health_degraded(self):
+        from prime_ops.prime_health_monitor import check_scanner_health
+        self._run({"WEAK": _falling_bars()})
+        health = check_scanner_health(db_path=self.db)
+        short_health = next(h for h in health if h["scanner"] == "short_scanner")
+        self.assertEqual(short_health["status"], "ERROR")
 
 
 if __name__ == "__main__":
