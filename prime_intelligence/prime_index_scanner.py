@@ -340,7 +340,7 @@ def run_index_scan(
     if symbols is None:
         symbols = list(INDEX_UNIVERSE)
     if scan_ts is None:
-        scan_ts = datetime.utcnow().isoformat()
+        scan_ts = datetime.now().isoformat()
 
     # CIL-070: graceful degradation. When bars are fetched live (no injected
     # bars_by_symbol) but there is no Polygon key, return an empty (well-formed)

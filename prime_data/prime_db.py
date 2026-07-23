@@ -1,6 +1,9 @@
 """
 PRIME v1.0 database layer.
 All DB access goes through this module — no other module imports sqlite3 directly.
+
+All timestamps in this module use machine-local ET (datetime.now()). Do not use
+datetime.utcnow().
 """
 
 import logging
@@ -443,7 +446,7 @@ def update_ml_outcome(
                 hold_minutes=?, exit_reason=?, outcome_captured_at=?
             WHERE signal_id=?""",
             (exit_price, pnl_dollars, pnl_pct, hold_minutes, exit_reason,
-             datetime.utcnow().isoformat(), signal_id),
+             datetime.now().isoformat(), signal_id),
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -860,7 +863,7 @@ def close_trade_manual(
     if not trade:
         return None
     if close_ts is None:
-        close_ts = datetime.utcnow().isoformat()
+        close_ts = datetime.now().isoformat()
 
     entry_price = trade.get("entry_price") or trade.get("price_at_scan") or 0.0
     shares = trade.get("shares") or 0
@@ -897,7 +900,7 @@ def close_trade_reconcile(
             """UPDATE prime_trade_log SET
                 status='CLOSED', exit_reason=?, exit_time=?
             WHERE log_id=?""",
-            (close_reason, datetime.utcnow().isoformat(), log_id),
+            (close_reason, datetime.now().isoformat(), log_id),
         )
         conn.commit()
         row = conn.execute(
@@ -1475,7 +1478,7 @@ def log_ops_event(
             """INSERT INTO prime_ops_health
                 (timestamp, event_type, component, symbol, detail, severity)
             VALUES (?,?,?,?,?,?)""",
-            (datetime.utcnow().isoformat(), event_type, component,
+            (datetime.now().isoformat(), event_type, component,
              symbol, detail, severity),
         )
         conn.commit()

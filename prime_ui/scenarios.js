@@ -1209,7 +1209,7 @@ async function openScanSummary() {
     ]);
     const sigsData = sigsResp.ok ? await sigsResp.json() : {};
     const scanData = scanResp.ok ? await scanResp.json() : {};
-    const today    = new Date().toISOString().slice(0, 10);
+    const today    = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     const signals  = (sigsData.signals || []).filter(s => s.scan_ts && s.scan_ts.startsWith(today));
     const scanners = scanData.scanners || [];
 

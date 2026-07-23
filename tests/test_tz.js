@@ -46,14 +46,27 @@ check('UTC midnight converts to previous-day 20:00 ET', () => {
   assert.strictEqual(formatET('2026-06-10T00:00:00Z'), '20:00 ET');
 });
 
-// Naive DB-format (no tz designator) is interpreted as UTC, not browser-local.
-check('naive DB-format timestamp is treated as UTC', () => {
-  assert.strictEqual(formatET('2026-07-01 16:00:00'), '12:00 ET');
+// Naive DB-format (no tz designator) is interpreted as machine-local ET
+// (AUDIT-016: scanners/DB write datetime.now(), not UTC), so it passes through
+// unchanged rather than shifting by the UTC->ET offset.
+check('naive DB-format timestamp is treated as ET, not UTC', () => {
+  assert.strictEqual(formatET('2026-07-01 16:00:00'), '16:00 ET');
 });
 
-// Fractional-second ISO with no tz (datetime.utcnow().isoformat()) -> UTC.
-check('fractional-second isoformat (no Z) is treated as UTC', () => {
-  assert.strictEqual(formatET('2026-07-01T16:00:00.123456'), '12:00 ET');
+// Naive winter timestamp -- still passes through unchanged (EST offset).
+check('naive winter timestamp is treated as ET, not UTC', () => {
+  assert.strictEqual(formatET('2026-01-15 11:00:00'), '11:00 ET');
+});
+
+// Fractional-second ISO with no tz (datetime.now().isoformat()) -> ET.
+check('fractional-second isoformat (no Z) is treated as ET', () => {
+  assert.strictEqual(formatET('2026-07-01T16:00:00.123456'), '16:00 ET');
+});
+
+// Legacy rows written with datetime.utcnow() still carry an explicit 'Z' and
+// must still be converted UTC->ET correctly.
+check('explicit-Z legacy UTC timestamp still converts to ET', () => {
+  assert.strictEqual(formatET('2026-07-01T16:00:00Z'), '12:00 ET');
 });
 
 // Empty / unparseable input degrades gracefully.

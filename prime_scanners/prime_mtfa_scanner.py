@@ -320,7 +320,7 @@ def run_mtfa_scan(
     fetch_failures = 0
     stage0_rejected = 0
     analyzed = 0
-    scan_ts = scan_time.strftime("%Y-%m-%d %H:%M")
+    scan_ts = scan_time.isoformat()
 
     try:
         workers = get_config().ops.mtfa_workers

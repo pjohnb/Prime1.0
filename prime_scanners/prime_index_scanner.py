@@ -253,12 +253,13 @@ def run_index_uoa_scan(
     """Run index UOA pipeline: scan -> nullifier checks -> write to prime_signals."""
     from prime_scanners.prime_index_uoa import scan_index_uoa
 
+    scan_start_ts = datetime.now().isoformat()
     result = {
         "scanned": 0,
         "approved": [],
         "nullified": [],
         "errors": [],
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": scan_start_ts,
     }
 
     raw_signals = scan_index_uoa(market_data)
@@ -281,7 +282,7 @@ def run_index_uoa_scan(
             continue
 
         try:
-            _write_index_signal(signal, db_path)
+            _write_index_signal(signal, db_path, scan_start_ts)
             result["approved"].append({
                 "symbol": symbol, "direction": direction,
                 "tier": signal["tier"], "score": signal["score"],
@@ -319,7 +320,8 @@ def _check_dk_status(symbol: str) -> Optional[str]:
     return None
 
 
-def _write_index_signal(signal: Dict[str, Any], db_path: Optional[Path] = None) -> None:
+def _write_index_signal(signal: Dict[str, Any], db_path: Optional[Path] = None,
+                         scan_start_ts: Optional[str] = None) -> None:
     from prime_analytics.prime_signals_db import init_signals_table, insert_signal
     from prime_intelligence.prime_portfolio_factor import sector_map
 
@@ -327,7 +329,7 @@ def _write_index_signal(signal: Dict[str, Any], db_path: Optional[Path] = None) 
     sid = insert_signal(
         symbol=signal["symbol"],
         strategy="UOA_INDEX",
-        scan_ts=datetime.now().isoformat(),
+        scan_ts=scan_start_ts or datetime.now().isoformat(),
         entry_price=signal.get("price_at_scan", 0),
         score=signal.get("score", 0),
         sector=sector_map(signal["symbol"]),

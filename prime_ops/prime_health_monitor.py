@@ -43,7 +43,9 @@ STALE_THRESHOLDS = {
 # ---------------------------------------------------------------------------
 
 def check_scanner_health(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
-    now = datetime.utcnow()
+    # AUDIT-020: log_ops_event now writes machine-local ET (datetime.now()),
+    # not UTC -- compare against local time to avoid a false STALE reading.
+    now = datetime.now()
     results = []
 
     for scanner in SCANNERS:

@@ -269,7 +269,7 @@ function _dateScopeFilter(signals) {
   const val = scope ? scope.value : 'ALL';
   if (val === 'ALL') return signals;
   const now = new Date();
-  const todayStr = now.toISOString().substring(0, 10);
+  const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   return signals.filter(s => {
     const ts = (s.scan_ts || '').substring(0, 10);
     if (val === 'TODAY') return ts === todayStr;
