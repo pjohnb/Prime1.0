@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -103,6 +104,18 @@ class TestPollFill(unittest.TestCase):
         ])
         result = poll_fill("order-5", client, timeout_sec=30, poll_interval=0)
         self.assertIsNone(result)
+
+    def test_fill_time_is_local_not_utc(self):
+        """CALC-PNL_SIZING_REBALANCE-3: fill_time must use datetime.now()
+        (machine-local ET, per prime_db.py's stated timestamp contract), not
+        datetime.utcnow() -- the latter skewed exit_time ~4-5h from entry_time
+        and inflated hold_minutes."""
+        client = MockSchwabClient([
+            {"status": "FILLED", "filledPrice": 190.25, "filledQuantity": 100}
+        ])
+        result = poll_fill("order-7", client, timeout_sec=10, poll_interval=0)
+        fill_time = datetime.fromisoformat(result["fill_time"])
+        self.assertLess(abs((fill_time - datetime.now()).total_seconds()), 5)
 
     def test_api_error_retries(self):
         client = MagicMock()

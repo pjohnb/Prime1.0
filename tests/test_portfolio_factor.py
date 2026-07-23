@@ -127,6 +127,32 @@ class TestEvaluatePortfolioRisk(unittest.TestCase):
         expected = (100 * 200) / (100 * 200 + 10 * 200)
         self.assertAlmostEqual(result["max_position_weight"], round(expected, 4), places=3)
 
+    def test_mata_multi_row_symbol_aggregates(self):
+        """CALC-PNL_SIZING_REBALANCE-1: MATA writes 3 OPEN rows for one symbol;
+        concentration must combine them, not just count the last one seen."""
+        positions = [
+            {"symbol": "BAC", "shares": 50, "current_price": 40.0},
+            {"symbol": "BAC", "shares": 30, "current_price": 40.0},
+            {"symbol": "BAC", "shares": 20, "current_price": 40.0},
+            {"symbol": "JPM", "shares": 10, "current_price": 40.0},
+        ]
+        result = evaluate_portfolio_risk(positions)
+        self.assertEqual(result["max_position_symbol"], "BAC")
+        total = (50 + 30 + 20 + 10) * 40.0
+        expected = (100 * 40.0) / total
+        self.assertAlmostEqual(result["max_position_weight"], round(expected, 4), places=3)
+
+    def test_single_account_unchanged(self):
+        """Single-row-per-symbol behavior is unaffected by the aggregation fix."""
+        positions = [
+            {"symbol": "AAPL", "shares": 25, "current_price": 200.0},
+            {"symbol": "JPM", "shares": 25, "current_price": 100.0},
+        ]
+        result = evaluate_portfolio_risk(positions)
+        self.assertEqual(result["max_position_symbol"], "AAPL")
+        expected = (25 * 200.0) / (25 * 200.0 + 25 * 100.0)
+        self.assertAlmostEqual(result["max_position_weight"], round(expected, 4), places=3)
+
 
 class TestGetRebalanceSuggestions(unittest.TestCase):
     """AC: get_rebalance_suggestions() is advisory only, respects limits."""

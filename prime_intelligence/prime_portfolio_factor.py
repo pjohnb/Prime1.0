@@ -107,7 +107,7 @@ def evaluate_portfolio_risk(
         price = pos.get("current_price") or pos.get("entry_price") or pos.get("price_at_scan", 0)
         mv = shares * price
         total_value += mv
-        position_values[symbol] = mv
+        position_values[symbol] = position_values.get(symbol, 0.0) + mv
 
         sector = sector_map(symbol)
         sector_values[sector] = sector_values.get(sector, 0.0) + mv

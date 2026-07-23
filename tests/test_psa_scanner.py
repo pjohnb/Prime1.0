@@ -21,12 +21,17 @@ from prime_scanners.prime_psa_scanner import (
     DEFAULT_BC_MAX_DRAWDOWN,
     DEFAULT_CD_MAX_DRAWDOWN,
     MAX_REASONABLE_MOMENTUM,
+    MIN_AB_AVG_MAGNITUDE,
+    MOMENTUM_PCT_CAP,
+    INTERVAL_MINUTES,
     analyze_symbol,
     _pct_changes,
     _safe_mean,
     _safe_std,
     _max_drawdown,
     _detect_patterns,
+    _full_day_bars,
+    _is_degenerate_segment,
 )
 
 
@@ -127,11 +132,20 @@ class TestAnalyzeSymbol(unittest.TestCase):
 
     def test_uptrend_with_momentum(self):
         n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
-        # Baseline flat, then accelerating uptrend
-        base = [100.0] * DEFAULT_BASELINE_PERIODS
-        mid = [100.0 + i * 0.3 for i in range(DEFAULT_LONG_PERIODS)]
-        end = [100.0 + DEFAULT_LONG_PERIODS * 0.3 + i * 1.0
-               for i in range(DEFAULT_SHORT_PERIODS)]
+        # Baseline slow-and-steady compounding growth (not perfectly flat --
+        # CALC-PSA-2 guard rejects a near-zero ab_avg baseline as denominator
+        # noise), then an accelerating uptrend. Constant per-bar % growth
+        # within each segment keeps volatility_pct from also tripping the
+        # unrelated anomalous_volatility gate.
+        base = [100.0]
+        for _ in range(DEFAULT_BASELINE_PERIODS - 1):
+            base.append(base[-1] * 1.0005)
+        mid = [base[-1]]
+        for _ in range(DEFAULT_LONG_PERIODS - 1):
+            mid.append(mid[-1] * 1.003)
+        end = [mid[-1]]
+        for _ in range(DEFAULT_SHORT_PERIODS - 1):
+            end.append(end[-1] * 1.01)
         closes = base + mid + end
         # Higher volume in recent segment
         vols = [500000] * DEFAULT_BASELINE_PERIODS + \
@@ -150,7 +164,7 @@ class TestAnalyzeSymbol(unittest.TestCase):
 
     def test_negative_bd_direction_rejected(self):
         n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
-        base = [100.0] * DEFAULT_BASELINE_PERIODS
+        base = [100.0 + i * 0.05 for i in range(DEFAULT_BASELINE_PERIODS)]
         down = [100.0 - i * 0.5 for i in range(DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS)]
         bars = _make_bars(base + down)
         result = analyze_symbol(
@@ -160,25 +174,34 @@ class TestAnalyzeSymbol(unittest.TestCase):
         )
         self.assertFalse(result["approved"])
 
-    def test_anomalous_momentum_rejected(self):
-        n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
-        # Extreme spike in last segment
-        base = [100.0] * DEFAULT_BASELINE_PERIODS
-        mid = [100.0] * DEFAULT_LONG_PERIODS
-        end = [100.0, 200.0, 500.0][:DEFAULT_SHORT_PERIODS]
-        while len(end) < DEFAULT_SHORT_PERIODS:
-            end.append(end[-1] * 2)
+    def test_anomalous_momentum_capped_at_200(self):
+        """CALC-PSA-2: an extreme cd_avg/ab_avg ratio is capped at 200%, not
+        rejected outright -- a gentle nonzero baseline vs. a much stronger C-D
+        move drives the raw ratio past 200% while volatility/volume stay well
+        under their own anomaly caps, isolating the momentum cap specifically."""
+        base = [100.0]
+        for i in range(DEFAULT_BASELINE_PERIODS - 1):
+            base.append(base[-1] * (1.0006 if i % 2 == 0 else 1.0004))
+        mid = [base[-1]]
+        for _ in range(DEFAULT_LONG_PERIODS - 1):
+            mid.append(mid[-1] * 1.0005)
+        end = [mid[-1]]
+        for i in range(DEFAULT_SHORT_PERIODS - 1):
+            end.append(end[-1] * (1.006 if i % 2 == 0 else 1.004))
         bars = _make_bars(base + mid + end)
         result = analyze_symbol(
             bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
             DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
             self._default_thresholds(), DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
         )
-        self.assertFalse(result["approved"])
+        self.assertIn("momentum_pct", result)
+        self.assertEqual(result["momentum_pct"], MOMENTUM_PCT_CAP)
 
     def test_result_structure(self):
         n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
-        bars = _make_bars([100.0] * n)
+        base = [100.0 + i * 0.05 for i in range(DEFAULT_BASELINE_PERIODS)]
+        rest = [100.0 - i * 0.5 for i in range(DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS)]
+        bars = _make_bars(base + rest)
         result = analyze_symbol(
             bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
             DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
@@ -209,8 +232,13 @@ class TestBufferTrim(unittest.TestCase):
 
     def test_buffered_fetch_matches_pre_trimmed_fetch(self):
         total_needed = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
-        # True latest window: flat baseline/long segment, sharply rising C-D segment.
-        true_window = [100.0] * (total_needed - DEFAULT_SHORT_PERIODS) + [100.0, 200.0, 400.0]
+        # True latest window: slow-drift baseline/long segment (not perfectly
+        # flat -- CALC-PSA-2 guard rejects a near-zero ab_avg), sharply rising
+        # C-D segment.
+        true_window = (
+            [100.0 + i * 0.05 for i in range(total_needed - DEFAULT_SHORT_PERIODS)]
+            + [100.0, 200.0, 400.0]
+        )
         # Stale buffer bars a caller may fetch ahead of the true window (total_bars + 5).
         stale_prefix = [100.0] * 5
         bars_with_buffer = _make_bars(stale_prefix + true_window)  # 39 bars
@@ -225,8 +253,11 @@ class TestBufferTrim(unittest.TestCase):
     def test_cd_window_reflects_latest_bars_not_stale_prefix(self):
         total_needed = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
         # If the buffer were NOT trimmed, the C-D window would fall entirely
-        # inside this flat stale prefix and momentum_pct would read 0.
-        true_window = [100.0] * (total_needed - DEFAULT_SHORT_PERIODS) + [100.0, 200.0, 400.0]
+        # inside this stale prefix and momentum_pct would read near 0.
+        true_window = (
+            [100.0 + i * 0.05 for i in range(total_needed - DEFAULT_SHORT_PERIODS)]
+            + [100.0, 200.0, 400.0]
+        )
         stale_prefix = [100.0] * 5
         bars = _make_bars(stale_prefix + true_window)
         result = self._analyze(bars)
@@ -238,6 +269,101 @@ class TestBufferTrim(unittest.TestCase):
         bars = _make_bars([100.0] * n)
         result = self._analyze(bars)
         self.assertFalse(result["approved"])
+
+
+class TestPSAMomentumGuards(unittest.TestCase):
+    """WO-PRIME-CALC-FIX-05: CALC-PSA-2/3 momentum_pct ill-conditioning guards."""
+
+    def _default_thresholds(self):
+        return {
+            "momentum": DEFAULT_MOMENTUM_THRESHOLD,
+            "volume": DEFAULT_VOLUME_THRESHOLD,
+            "volatility": DEFAULT_VOLATILITY_THRESHOLD,
+        }
+
+    def test_is_degenerate_segment_all_zero(self):
+        self.assertTrue(_is_degenerate_segment([0.0, 0.0, 0.0]))
+
+    def test_is_degenerate_segment_flat_nonzero_is_not_degenerate(self):
+        # Flat-but-nonzero is legitimate low-volatility market data, not bad data.
+        self.assertFalse(_is_degenerate_segment([100.0, 100.0, 100.0]))
+
+    def test_is_degenerate_segment_empty(self):
+        self.assertFalse(_is_degenerate_segment([]))
+
+    def test_ab_avg_near_zero_returns_no_signal(self):
+        """CALC-PSA-2: a perfectly flat baseline gives ab_avg == 0, which is
+        below MIN_AB_AVG_MAGNITUDE -- must skip rather than compute an
+        ill-conditioned ratio."""
+        n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
+        bars = _make_bars([100.0] * n)
+        result = analyze_symbol(
+            bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
+            DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
+            self._default_thresholds(), DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+        self.assertFalse(result["approved"])
+        self.assertEqual(result["reason"], "momentum_denominator_near_zero")
+
+    def test_all_zero_ab_segment_returns_no_signal(self):
+        """CALC-PSA-3: an all-zero baseline segment (data outage) must be
+        rejected, not silently forced through the old ab_avg==0 -> 100.0 branch."""
+        n = DEFAULT_BASELINE_PERIODS + DEFAULT_LONG_PERIODS + DEFAULT_SHORT_PERIODS
+        closes = [0.0] * DEFAULT_BASELINE_PERIODS + [100.0] * (n - DEFAULT_BASELINE_PERIODS)
+        bars = _make_bars(closes)
+        result = analyze_symbol(
+            bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
+            DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
+            self._default_thresholds(), DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+        self.assertFalse(result["approved"])
+        self.assertEqual(result["reason"], "degenerate_ab_segment")
+
+    def test_all_zero_bc_segment_returns_no_signal(self):
+        """CALC-PSA-3: an all-zero B-C segment must not trivially pass the
+        trend/drawdown gate (_max_drawdown's peak>0 guard previously let it)."""
+        base = [100.0 + i * 0.05 for i in range(DEFAULT_BASELINE_PERIODS)]
+        bc = [0.0] * DEFAULT_LONG_PERIODS
+        cd = [100.0] * DEFAULT_SHORT_PERIODS
+        bars = _make_bars(base + bc + cd)
+        result = analyze_symbol(
+            bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
+            DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
+            self._default_thresholds(), DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+        self.assertFalse(result["approved"])
+        self.assertEqual(result["reason"], "degenerate_bc_segment")
+
+    def test_momentum_pct_never_exceeds_cap(self):
+        base = [100.0 + i * 0.05 for i in range(DEFAULT_BASELINE_PERIODS)]
+        mid = [100.0] * DEFAULT_LONG_PERIODS
+        cd = [100.0, 300.0, 900.0][:DEFAULT_SHORT_PERIODS]
+        while len(cd) < DEFAULT_SHORT_PERIODS:
+            cd.append(cd[-1] * 3)
+        bars = _make_bars(base + mid + cd)
+        result = analyze_symbol(
+            bars, DEFAULT_BASELINE_PERIODS, DEFAULT_LONG_PERIODS,
+            DEFAULT_SHORT_PERIODS, DEFAULT_REQUIRED_POSITIVE,
+            self._default_thresholds(), DEFAULT_BC_MAX_DRAWDOWN, DEFAULT_CD_MAX_DRAWDOWN,
+        )
+        self.assertLessEqual(result["momentum_pct"], MOMENTUM_PCT_CAP)
+
+
+class TestPSAVolumeScaleFactor(unittest.TestCase):
+    """WO-PRIME-CALC-FIX-05: CALC-PSA-4 interval-aware volume scaling."""
+
+    def test_5min_matches_legacy_constant(self):
+        # Legacy _FULL_DAY_BARS_5MIN=78 must be unchanged for the production interval.
+        self.assertEqual(_full_day_bars("5min"), 78)
+
+    def test_15min_is_one_third_of_5min(self):
+        self.assertEqual(_full_day_bars("15min"), _full_day_bars("5min") // 3)
+
+    def test_1min_scales_up(self):
+        self.assertEqual(_full_day_bars("1min"), 390)
+
+    def test_unknown_interval_falls_back_to_5min(self):
+        self.assertEqual(_full_day_bars("bogus"), _full_day_bars("5min"))
 
 
 class TestPatternDetection(unittest.TestCase):

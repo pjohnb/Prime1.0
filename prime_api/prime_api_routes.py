@@ -474,6 +474,16 @@ def execute_signal_endpoint(signal_id):
         except (TypeError, ValueError):
             pass
 
+    # CALC-TRAILING_STOP-6: reject an out-of-range trail_pct before any order
+    # is submitted, rather than letting a bad value reach attach_stop_order
+    # after the entry already filled.
+    if _exec_trail_pct is not None:
+        try:
+            from prime_trading.prime_schwab_orders import validate_trail_pct
+            validate_trail_pct(_exec_trail_pct * 100.0)
+        except ValueError as _tp_err:
+            return jsonify({"error": str(_tp_err)}), 400
+
     try:
         from prime_trading.prime_mata import load_accounts
         mata_accounts = load_accounts()
@@ -1592,6 +1602,15 @@ def create_trade():
                 price * (1 + sp_pct / 100.0) if direction == "SHORT"
                 else price * (1 - sp_pct / 100.0), 4
             )
+
+        # CALC-TRAILING_STOP-6: reject an out-of-range trail_pct before any
+        # order is submitted.
+        if live_trail_pct is not None:
+            try:
+                from prime_trading.prime_schwab_orders import validate_trail_pct
+                validate_trail_pct(live_trail_pct * 100.0)
+            except ValueError as _tp_err:
+                return jsonify({"error": str(_tp_err)}), 400
 
         account_hash = account or ""
         try:

@@ -92,6 +92,12 @@ class DataCollectionConfig:
 
 @dataclass
 class ExecutionConfig:
+    # CALC-TRAILING_STOP-6: unused — nothing reads execution.trailing_stop_pct.
+    # The live trailing-stop percentage is threaded per-order from the Execute
+    # modal / ops_config.json default_trailing_stop_pct (see prime_api_routes
+    # create_trade / execute_signal_endpoint) into attach_stop_order()'s
+    # trail_pct, which is a FRACTION (0.03 for 3%) — do not wire this field in
+    # without checking that call chain's unit convention first.
     trailing_stop_pct: float = 5.0
     position_size_pct: float = 2.0
     max_position_value: int = 10000

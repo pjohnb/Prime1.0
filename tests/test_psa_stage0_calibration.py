@@ -48,17 +48,17 @@ class TestPSAStage0VolumeAggregation(unittest.TestCase):
             "PSA scanner must NOT use bars[-1] for volume (single-bar anti-pattern)",
         )
 
-    # AC1b: normalization constant present in source
+    # AC1b: normalization uses an interval-aware bars-per-day factor
+    # (CALC-PSA-4: the old hardcoded _FULL_DAY_BARS_5MIN=78 constant was wrong
+    # whenever the actual scan interval wasn't 5min).
     def test_source_uses_full_day_bars_normalization(self):
+        from prime_scanners.prime_psa_scanner import _full_day_bars
+        self.assertEqual(_full_day_bars("5min"), 78,
+                          "5-min interval must still normalize to 78 bars/day")
         self.assertIn(
-            "_FULL_DAY_BARS_5MIN = 78",
+            "_full_day_bars(interval) / len(bars)",
             PSA_SRC,
-            "PSA scanner must define _FULL_DAY_BARS_5MIN = 78 for daily normalization",
-        )
-        self.assertIn(
-            "_FULL_DAY_BARS_5MIN / len(bars)",
-            PSA_SRC,
-            "PSA scanner must normalize raw_vol by (78 / len(bars))",
+            "PSA scanner must normalize raw_vol by (interval-aware bars/day / len(bars))",
         )
 
     # AC2: per-symbol Stage0 rejection logging present

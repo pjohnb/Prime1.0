@@ -69,7 +69,7 @@ def poll_fill(
             return {
                 "fill_price": float(fill_price),
                 "shares_filled": int(shares_filled),
-                "fill_time": datetime.utcnow().isoformat(),
+                "fill_time": datetime.now().isoformat(),
             }
 
         if order_status in ("CANCELED", "REJECTED", "EXPIRED"):

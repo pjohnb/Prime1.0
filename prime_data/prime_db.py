@@ -396,15 +396,21 @@ def get_pnl_history(days: int = 7, db_path: Optional[Path] = None) -> List[Dict[
 
     Returns a list of {day: YYYY-MM-DD, pnl: float} dicts ordered ascending,
     covering only days with closed trades. Used by the Dashboard sparkline.
+
+    CALC-PNL_SIZING_REBALANCE-4: the cutoff is computed in Python from
+    datetime.now() (machine-local ET, same contract as the rest of this
+    module) rather than SQLite's date('now', ...), which always evaluates in
+    UTC and would silently drop trades closed after ~8 PM ET.
     """
+    cutoff_date = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            f"""SELECT date(exit_time) AS day, SUM(pnl_dollars) AS pnl
+            """SELECT date(exit_time) AS day, SUM(pnl_dollars) AS pnl
                 FROM prime_trade_log
                 WHERE status='CLOSED' AND exit_time IS NOT NULL
-                  AND exit_time >= date('now', '-{days - 1} days')
+                  AND exit_time >= ?
                 GROUP BY day ORDER BY day ASC LIMIT ?""",
-            (days,),
+            (cutoff_date, days),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -559,16 +565,17 @@ def close_trade_with_fill(
         realized_pnl = (fill_price - entry_price) * fill_qty
 
     pnl_pct = (realized_pnl / (entry_price * fill_qty) * 100) if entry_price and fill_qty else 0
+    hold_minutes = _hold_minutes(trade.get("entry_time"), close_ts)
 
     with get_connection(db_path) as conn:
         conn.execute(
             """UPDATE prime_trade_log SET
                 exit_price=?, exit_time=?, exit_reason=?,
-                pnl_dollars=?, pnl_pct=?, shares=?,
+                pnl_dollars=?, pnl_pct=?, shares=?, hold_minutes=?,
                 status='CLOSED'
             WHERE log_id=?""",
             (fill_price, close_ts, exit_reason, round(realized_pnl, 2),
-             round(pnl_pct, 2), fill_qty, log_id),
+             round(pnl_pct, 2), fill_qty, hold_minutes, log_id),
         )
         conn.commit()
 
@@ -576,7 +583,6 @@ def close_trade_with_fill(
     # prime_ml_dataset, matching close_trade(). Best-effort -- never blocks.
     signal_id = trade.get("signal_id")
     if signal_id is not None:
-        hold_minutes = _hold_minutes(trade.get("entry_time"), close_ts)
         try:
             update_ml_outcome(
                 signal_id, fill_price, round(realized_pnl, 2),

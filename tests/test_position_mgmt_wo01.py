@@ -225,6 +225,58 @@ class TestTrailingStopEscalationGuard(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Part A — CALC-TRAILING_STOP-6: trail_pct sanity clamp
+# ---------------------------------------------------------------------------
+
+class TestTrailPctSanityClamp(unittest.TestCase):
+    """CALC-TRAILING_STOP-6: trail_pct must be a sane percentage (0.5-20)."""
+
+    def test_decimal_fraction_mistake_raises(self):
+        from prime_trading.prime_schwab_orders import validate_trail_pct
+        with self.assertRaises(ValueError):
+            validate_trail_pct(0.03)
+
+    def test_unreasonably_wide_stop_raises(self):
+        from prime_trading.prime_schwab_orders import validate_trail_pct
+        with self.assertRaises(ValueError):
+            validate_trail_pct(30.0)
+
+    def test_normal_value_passes(self):
+        from prime_trading.prime_schwab_orders import validate_trail_pct
+        validate_trail_pct(3.0)  # must not raise
+
+    def test_minimum_boundary_passes(self):
+        from prime_trading.prime_schwab_orders import validate_trail_pct
+        validate_trail_pct(0.5)  # must not raise
+
+    def test_maximum_boundary_passes(self):
+        from prime_trading.prime_schwab_orders import validate_trail_pct
+        validate_trail_pct(20.0)  # must not raise
+
+    def _mock_schwab(self):
+        client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.headers = {"Location": "https://api.schwab.com/orders/1"}
+        resp.json.return_value = {}
+        client.client.place_order.return_value = resp
+        return client
+
+    def test_attach_stop_order_rejects_bad_trail_pct(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        # trail_pct=0.0003 (0.03%) — a decimal-fraction-of-a-fraction mistake.
+        with self.assertRaises(ValueError):
+            attach_stop_order("AAPL", 10, "LONG", 0.0, "HASH", self._mock_schwab(),
+                              trail_pct=0.0003)
+
+    def test_attach_stop_order_accepts_sane_trail_pct(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        result = attach_stop_order("AAPL", 10, "LONG", 0.0, "HASH", self._mock_schwab(),
+                                   trail_pct=0.03)  # 3%
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+
+# ---------------------------------------------------------------------------
 # Part A — LIVE create_trade wires stop params + attaches stop order
 # ---------------------------------------------------------------------------
 

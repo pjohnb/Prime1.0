@@ -79,12 +79,24 @@ MAX_REASONABLE_MOMENTUM = 1000.0
 MAX_REASONABLE_VOLUME = 10000.0
 MAX_REASONABLE_VOLATILITY = 2000.0
 
+# CALC-PSA-2/3: momentum_pct ratio-of-averages guards
+MIN_AB_AVG_MAGNITUDE = 1e-4  # baseline avg return below this is denominator noise, not signal
+MOMENTUM_PCT_CAP = 200.0     # values above this are a ratio-ill-conditioning artifact, not real momentum
+
 # Pattern detection
 BREAKOUT_LOOKBACK = 10
 HIGHER_HIGHS_BARS = 4
 VOLUME_EXPANSION_MULT = 1.20
 
-_FULL_DAY_BARS_5MIN = 78  # RTH session: 6.5 h × 12 bars/h
+_FULL_DAY_BARS_5MIN = 78  # RTH session: 6.5 h × 12 bars/h (5-min bars; kept for reference)
+_RTH_MINUTES_PER_DAY = 390  # 6.5h RTH session
+
+
+def _full_day_bars(interval: str) -> int:
+    """CALC-PSA-4: bars-per-RTH-day for the given interval, interval-aware
+    instead of hardcoding the 5-min-bar constant regardless of actual interval."""
+    mins = INTERVAL_MINUTES.get(interval, 5)
+    return max(1, _RTH_MINUTES_PER_DAY // mins)
 
 _STAGE0 = "stage0"
 _STAGE1 = "stage1"
@@ -277,6 +289,12 @@ def _bars_to_days(total_bars: int, interval: str) -> int:
 # A-B-C-D analysis core
 # ---------------------------------------------------------------------------
 
+def _is_degenerate_segment(closes: List[float]) -> bool:
+    """True if a segment is all-zero (data outage) -- not merely flat/low-volatility,
+    which is legitimate market behavior. Real prices are never exactly 0."""
+    return bool(closes) and all(c == 0 for c in closes)
+
+
 def analyze_symbol(
     bars: List[Dict],
     baseline_periods: int,
@@ -286,6 +304,7 @@ def analyze_symbol(
     thresholds: Dict[str, float],
     bc_max_drawdown: float,
     cd_max_drawdown: float,
+    symbol: str = "",
 ) -> Dict[str, Any]:
     total_needed = baseline_periods + long_periods + short_periods
     if len(bars) < total_needed:
@@ -312,6 +331,17 @@ def analyze_symbol(
     ab_volumes = volumes[:ab_end]
     cd_volumes = volumes[bc_end:cd_end]
 
+    # CALC-PSA-3: an all-zero segment is a data outage, not a real trend --
+    # reject before it can force momentum_pct to a trivial value or let
+    # _max_drawdown's peak>0 guard pass a corrupted trend segment.
+    for _seg_name, _seg in (("ab", ab_closes), ("bc", bc_closes), ("cd", cd_closes)):
+        if _is_degenerate_segment(_seg):
+            logger.warning(
+                "PSA: degenerate bar data for %s (%s segment all-zero) -- skipping",
+                symbol, _seg_name,
+            )
+            return {"approved": False, "reason": f"degenerate_{_seg_name}_segment"}
+
     # -- Momentum --
     ab_returns = _pct_changes(ab_closes)
     cd_returns = _pct_changes(cd_closes)
@@ -319,12 +349,27 @@ def analyze_symbol(
     ab_avg = _safe_mean(ab_returns)
     cd_avg = _safe_mean(cd_returns)
 
+    # CALC-PSA-2: a near-zero baseline average return makes cd_avg/ab_avg
+    # denominator-noise-driven -- arbitrarily large regardless of actual move
+    # strength. Skip rather than compute a ratio that can't be trusted.
+    if abs(ab_avg) < MIN_AB_AVG_MAGNITUDE:
+        logger.warning(
+            "PSA: momentum denominator near-zero for %s (ab_avg=%.6f) -- skipping",
+            symbol, ab_avg,
+        )
+        return {"approved": False, "reason": "momentum_denominator_near_zero"}
+
     if cd_avg <= 0:
         momentum_pct = 0.0
-    elif ab_avg == 0:
-        momentum_pct = 100.0
     else:
-        momentum_pct = abs((cd_avg / ab_avg) * 100.0)
+        momentum_pct_raw = abs((cd_avg / ab_avg) * 100.0)
+        logger.debug("PSA: %s raw momentum_pct=%.1f", symbol, momentum_pct_raw)
+        if momentum_pct_raw > MOMENTUM_PCT_CAP:
+            logger.warning(
+                "PSA: momentum_pct for %s capped %.1f%% -> %.0f%% (likely data artifact)",
+                symbol, momentum_pct_raw, MOMENTUM_PCT_CAP,
+            )
+        momentum_pct = min(momentum_pct_raw, MOMENTUM_PCT_CAP)
 
     # -- Volume --
     ab_avg_vol = _safe_mean(ab_volumes)
@@ -336,9 +381,7 @@ def analyze_symbol(
     cd_std = _safe_std(_pct_changes(cd_closes))
     volatility_pct = (cd_std / ab_std * 100.0) if ab_std > 0 else 0.0
 
-    # -- Anomaly check --
-    if momentum_pct > MAX_REASONABLE_MOMENTUM:
-        return {"approved": False, "reason": f"anomalous_momentum ({momentum_pct:.0f}%)"}
+    # -- Anomaly check -- (momentum_pct is already capped at MOMENTUM_PCT_CAP above)
     if volume_pct > MAX_REASONABLE_VOLUME:
         return {"approved": False, "reason": f"anomalous_volume ({volume_pct:.0f}%)"}
     if volatility_pct > MAX_REASONABLE_VOLATILITY:
@@ -586,7 +629,7 @@ def _scan_one(
 
     last_price = bars[-1]["close"]
     _raw_vol = sum(b.get("volume", 0) for b in bars)
-    last_vol = _raw_vol * _FULL_DAY_BARS_5MIN / len(bars)
+    last_vol = _raw_vol * _full_day_bars(interval) / len(bars)
 
     s0_dict = stage0_filter(
         symbol, {"price": last_price, "volume": last_vol},
@@ -609,6 +652,7 @@ def _scan_one(
     result = analyze_symbol(
         bars, baseline_periods, long_periods, short_periods,
         required_positive, thresholds, bc_max_drawdown, cd_max_drawdown,
+        symbol=symbol,
     )
 
     if not result["approved"]:
@@ -822,6 +866,10 @@ def run_psa_scan(
         thresholds.get("momentum", 0),
         thresholds.get("volume", 0),
         thresholds.get("volatility", 0),
+    )
+    logger.info(
+        "PSA volume scale factor: %d bars/day for interval=%s (CALC-PSA-4)",
+        _full_day_bars(interval), interval,
     )
 
     signals: List[Dict[str, Any]] = []

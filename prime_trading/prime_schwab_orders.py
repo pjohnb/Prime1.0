@@ -380,6 +380,21 @@ def _build_trailing_stop_order_raw(
     }
 
 
+def validate_trail_pct(trail_pct_display: float) -> None:
+    """CALC-TRAILING_STOP-6: sanity-clamp a trailing-stop percentage.
+
+    Takes trail_pct expressed as a plain percentage number (3.0 for 3%, the
+    convention used by the Execute modal and everywhere trail_pct is shown to
+    a user). Rejects both accidental unit mistakes (e.g. entering the
+    decimal-fraction form 0.03 instead of 3.0) and unreasonably wide stops
+    (e.g. 30). Raises ValueError with a message safe to surface directly to
+    the UI.
+    """
+    pct = float(trail_pct_display)
+    if pct < 0.5 or pct > 20:
+        raise ValueError(f"trail_pct must be between 0.5% and 20%, got {pct}%")
+
+
 def attach_stop_order(
     symbol: str,
     qty: int,
@@ -425,6 +440,13 @@ def attach_stop_order(
     instruction = "BUY" if direction == "SHORT" else "SELL"
     stop_price  = round(float(stop_price), 2)
     _use_trailing = trail_pct is not None and float(trail_pct) > 0
+
+    # CALC-TRAILING_STOP-6: sanity clamp — catches both an accidental
+    # decimal-fraction entry and an unreasonably wide stop before it ever
+    # reaches Schwab. trail_pct here is a fraction (0.03 for 3%); validate
+    # on the percentage-scale number a user would actually recognize.
+    if _use_trailing:
+        validate_trail_pct(float(trail_pct) * 100.0)
 
     # Addendum to WO-PRIME-SCENARIO-EXECUTE-01: stop escalation guard.
     # Never submit a stop that degrades a trailing stop already at a better level.
