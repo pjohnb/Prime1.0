@@ -48,6 +48,7 @@ def init_signals_table(db_path: Optional[Path] = None) -> None:
     with get_connection(db_path) as conn:
         conn.execute(_PRIME_SIGNALS_SCHEMA)
         conn.execute(_PRIME_SIGNALS_INDEX)
+        conn.execute(_PRIME_SIGNALS_SCAN_TS_INDEX)
         # DK-001 migration: add dk_score and dk_status columns.
         # Sprint 20 Item 1: dk_status is a three-state quality modifier
         # (CONFIRMING / NEUTRAL / NULLIFYING); NEUTRAL is the default and the
