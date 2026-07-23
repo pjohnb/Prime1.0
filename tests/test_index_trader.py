@@ -60,6 +60,46 @@ class TestMathHelpers(unittest.TestCase):
         self.assertAlmostEqual(rs, 5.0, places=3)
 
 
+class TestCrossoverMinBarsGate(unittest.TestCase):
+    """CALC-IDX-6: off-by-one in the SMA-200 crossover minimum-bars gate
+    silently zeroed trend_score's crossover component at exactly 200 bars
+    (the standard fetch size) because the "prev" reading needs period+1
+    (201) closes for a strict full-period window."""
+
+    @staticmethod
+    def _spike_series(n):
+        # Flat at 90 for n-1 bars, then a spike on the very last bar -- fast
+        # SMA(50) crosses above slow SMA(200) only on the latest bar.
+        return [90.0] * (n - 1) + [200.0]
+
+    def test_200_bars_crossover_included(self):
+        closes = self._spike_series(200)
+        self.assertEqual(idx.detect_sma_crossover(closes, fast=50, slow=200), "GOLDEN")
+
+    def test_199_bars_crossover_excluded(self):
+        closes = self._spike_series(199)
+        volumes = [1_000_000] * 199
+        spy_closes = [100.0] * 199
+        self.assertIsNone(idx.compute_metrics(closes, volumes, spy_closes))
+
+    def test_201_bars_crossover_included(self):
+        closes = self._spike_series(201)
+        self.assertEqual(idx.detect_sma_crossover(closes, fast=50, slow=200), "GOLDEN")
+
+    def test_200_bars_compute_metrics_includes_crossover(self):
+        closes = self._spike_series(200)
+        volumes = [1_000_000] * 200
+        spy_closes = [100.0] * 200
+        metrics = idx.compute_metrics(closes, volumes, spy_closes)
+        self.assertIsNotNone(metrics)
+        self.assertEqual(metrics["crossover"], "GOLDEN")
+
+    def test_sma_at_full_period_unaffected_above_threshold(self):
+        # >= period+1 closes: _sma_at must still use a full, unclamped window.
+        closes = list(range(1, 202))  # 201 points
+        self.assertEqual(idx._sma_at(closes, 200, 1), sum(range(1, 201)) / 200)
+
+
 class TestClassification(unittest.TestCase):
     def test_strong_long(self):
         m = {"price": 120, "sma50": 110, "sma100": 105, "sma200": 100,

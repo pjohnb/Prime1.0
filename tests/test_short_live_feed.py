@@ -81,6 +81,44 @@ class TestLiveTriggerFeed(unittest.TestCase):
         self.assertEqual(row["direction"], "SHORT")
         self.assertIn("UOA_PUT", json.loads(row["factors"])["trigger_source"])
 
+    def test_live_feed_trigger_is_reduced_contract(self):
+        # CALC-SHORT-2: the live feed only has bare direction/ratio evidence
+        # (upstream UOA/PEAD scanners don't populate premium/DTE/volume), so
+        # every live-feed-triggered signal is REDUCED, never FULL.
+        self._add_uoa_put("WEAK")
+        ss.run_short_scan(
+            symbols=["WEAK"], scan_ts=SCAN_TS,
+            bars_by_symbol={"SPY": _flat_spy(), "WEAK": _falling_bars()},
+            borrow_fn=lambda sym: {"borrowable": True, "rate_pct": 1.0},
+            now=RTH_NOW, db_path=self.db)
+        row = get_signals(strategy="SHORT", db_path=self.db)[0]
+        factors = json.loads(row["factors"])
+        self.assertEqual(factors["trigger_contract"], "REDUCED")
+
+    def test_live_feed_watch_reduced_contract_score(self):
+        self._add_uoa_put("WEAK")
+        ss.run_short_scan(
+            symbols=["WEAK"], scan_ts=SCAN_TS,
+            bars_by_symbol={"SPY": _flat_spy(), "WEAK": _falling_bars()},
+            borrow_fn=lambda sym: {"borrowable": True, "rate_pct": 1.0},
+            now=RTH_NOW, db_path=self.db)
+        row = get_signals(strategy="SHORT", db_path=self.db)[0]
+        self.assertEqual(row["tier"], "WATCH")
+        self.assertAlmostEqual(row["score"], 33.3)
+
+    def test_live_feed_strong_reduced_contract_score_lower_than_full(self):
+        self._add_uoa_put("WEAK")
+        self._add_pead_miss("WEAK")
+        ss.run_short_scan(
+            symbols=["WEAK"], scan_ts=SCAN_TS,
+            bars_by_symbol={"SPY": _flat_spy(), "WEAK": _falling_bars()},
+            borrow_fn=lambda sym: {"borrowable": True, "rate_pct": 1.0},
+            now=RTH_NOW, db_path=self.db)
+        row = get_signals(strategy="SHORT", db_path=self.db)[0]
+        self.assertEqual(row["tier"], "STRONG")
+        self.assertEqual(row["score"], 50.0)
+        self.assertLess(row["score"], 100.0)  # FULL-contract STRONG scores 100
+
     def test_no_signal_in_db_rejects(self):
         s = ss.run_short_scan(
             symbols=["WEAK"], scan_ts=SCAN_TS,
