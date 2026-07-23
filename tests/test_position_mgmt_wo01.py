@@ -159,6 +159,72 @@ class TestStopEscalationGuard(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Part A — CALC-TRAILING_STOP-2: escalation guard for TRAILING_STOP orders
+# ---------------------------------------------------------------------------
+
+class TestTrailingStopEscalationGuard(unittest.TestCase):
+    """CALC-TRAILING_STOP-2: for TRAILING_STOP, the guard must reference
+    current_price adjusted by trail_pct — not the stale entry-time stop_price
+    a caller happens to pass alongside trail_pct.
+    """
+
+    def _mock_schwab(self):
+        client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.headers = {"Location": "https://api.schwab.com/orders/1"}
+        resp.json.return_value = {}
+        client.client.place_order.return_value = resp
+        return client
+
+    def test_trailing_stop_below_floor_raises(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order, OrderGateError
+        # Stock at $61, 3% trail -> effective stop = 61 * 0.97 = 59.17, which is
+        # above the $57 floor... but the STALE stop_price param (e.g. an
+        # entry-time value from a different stop_pct) is way below $57. The bug:
+        # the guard used to check that stale stop_price and would have raised
+        # here even though the real trail-based stop (59.17) is fine.
+        result = attach_stop_order(
+            "AAPL", 10, "LONG", stop_price=50.0, account_hash="HASH",
+            schwab_client=self._mock_schwab(), min_stop_price=57.0,
+            trail_pct=0.03, current_price=61.0,
+        )
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+    def test_trailing_stop_actually_below_floor_raises(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order, OrderGateError
+        # Stock has dropped to $58, 3% trail -> effective stop = 58*0.97=56.26,
+        # which IS below the $57 floor -- must be blocked.
+        with self.assertRaises(OrderGateError) as ctx:
+            attach_stop_order(
+                "AAPL", 10, "LONG", stop_price=999.0, account_hash="HASH",
+                schwab_client=self._mock_schwab(), min_stop_price=57.0,
+                trail_pct=0.03, current_price=58.0,
+            )
+        self.assertEqual(ctx.exception.gate, "STOP_ESCALATION")
+
+    def test_trailing_stop_without_current_price_falls_back(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order
+        # No current_price supplied — guard can't compute the trail-based
+        # reference, so it falls back to stop_price (old behavior, not worse).
+        result = attach_stop_order(
+            "AAPL", 10, "LONG", stop_price=100.0, account_hash="HASH",
+            schwab_client=self._mock_schwab(), min_stop_price=57.0,
+            trail_pct=0.03,
+        )
+        self.assertEqual(result["status"], "STOP_SUBMITTED")
+
+    def test_fixed_stop_guard_behavior_unchanged(self):
+        from prime_trading.prime_schwab_orders import attach_stop_order, OrderGateError
+        # No trail_pct at all — must behave exactly as the pre-existing fixed
+        # STOP guard (regression check for CALC-TRAILING_STOP-2's refactor).
+        with self.assertRaises(OrderGateError) as ctx:
+            attach_stop_order("AAPL", 10, "LONG", 194.0, "HASH", self._mock_schwab(),
+                              min_stop_price=203.70)
+        self.assertEqual(ctx.exception.gate, "STOP_ESCALATION")
+
+
+# ---------------------------------------------------------------------------
 # Part A — LIVE create_trade wires stop params + attaches stop order
 # ---------------------------------------------------------------------------
 

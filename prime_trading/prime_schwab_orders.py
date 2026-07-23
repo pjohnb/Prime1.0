@@ -390,6 +390,7 @@ def attach_stop_order(
     db_path: Optional[Path] = None,
     min_stop_price: Optional[float] = None,
     trail_pct: Optional[float] = None,
+    current_price: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Submit a protective STOP order to Schwab as a guaranteed follow-up after entry.
 
@@ -406,6 +407,15 @@ def attach_stop_order(
     SHORT: stop_price <= min_stop_price). Callers set this to the trailing-stop
     high-water level so an escalated stop can never be degraded by a re-attachment.
 
+    CALC-TRAILING_STOP-2: for a TRAILING_STOP order, `stop_price` is not the
+    order's actual trigger — Schwab computes that continuously from
+    current_price and trail_pct. `stop_price` here is only ever the
+    *entry-time* level the caller derived from a (possibly different)
+    fixed stop_pct, so it goes stale the moment the market moves and is not
+    a valid reference for the escalation guard. When trailing, the guard
+    instead uses current_price adjusted by trail_pct as the effective floor
+    reference; callers must pass current_price for the guard to apply.
+
     Returns {order_id, status}. Raises OrderGateError on rejection or missing params.
     If stop attachment fails after a confirmed entry fill, the caller must escalate
     immediately to a Tier 2 alert (see prime_stop_monitor.py Part B).
@@ -414,25 +424,35 @@ def attach_stop_order(
     direction  = (direction or "LONG").upper()
     instruction = "BUY" if direction == "SHORT" else "SELL"
     stop_price  = round(float(stop_price), 2)
+    _use_trailing = trail_pct is not None and float(trail_pct) > 0
 
     # Addendum to WO-PRIME-SCENARIO-EXECUTE-01: stop escalation guard.
     # Never submit a stop that degrades a trailing stop already at a better level.
     if min_stop_price is not None and float(min_stop_price) > 0:
         _floor = round(float(min_stop_price), 2)
-        if direction == "LONG" and stop_price < _floor:
+        if _use_trailing and current_price is not None and float(current_price) > 0:
+            # CALC-TRAILING_STOP-2: reference the trail's actual current level,
+            # not the stale entry-time stop_price.
+            _trail_frac = float(trail_pct)
+            _effective_stop = round(
+                float(current_price) * (1 + _trail_frac) if direction == "SHORT"
+                else float(current_price) * (1 - _trail_frac), 2,
+            )
+        else:
+            _effective_stop = stop_price
+        if direction == "LONG" and _effective_stop < _floor:
             raise OrderGateError(
                 "STOP_ESCALATION",
-                f"attach_stop_order: proposed stop {stop_price:.2f} < high-water floor "
+                f"attach_stop_order: proposed stop {_effective_stop:.2f} < high-water floor "
                 f"{_floor:.2f} for LONG {symbol} — would degrade escalated trailing stop",
             )
-        elif direction == "SHORT" and stop_price > _floor:
+        elif direction == "SHORT" and _effective_stop > _floor:
             raise OrderGateError(
                 "STOP_ESCALATION",
-                f"attach_stop_order: proposed stop {stop_price:.2f} > high-water ceiling "
+                f"attach_stop_order: proposed stop {_effective_stop:.2f} > high-water ceiling "
                 f"{_floor:.2f} for SHORT {symbol} — would degrade escalated trailing stop",
             )
 
-    _use_trailing = trail_pct is not None and float(trail_pct) > 0
     if not symbol or int(qty) <= 0 or not account_hash:
         raise OrderGateError(
             "STOP_PARAMS",
