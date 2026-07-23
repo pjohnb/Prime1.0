@@ -6,7 +6,9 @@ signal generation, and architectural constraints.
 
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -16,6 +18,7 @@ from prime_scanners.prime_uoa_scanner import (
     STRONG_THRESHOLD,
     WATCH_THRESHOLD,
     DIRECTION_RATIO_THRESHOLD,
+    DEFAULT_BASELINE,
     _ST_MAX_DTE,
     _MT_MAX_DTE,
     _CC_VOL_OI_THRESHOLD,
@@ -26,6 +29,7 @@ from prime_scanners.prime_uoa_scanner import (
     classify_dte,
     detect_covered_call,
     scan_symbol,
+    run_uoa_scan,
 )
 
 
@@ -196,6 +200,54 @@ class TestUniverse(unittest.TestCase):
     def test_no_duplicates_within_groups(self):
         self.assertEqual(len(set(TOP50_SYMBOLS)), len(TOP50_SYMBOLS))
         self.assertEqual(len(set(SP100_SYMBOLS)), len(SP100_SYMBOLS))
+
+
+# ---------------------------------------------------------------------------
+# CALC-UOA-1 Phase 1: flat-baseline disclosure
+# ---------------------------------------------------------------------------
+
+class TestCalcUOA1FlatBaselineWarning(unittest.TestCase):
+    """CALC-UOA-1: load_baselines() has no production call site, so every
+    symbol's Sizzle Index is measured against DEFAULT_BASELINE instead of its
+    own history. Phase 1 (this WO) only requires disclosing this loudly, not
+    wiring the real per-symbol baseline (a follow-on WO)."""
+
+    def _run_with_mocks(self, baselines=None):
+        fixed_monday = datetime(2026, 7, 20, 10, 0, 0)  # a real Monday
+        with patch("prime_scanners.prime_uoa_scanner.datetime") as mock_dt, \
+             patch("prime_scanners.prime_uoa_scanner._get_schwab_client",
+                   return_value=MagicMock()), \
+             patch("prime_scanners.prime_uoa_scanner.scan_symbol", return_value=None), \
+             patch("prime_scanners.prime_uoa_scanner.persist_uoa_signals", return_value=0):
+            mock_dt.now.return_value = fixed_monday
+            return run_uoa_scan(baselines=baselines)
+
+    def test_blanket_warning_when_no_baselines_passed(self):
+        with self.assertLogs("prime_scanners.prime_uoa_scanner", level="WARNING") as cm:
+            self._run_with_mocks(baselines=None)
+        self.assertTrue(any(
+            "flat baseline" in m.lower() and str(DEFAULT_BASELINE) in m
+            for m in cm.output
+        ))
+
+    def test_no_blanket_warning_when_baselines_fully_populated(self):
+        all_symbols = MACRO_SYMBOLS + TOP50_SYMBOLS + SP100_SYMBOLS
+        full_baselines = {sym: 12345.0 for sym in all_symbols}
+        with self.assertLogs("prime_scanners.prime_uoa_scanner", level="INFO") as cm:
+            self._run_with_mocks(baselines=full_baselines)
+        self.assertFalse(any("flat baseline" in m.lower() for m in cm.output))
+
+    def test_per_symbol_fallback_warning_when_baseline_partially_populated(self):
+        # Only SPY has a real baseline -- every other symbol should trigger
+        # the per-symbol fallback warning (not the blanket one, since
+        # baselines is non-empty).
+        with self.assertLogs("prime_scanners.prime_uoa_scanner", level="WARNING") as cm:
+            self._run_with_mocks(baselines={"SPY": 500000.0})
+        self.assertFalse(any("flat baseline" in m.lower() for m in cm.output))
+        self.assertTrue(any(
+            "no baseline for" in m.lower() and str(DEFAULT_BASELINE) in m
+            for m in cm.output
+        ))
 
 
 # ---------------------------------------------------------------------------

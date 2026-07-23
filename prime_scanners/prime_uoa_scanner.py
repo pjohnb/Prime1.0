@@ -522,6 +522,19 @@ def run_uoa_scan(
     if baselines is None:
         baselines = {}
 
+    # CALC-UOA-1 Phase 1: load_baselines() has no production call site (no
+    # caller ever passes `baselines`), so every symbol's Sizzle Index is
+    # measured against a flat constant instead of its own history. Disclose
+    # this loudly until Phase 2 (a daily_options_volume writer + wiring
+    # load_baselines() in here) lands as a follow-on WO.
+    if not baselines:
+        logger.warning(
+            "UOA WARNING: Sizzle Index using flat baseline DEFAULT_BASELINE=%s "
+            "for all symbols — per-symbol historical baselines not yet wired. "
+            "STRONG signals may be false positives for high-volume symbols.",
+            DEFAULT_BASELINE,
+        )
+
     all_symbols = []
     for sym in MACRO_SYMBOLS:
         all_symbols.append((sym, "Macro"))
@@ -535,6 +548,14 @@ def run_uoa_scan(
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {}
         for sym, group in all_symbols:
+            # Once Phase 2 wires real baselines in, a populated-but-incomplete
+            # dict (a symbol with insufficient history) should still be
+            # diagnosable per-symbol, not just via the blanket warning above.
+            if baselines and sym not in baselines:
+                logger.warning(
+                    "UOA: no baseline for %s — falling back to DEFAULT_BASELINE=%s",
+                    sym, DEFAULT_BASELINE,
+                )
             bl = baselines.get(sym, DEFAULT_BASELINE)
             f = pool.submit(scan_symbol, sym, bl, scan_time, group, client)
             futures[f] = sym

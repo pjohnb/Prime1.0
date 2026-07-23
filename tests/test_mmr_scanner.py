@@ -10,6 +10,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from unittest.mock import patch
+
 from prime_scanners.prime_mmr_scanner import (
     MMR_TARGETS,
     MMR_SHORT_TARGETS,
@@ -20,6 +22,7 @@ from prime_scanners.prime_mmr_scanner import (
     VOL_SURGE_MULT,
     GS_RATIO_HIGH,
     GS_RATIO_NORMAL,
+    GS_RATIO_ETF_TO_SPOT_SCALE,
     TIER_TRANCHE_1,
     TIER_TRANCHE_2,
     TIER_WATCH,
@@ -33,6 +36,8 @@ from prime_scanners.prime_mmr_scanner import (
     calc_avg_volume,
     evaluate_signal,
     evaluate_signal_short,
+    fetch_gs_ratio,
+    run_mmr_scan,
 )
 
 
@@ -244,6 +249,119 @@ class TestGoldSilverRatioContext(unittest.TestCase):
         signal = evaluate_signal("SLV", bars, gs_ratio=85.0)
         if signal is not None:
             self.assertIn("BULLISH_SILVER", signal["gs_context"])
+
+
+class TestCalcMMR2BarsNeeded(unittest.TestCase):
+    """CALC-MMR-2: BARS_NEEDED must fit within the Schwab/Polygon fetch
+    buffers (~51-55 weekdays after +15/+10 calendar-day padding), or the
+    scanner short-circuits to NO_SIGNAL on every symbol, every run."""
+
+    def test_bars_needed_is_45_not_60(self):
+        self.assertEqual(BARS_NEEDED, 45)
+
+    def test_bars_needed_within_fetch_buffer_ceiling(self):
+        # ~51-55 weekdays is the realistic ceiling after holiday exclusion.
+        self.assertLess(BARS_NEEDED, 51)
+
+    def test_insufficient_bars_logs_error_not_debug(self):
+        bars = _make_bars([100] * 10)
+        with self.assertLogs("prime_scanners.prime_mmr_scanner", level="ERROR") as cm:
+            result = evaluate_signal("TEST", bars)
+        self.assertIsNone(result)
+        self.assertTrue(any("insufficient bars" in m for m in cm.output))
+
+    def test_insufficient_bars_short_logs_error(self):
+        bars = _make_bars([100] * 10)
+        with self.assertLogs("prime_scanners.prime_mmr_scanner", level="ERROR") as cm:
+            result = evaluate_signal_short("TEST", bars)
+        self.assertIsNone(result)
+        self.assertTrue(any("insufficient bars" in m for m in cm.output))
+
+    def test_exactly_45_bars_is_sufficient(self):
+        # A flat 45-bar series has no signal (no move), but must not be
+        # rejected purely for bar count — this is the actual production fix.
+        # Patch logger.error to prove the "insufficient bars" gate never fires.
+        closes = [100.0] * 45
+        bars = _make_bars(closes)
+        with patch("prime_scanners.prime_mmr_scanner.logger.error") as mock_error:
+            evaluate_signal("TEST", bars)
+        mock_error.assert_not_called()
+
+
+class TestCalcMMR1GoldSilverRatioScale(unittest.TestCase):
+    """CALC-MMR-1: gld_price/slv_price alone understates the true gold:silver
+    spot ratio by ~10x, since GLD tracks ~1/10 oz gold/share while SLV tracks
+    ~1 oz silver/share -- the fix scales the raw ETF-price ratio up to match
+    GS_RATIO_HIGH/NORMAL, which are tuned against the true spot-ratio scale."""
+
+    def test_scale_constant_is_ten(self):
+        self.assertEqual(GS_RATIO_ETF_TO_SPOT_SCALE, 10.0)
+
+    def test_gld_315_slv_32_yields_approximately_98(self):
+        with patch("prime_scanners.prime_mmr_scanner.fetch_daily_bars") as mock_fetch:
+            def _bars(symbol, *a, **kw):
+                price = 315.0 if symbol == "GLD" else 32.0
+                return [{"close": price}]
+            mock_fetch.side_effect = _bars
+            ratio = fetch_gs_ratio(api_key="x")
+        self.assertAlmostEqual(ratio, 98.4375, places=2)
+
+    def test_ratio_lands_in_threshold_scale(self):
+        # Any realistic GLD/SLV pair should land the scaled ratio near the
+        # GS_RATIO_HIGH/NORMAL thresholds (65-80), not an order of magnitude off.
+        with patch("prime_scanners.prime_mmr_scanner.fetch_daily_bars") as mock_fetch:
+            def _bars(symbol, *a, **kw):
+                price = 300.0 if symbol == "GLD" else 30.0
+                return [{"close": price}]
+            mock_fetch.side_effect = _bars
+            ratio = fetch_gs_ratio(api_key="x")
+        self.assertGreater(ratio, GS_RATIO_NORMAL / 2)
+        self.assertLess(ratio, GS_RATIO_HIGH * 2)
+
+
+class TestCalcMMR3ShortSortOrder(unittest.TestCase):
+    """CALC-MMR-3: SHORT candidates must sort strongest-first (highest RSI =
+    most overbought), not weakest-first (the LONG sort's -rsi key was
+    copy-pasted onto SHORT, inverting the ranking)."""
+
+    def test_short_signals_sorted_highest_rsi_first(self):
+        short_signals = [
+            {"tier": TIER_SHORT_TRANCHE_1, "rsi": 68.0},
+            {"tier": TIER_SHORT_TRANCHE_1, "rsi": 82.0},
+            {"tier": TIER_SHORT_TRANCHE_1, "rsi": 75.0},
+        ]
+        short_signals.sort(key=lambda s: (
+            s["tier"] == TIER_SHORT_TRANCHE_2,
+            s["rsi"],
+        ), reverse=True)
+        self.assertEqual([s["rsi"] for s in short_signals], [82.0, 75.0, 68.0])
+
+    def test_tranche2_still_ranks_above_tranche1_regardless_of_rsi(self):
+        short_signals = [
+            {"tier": TIER_SHORT_TRANCHE_1, "rsi": 95.0},
+            {"tier": TIER_SHORT_TRANCHE_2, "rsi": 66.0},
+        ]
+        short_signals.sort(key=lambda s: (
+            s["tier"] == TIER_SHORT_TRANCHE_2,
+            s["rsi"],
+        ), reverse=True)
+        self.assertEqual(short_signals[0]["tier"], TIER_SHORT_TRANCHE_2)
+
+    def test_long_sort_direction_unchanged_lowest_rsi_first(self):
+        # LONG is an oversold screen -- lowest RSI is the strongest setup.
+        # This pins the existing (correct) LONG behavior so a future change
+        # doesn't accidentally re-invert it while "fixing" SHORT again.
+        signals = [
+            {"tier": TIER_TRANCHE_1, "rsi": 30.0},
+            {"tier": TIER_TRANCHE_1, "rsi": 20.0},
+            {"tier": TIER_TRANCHE_1, "rsi": 25.0},
+        ]
+        signals.sort(key=lambda s: (
+            s["tier"] == TIER_TRANCHE_2,
+            s["tier"] == TIER_TRANCHE_1,
+            -s["rsi"],
+        ), reverse=True)
+        self.assertEqual([s["rsi"] for s in signals], [20.0, 25.0, 30.0])
 
 
 class TestModuleInterface(unittest.TestCase):

@@ -51,7 +51,12 @@ GS_RATIO_SYMBOLS = ("GLD", "SLV")
 
 MA_PERIOD = 20
 RSI_PERIOD = 14
-BARS_NEEDED = 60
+# CALC-MMR-2: was 60 -- the Schwab (+15 cal-day) / Polygon (+10 cal-day) fetch
+# buffers can only ever return ~51-55 trading days after holiday exclusion, so
+# BARS_NEEDED=60 made every symbol short-circuit to NO_SIGNAL (0 signals across
+# 27 real production scans, 2026-07-12 through 2026-07-22). 45 is comfortably
+# within the buffer and still well above MA_PERIOD/RSI_PERIOD's warmup needs.
+BARS_NEEDED = 45
 
 OVERSOLD_THRESHOLD_PCT = -5.0
 RSI_OVERSOLD = 35
@@ -61,6 +66,13 @@ VOL_SURGE_MULT = 1.5
 
 GS_RATIO_HIGH = 80.0
 GS_RATIO_NORMAL = 65.0
+# CALC-MMR-1: GLD/SLV are ETF share prices, not gold/silver spot prices -- each
+# GLD share tracks ~1/10 oz of gold while each SLV share tracks ~1 oz of
+# silver, so gld_price/slv_price alone understates the true gold:silver spot
+# ratio by ~10x (e.g. GLD=$315, SLV=$32 -> 9.84 raw vs. ~98 actual spot ratio).
+# GS_RATIO_HIGH/NORMAL are tuned against the true spot-ratio scale (~65-100),
+# so the computed ratio must be scaled up to match.
+GS_RATIO_ETF_TO_SPOT_SCALE = 10.0
 
 TIER_TRANCHE_2 = "TRANCHE_2"
 TIER_TRANCHE_1 = "TRANCHE_1"
@@ -234,7 +246,12 @@ def evaluate_signal(
     gs_ratio: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     if len(bars) < BARS_NEEDED:
-        logger.debug("%s: insufficient bars (%d < %d)", symbol, len(bars), BARS_NEEDED)
+        # CALC-MMR-2: surface this loudly -- a silent debug log is how the
+        # 60-bar fetch-buffer mismatch went undetected across 27 scan days.
+        logger.error(
+            "MMR: insufficient bars for %s -- got %d, need %d",
+            symbol, len(bars), BARS_NEEDED,
+        )
         return None
 
     closes = [b["close"] for b in bars]
@@ -324,7 +341,12 @@ def evaluate_signal_short(
     Only ETFs in MMR_SHORT_TARGETS should be passed; caller enforces this.
     """
     if len(bars) < BARS_NEEDED:
-        logger.debug("%s: insufficient bars (%d < %d)", symbol, len(bars), BARS_NEEDED)
+        # CALC-MMR-2: surface this loudly -- a silent debug log is how the
+        # 60-bar fetch-buffer mismatch went undetected across 27 scan days.
+        logger.error(
+            "MMR: insufficient bars for %s -- got %d, need %d",
+            symbol, len(bars), BARS_NEEDED,
+        )
         return None
 
     closes = [b["close"] for b in bars]
@@ -414,7 +436,7 @@ def fetch_gs_ratio(api_key: str, schwab_client=None) -> Optional[float]:
     if slv_price <= 0:
         return None
 
-    return gld_price / slv_price
+    return (gld_price / slv_price) * GS_RATIO_ETF_TO_SPOT_SCALE
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +459,8 @@ def run_mmr_scan(api_key: str) -> Dict[str, Any]:
     gs_ratio = fetch_gs_ratio(api_key, schwab_client)
     if gs_ratio:
         logger.info("Gold/Silver ratio: %.1f", gs_ratio)
+    else:
+        logger.warning("MMR: Gold/Silver ratio unavailable this scan")
 
     signals: List[Dict[str, Any]] = []
     short_signals: List[Dict[str, Any]] = []
@@ -480,9 +504,13 @@ def run_mmr_scan(api_key: str) -> Dict[str, Any]:
         -s["rsi"],
     ), reverse=True)
 
+    # CALC-MMR-3: SHORT is an overbought-reversal screen -- the strongest
+    # setups have the HIGHEST rsi, unlike LONG (oversold) where the strongest
+    # setups have the lowest. The negated -s["rsi"] here was copy-pasted from
+    # the LONG sort above and inverted the ranking (weakest SHORT first).
     short_signals.sort(key=lambda s: (
         s["tier"] == TIER_SHORT_TRANCHE_2,
-        -s["rsi"],
+        s["rsi"],
     ), reverse=True)
 
     t2 = [s for s in signals if s["tier"] == TIER_TRANCHE_2]
