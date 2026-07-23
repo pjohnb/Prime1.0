@@ -296,16 +296,24 @@ def run_index_uoa_scan(
 
 
 def _check_srs_regime(direction: str) -> Optional[str]:
-    """BROAD_DECLINE suppresses LONG; BROAD_RALLY suppresses SHORT."""
+    """BROAD_DECLINE suppresses LONG; BROAD_RECOVERY suppresses SHORT.
+
+    CALC-SRS-3: previously imported prime_srs_scanner.get_broad_regime,
+    which did not exist -- the ImportError was silently swallowed so this
+    cross-nullifier always returned None. get_broad_regime() is now
+    implemented (prime_srs_scanner.py); the string comparison below also
+    now uses SRS's real regime vocabulary (BROAD_RECOVERY, not the
+    never-emitted "BROAD_RALLY").
+    """
     try:
         from prime_scanners.prime_srs_scanner import get_broad_regime
         regime = get_broad_regime()
         if regime == "BROAD_DECLINE" and direction == "LONG":
             return "SRS BROAD_DECLINE suppresses LONG index signal"
-        if regime == "BROAD_RALLY" and direction == "SHORT":
-            return "SRS BROAD_RALLY suppresses SHORT index signal"
-    except (ImportError, AttributeError):
-        pass
+        if regime == "BROAD_RECOVERY" and direction == "SHORT":
+            return "SRS BROAD_RECOVERY suppresses SHORT index signal"
+    except (ImportError, AttributeError) as e:
+        logger.warning("SRS cross-nullifier unavailable: %s", e)
     return None
 
 

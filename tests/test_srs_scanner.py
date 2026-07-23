@@ -6,6 +6,7 @@ Tests that the ported scanner retains v0.9 phase detection logic.
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -13,6 +14,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from prime_scanners.prime_srs_scanner import (
     SECTOR_ETFS,
     detect_phase,
+    bearish_regime_nullifier,
+    get_broad_regime,
+    run_srs_scan,
 )
 
 
@@ -92,6 +96,73 @@ class TestScannerStandalone(unittest.TestCase):
         self.assertTrue(hasattr(prime_srs_scanner, "main"))
         self.assertTrue(hasattr(prime_srs_scanner, "run_srs_scan"))
         self.assertTrue(hasattr(prime_srs_scanner, "detect_phase"))
+
+
+class TestBearishRegimeNullifier(unittest.TestCase):
+    """CALC-SRS-2: TIP Section 2.3 hard-BEARISH-regime override."""
+
+    def test_broad_decline_low_score_nullified(self):
+        self.assertTrue(bearish_regime_nullifier("BROAD_DECLINE", 50))
+
+    def test_broad_decline_high_score_passes(self):
+        self.assertTrue(bearish_regime_nullifier("BROAD_DECLINE", 75) is True)
+        self.assertFalse(bearish_regime_nullifier("BROAD_DECLINE", 80))
+
+    def test_score_exactly_75_does_not_qualify_for_exception(self):
+        # Paper's threshold is "score > 75", not ">= 75".
+        self.assertTrue(bearish_regime_nullifier("BROAD_DECLINE", 75))
+
+    def test_non_bearish_regime_passes_regardless_of_score(self):
+        for regime in ("MIXED", "BROAD_RECOVERY", "STABILIZING", ""):
+            self.assertFalse(bearish_regime_nullifier(regime, 10))
+            self.assertFalse(bearish_regime_nullifier(regime, 90))
+
+
+class TestGetBroadRegime(unittest.TestCase):
+    """CALC-SRS-3: get_broad_regime() must exist (fixes the ImportError)."""
+
+    def test_no_scan_results_defaults_to_mixed(self):
+        with patch("prime_scanners.prime_srs_scanner.get_config") as mock_cfg:
+            mock_cfg.return_value.scan_results_dir = Path(__file__).parent / "_no_such_srs_dir"
+            self.assertEqual(get_broad_regime(), "MIXED")
+
+
+class TestNTotalDenominator(unittest.TestCase):
+    """CALC-SRS-6: n_total/regime_note must count only classified sectors."""
+
+    def _run_with_unknown_sectors(self, n_unknown):
+        closes = [100, 98, 96, 94, 92, 90, 89, 88, 90, 92]
+        highs = [c + 1 for c in closes]
+        lows = [c - 1 for c in closes]
+        volumes = [1000000, 900000, 800000, 700000, 600000,
+                   500000, 500000, 500000, 1500000, 2000000]
+        good_bars = [
+            {"date": f"2026-05-{10+i:02d}", "open": c, "high": h, "low": l, "close": c, "volume": v}
+            for i, (c, h, l, v) in enumerate(zip(closes, highs, lows, volumes))
+        ]
+        unknown_etfs = set(list(SECTOR_ETFS.values())[:n_unknown])
+
+        def fake_fetch(symbol, lookback_days, api_key):
+            return [] if symbol in unknown_etfs else good_bars
+
+        with patch("prime_scanners.prime_srs_scanner.fetch_daily_bars", side_effect=fake_fetch), \
+             patch("prime_scanners.prime_srs_scanner.time.sleep"):
+            return run_srs_scan("fake_key")
+
+    def test_unknown_sectors_excluded_from_denominator(self):
+        scan = self._run_with_unknown_sectors(2)
+        n_classified = len(SECTOR_ETFS) - 2
+        self.assertIn(f"/{n_classified} ", scan["regime_note"])
+        self.assertNotIn(f"/{len(SECTOR_ETFS)} ", scan["regime_note"])
+
+    def test_unknown_count_noted_in_regime_note(self):
+        scan = self._run_with_unknown_sectors(2)
+        self.assertIn("2 sectors returned UNKNOWN", scan["regime_note"])
+
+    def test_no_unknown_sectors_behavior_unchanged(self):
+        scan = self._run_with_unknown_sectors(0)
+        self.assertNotIn("UNKNOWN", scan["regime_note"])
+        self.assertIn(f"/{len(SECTOR_ETFS)} ", scan["regime_note"])
 
 
 if __name__ == "__main__":

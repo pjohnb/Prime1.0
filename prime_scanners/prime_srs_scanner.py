@@ -239,20 +239,26 @@ def run_srs_scan(api_key: str) -> Dict:
     n_declining = len(summary["DECLINING"])
     n_recovering = len(summary["RECOVERING"])
     n_bottoming = len(summary["BOTTOMING"])
-    n_total = len(SECTOR_ETFS)
+    n_unknown = len(summary["UNKNOWN"])
+    # CALC-SRS-6: n_total must be the same population the numerators are
+    # drawn from (classified sectors only) -- not the full sector list --
+    # or the ratio understates conviction whenever a sector fails to
+    # classify (e.g. a partial Polygon outage).
+    n_total = len(SECTOR_ETFS) - n_unknown
+    unknown_note = f" ({n_unknown} sectors returned UNKNOWN -- excluded from count)" if n_unknown else ""
 
     if n_declining >= 5:
         regime = "BROAD_DECLINE"
-        regime_note = f"{n_declining}/{n_total} sectors declining -- macro headwind"
+        regime_note = f"{n_declining}/{n_total} sectors declining -- macro headwind{unknown_note}"
     elif n_recovering >= 4:
         regime = "BROAD_RECOVERY"
-        regime_note = f"{n_recovering}/{n_total} sectors recovering -- favorable for SRS"
+        regime_note = f"{n_recovering}/{n_total} sectors recovering -- favorable for SRS{unknown_note}"
     elif n_bottoming >= 3:
         regime = "STABILIZING"
-        regime_note = f"{n_bottoming}/{n_total} sectors bottoming -- watch for confirmation"
+        regime_note = f"{n_bottoming}/{n_total} sectors bottoming -- watch for confirmation{unknown_note}"
     else:
         regime = "MIXED"
-        regime_note = "No dominant sector trend -- standard rules apply"
+        regime_note = f"No dominant sector trend -- standard rules apply{unknown_note}"
 
     return {
         "scan_time": scan_time.isoformat(),
@@ -268,6 +274,48 @@ def run_srs_scan(api_key: str) -> Dict:
         },
         "sectors": results,
     }
+
+
+# TIP Section 2.3 hard-BEARISH-regime override: "A confirmed BEARISH SRS
+# regime while a LONG signal is generated represents a structural headwind
+# that overrides individual signal quality except for high-conviction LT
+# signals (score > 75)." SRS's real aggregate-regime taxonomy (CALC-SRS-1,
+# a separate adjudicated spec-drift finding, out of scope here) has no
+# literal "BEARISH" value; BROAD_DECLINE (5+ of 12 sector ETFs DECLINING)
+# is the real-world equivalent of the paper's "confirmed BEARISH SRS
+# regime" and is used as the nullifier trigger below.
+BEARISH_REGIMES = ("BROAD_DECLINE",)
+
+
+def bearish_regime_nullifier(regime: str, score: float) -> bool:
+    """Return True if `regime` + `score` should nullify a LONG SRS signal.
+
+    Nullifies whenever the aggregate regime is bearish (see BEARISH_REGIMES)
+    unless score > 75 (the paper's only explicit numeric score threshold --
+    the high-conviction LT exception).
+    """
+    if regime not in BEARISH_REGIMES:
+        return False
+    return not (score > 75)
+
+
+def get_broad_regime(db_path: Optional[Path] = None) -> str:
+    """Return the most recent aggregate SRS regime for cross-scanner
+    nullifier checks (e.g. IDX's _check_srs_regime). Reads the latest saved
+    srs_scan_*.json result rather than re-running a live scan. Returns
+    "MIXED" (standard-rules-apply default, matching run_srs_scan's own
+    Polygon-unavailable fallback) if no scan result exists yet.
+    """
+    cfg = get_config()
+    out_dir = cfg.scan_results_dir
+    files = sorted(out_dir.glob("srs_scan_*.json")) if out_dir.exists() else []
+    if not files:
+        return "MIXED"
+    try:
+        data = json.loads(files[-1].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "MIXED"
+    return data.get("regime", "MIXED")
 
 
 def save_results(scan_data: Dict) -> Path:

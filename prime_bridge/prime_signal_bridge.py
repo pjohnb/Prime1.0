@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from prime_analytics.prime_signals_db import init_signals_table, insert_signal_dedup, upsert_signal_by_session
+from prime_scanners.prime_srs_scanner import bearish_regime_nullifier
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +423,7 @@ def bridge_srs_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
     """
     count = 0
     scan_ts = (data.get("scan_time") or "").strip()
+    regime = (data.get("regime") or "").strip()
     for sector_name, sec in (data.get("sectors") or {}).items():
         phase = (sec.get("phase") or "").strip().upper()
         if phase not in SRS_APPROVED_PHASES:
@@ -430,6 +432,20 @@ def bridge_srs_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
         if not symbol:
             continue
         metrics = sec.get("metrics") or {}
+        score = _to_float(metrics.get("chg_2d_pct"))
+
+        # CALC-SRS-2: TIP Section 2.3 hard-BEARISH-regime override -- a
+        # broad-decline macro regime nullifies this LONG signal (generated
+        # while an individual sector is RECOVERING against the macro grain)
+        # unless it clears the paper's high-conviction score>75 exception.
+        nullified = bearish_regime_nullifier(regime, score)
+        logger.info(
+            "SRS bearish-regime nullifier: %s for %s -- regime=%s, score=%s",
+            "NULLIFIED" if nullified else "CLEAR", symbol, regime, score,
+        )
+        if nullified:
+            continue
+
         factors = json.dumps({
             "phase": phase,
             "chg_5d_pct": metrics.get("chg_5d_pct"),
@@ -440,7 +456,7 @@ def bridge_srs_result(data: Dict[str, Any], db_path: Optional[Path] = None) -> i
             strategy="SRS",
             scan_ts=scan_ts,
             entry_price=_to_float(metrics.get("close")),
-            score=_to_float(metrics.get("chg_2d_pct")),
+            score=score,
             sector=sector_name,
             tier=phase,
             direction="LONG",
