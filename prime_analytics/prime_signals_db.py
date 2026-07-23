@@ -42,6 +42,14 @@ CREATE INDEX IF NOT EXISTS idx_signals_symbol_strategy
 ON prime_signals (symbol, strategy, scan_ts)
 """
 
+# AUDIT-053: the Signals tab query (status != 'DISMISSED' ORDER BY scan_ts DESC)
+# isn't covered by idx_signals_symbol_strategy, causing a full table scan +
+# temp B-tree sort as prime_signals grows.
+_PRIME_SIGNALS_SCAN_TS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_signals_scan_ts
+ON prime_signals (scan_ts DESC)
+"""
+
 
 def init_signals_table(db_path: Optional[Path] = None) -> None:
     """Create the prime_signals table and apply migrations if needed."""
