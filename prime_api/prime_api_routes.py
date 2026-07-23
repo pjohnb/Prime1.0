@@ -123,7 +123,9 @@ def get_positions_health():
     from prime_data.prime_db import get_open_positions_with_signal_context
     from prime_trading.prime_position_monitor import load_position_health
     try:
-        now = datetime.utcnow()
+        # AUDIT-037: entry_time is naive ET (FIX-04) — compare against local now(),
+        # not UTC, or _days_held() drifts by the local UTC offset.
+        now = datetime.now()
         db_positions = get_open_positions_with_signal_context()
         health_by_log = load_position_health()
 
@@ -237,6 +239,40 @@ def dismiss_signal_endpoint(signal_id):
     if result == "ALREADY_DISMISSED":
         return jsonify({"error": "signal already dismissed"}), 409
     return jsonify({"signal_id": signal_id, "status": "DISMISSED"}), 200
+
+
+def _compute_mata_qtys(
+    symbol: str,
+    direction: str,
+    base_shares: int,
+    price: float,
+    accts: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """AUDIT-035: server-side authoritative MATA share sizing.
+
+    Recomputes per-account share counts via prime_mata.allocate_trade() —
+    the client-supplied mata_qtys is a display/fallback hint only, never the
+    source of truth, since scenarios.js has no visibility into live account
+    capacity and (before this fix) no IRA/SHORT awareness. accts entries use
+    the account's suffix as "name" so the allocation result maps directly
+    back to a suffix key. Returns {} (all accounts get 0) on any failure —
+    fail closed rather than fall back to the unsafe client-computed qtys.
+    """
+    try:
+        from prime_trading.prime_mata import allocate_trade
+        alloc = allocate_trade(
+            symbol=symbol, direction=direction, base_shares=base_shares,
+            price=price, accounts=accts, use_weights=True,
+        )
+        if (direction or "").upper() == "SHORT" and alloc.get("excluded_ira"):
+            logger.warning(
+                "execute_signal: MATA SHORT — IRA account(s) %s excluded per safety rules",
+                alloc["excluded_ira"],
+            )
+        return {a["account"]: a["shares"] for a in alloc["allocations"]}
+    except Exception as e:
+        logger.error("execute_signal: allocate_trade failed — MATA shares forced to 0: %s", e)
+        return {}
 
 
 @api_bp.route("/signals/<string:signal_id>/execute", methods=["POST"])
@@ -459,6 +495,11 @@ def execute_signal_endpoint(signal_id):
                 if not _acct_list:
                     _acct_err = "Schwab returned empty account list"
                     logger.error("execute_signal: %s", _acct_err)
+                # First pass: resolve each routable account's suffix/hash/live
+                # buying power before any orders are placed. AUDIT-035 needs
+                # every account's capacity available up front so allocate_trade()
+                # can size all accounts together (not one at a time).
+                _acct_ctx: List[Dict[str, Any]] = []
                 for acct in _acct_list:
                     suffix = (acct.get("accountNumber") or "")[-4:]
                     hash_val = acct.get("hashValue", "")
@@ -486,12 +527,55 @@ def execute_signal_endpoint(signal_id):
                         if bp_resp.status_code == 200:
                             cb = bp_resp.json().get("securitiesAccount", {}).get("currentBalances", {})
                             buying_power = float(cb.get("buyingPower") or cb.get("availableFunds") or 0.0)
+                            margin_available = float(
+                                cb.get("marginBalance") or cb.get("availableFunds") or buying_power or 0.0
+                            )
                         else:
                             buying_power = 0.0
+                            margin_available = 0.0
                     except Exception:
                         buying_power = 0.0
+                        margin_available = 0.0
+                    _acct_ctx.append({
+                        "suffix": suffix, "hash_val": hash_val, "mata_entry": mata_entry,
+                        "buying_power": buying_power, "margin_available": margin_available,
+                    })
+
+                # AUDIT-035: server-side authoritative MATA share sizing —
+                # replaces the client-provided mata_qtys as the source of truth.
+                _server_mata_qtys: Dict[str, int] = {}
+                if is_mata_route:
+                    _alloc_accounts = [
+                        {
+                            "name": ctx["suffix"],
+                            "type": (ctx["mata_entry"] or {}).get("type", "BROKERAGE"),
+                            "weight": (ctx["mata_entry"] or {}).get("weight", 1),
+                            "buying_power": ctx["buying_power"],
+                            "margin_available": ctx["margin_available"],
+                        }
+                        for ctx in _acct_ctx
+                    ]
+                    _server_mata_qtys = _compute_mata_qtys(
+                        symbol, direction_param,
+                        user_qty if user_qty > 0 else int(sum(_mata_qtys.values())),
+                        execution_price, _alloc_accounts,
+                    )
+
+                for ctx in _acct_ctx:
+                    suffix = ctx["suffix"]
+                    hash_val = ctx["hash_val"]
+                    buying_power = ctx["buying_power"]
                     if is_mata_route:
-                        shares = _mata_qtys.get(suffix, 0)
+                        shares = _server_mata_qtys.get(suffix, 0)
+                        # AUDIT-035: explicit defense-in-depth guard — SHORT can
+                        # never route to the Rollover IRA (suffix 8779), even if
+                        # allocate_trade's type-based exclusion were ever bypassed.
+                        if direction_param == "SHORT" and suffix == "8779":
+                            if shares > 0:
+                                logger.warning(
+                                    "execute_signal: blocked SHORT order into IRA suffix %s", suffix,
+                                )
+                            shares = 0
                     else:
                         shares = user_qty if user_qty > 0 else int(buying_power * max_order_pct / execution_price)
                     if shares <= 0:
@@ -554,6 +638,7 @@ def execute_signal_endpoint(signal_id):
                                     client=schwab_client,
                                     timeout_sec=30 if _is_mkt else 300,
                                     poll_interval=2 if _is_mkt else 5,
+                                    account_hash=hash_val,
                                 )
                                 if _poll:
                                     if _poll.get("fill_price") and log_id:
@@ -643,12 +728,44 @@ def execute_signal_endpoint(signal_id):
             _ta_filtered = [a for a in paper_accounts if str(a.get("name", "")).endswith(target_account)]
             if _ta_filtered:
                 paper_accounts = _ta_filtered
+
+        # AUDIT-035: server-side authoritative MATA share sizing, same as LIVE —
+        # config buying_power/margin_available default to 0 (live-only fields),
+        # so fall back to 100000 here purely to avoid zero-capacity blocking a
+        # PAPER simulation; this mirrors the existing "bp" default below.
+        _server_mata_qtys: Dict[str, int] = {}
+        if is_mata_route:
+            _alloc_accounts = []
+            for a in paper_accounts:
+                _nm = str(a.get("name", "PAPER"))
+                _sfx = str(a.get("suffix", _nm[-4:] if len(_nm) >= 4 else _nm))
+                _alloc_accounts.append({
+                    "name": _sfx,
+                    "type": a.get("type", "BROKERAGE"),
+                    "weight": a.get("weight", 1),
+                    "buying_power": float(a.get("buying_power") or 100000),
+                    "margin_available": float(a.get("margin_available") or 100000),
+                })
+            _server_mata_qtys = _compute_mata_qtys(
+                symbol, direction_param,
+                user_qty if user_qty > 0 else int(sum(_mata_qtys.values())),
+                execution_price, _alloc_accounts,
+            )
+
         for acct in paper_accounts:
             bp = float(acct.get("buying_power", 100000) or 100000)
             acct_name = str(acct.get("name", "PAPER"))
             if is_mata_route:
                 _pa_suffix = str(acct.get("suffix", acct_name[-4:] if len(acct_name) >= 4 else acct_name))
-                shares = _mata_qtys.get(_pa_suffix, 0)
+                shares = _server_mata_qtys.get(_pa_suffix, 0)
+                # AUDIT-035: explicit defense-in-depth guard — SHORT can never
+                # route to the Rollover IRA (suffix 8779).
+                if direction_param == "SHORT" and _pa_suffix == "8779":
+                    if shares > 0:
+                        logger.warning(
+                            "execute_signal: blocked PAPER SHORT order into IRA suffix %s", _pa_suffix,
+                        )
+                    shares = 0
             else:
                 shares = user_qty if user_qty > 0 else int(bp * max_order_pct / execution_price)
             if shares <= 0:
@@ -1289,6 +1406,7 @@ def health_check():
         "last_scan_event": None,
         "ml_dataset_row_count": 0,
         "incomplete_exits": 0,
+        "sectors_alert": None,
     }
     try:
         status["db_connected"] = table_exists("prime_trade_log")
@@ -1300,6 +1418,14 @@ def health_check():
     except Exception as e:
         status["status"] = "degraded"
         status["error"] = str(e)
+    try:
+        # AUDIT-054: surface sectors-refresh staleness so a silently-failing
+        # weekly job (feeds Type 7 + IDX sector map) doesn't go unnoticed.
+        from prime_ops.prime_health_monitor import check_sectors_file_age
+        sectors_alert = check_sectors_file_age()
+        status["sectors_alert"] = sectors_alert.get("message") if sectors_alert else None
+    except Exception:
+        pass
     try:
         from prime_data.prime_ml_dataset import get_row_count
         status["ml_dataset_row_count"] = get_row_count()
@@ -1897,9 +2023,9 @@ def close_trade_endpoint():
         return jsonify({"error": "exit_price must be positive"}), 400
 
     try:
-        # TZ-01: store close timestamp as UTC (tz.js converts to ET for display).
+        # AUDIT-037: naive timestamps are ET per the tz.js contract (FIX-04).
         result = close_trade_manual(log_id, exit_price, exit_reason,
-                                    close_ts=datetime.utcnow().isoformat())
+                                    close_ts=datetime.now().isoformat())
     except Exception as e:
         logger.error("close_trade error: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -2704,10 +2830,10 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
     _LOGS_DIR.mkdir(exist_ok=True)
     _prune_old_scan_logs()
     scan_log = _get_scan_log_path()
-    # TZ-01: human-readable local time for the raw log line; UTC for the
-    # `last_run` field that the UI converts to ET via tz.js.
+    # AUDIT-037: naive timestamps are ET per the tz.js contract (FIX-04) — both
+    # the raw log line and the `last_run` field use local (ET) time.
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    run_ts = datetime.utcnow().isoformat()
+    run_ts = datetime.now().isoformat()
     with _scan_lock:
         _scan_state[scanner] = {"status": "running", "last_run": run_ts, "signals": None, "pid": None}
 
@@ -2785,7 +2911,7 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
             with _scan_lock:
                 _scan_state[scanner].update({
                     "status": "cancelled",
-                    "last_run": datetime.utcnow().isoformat(),
+                    "last_run": datetime.now().isoformat(),
                     "signals": 0,
                     "cancel_requested": False,
                 })
@@ -2858,9 +2984,9 @@ def _run_scanner_bg(scanner: str, module: str, *, skip_bridge: bool = False) -> 
         finish_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status = "complete" if proc.returncode == 0 else "error"
         with _scan_lock:
-            # TZ-01: store last_run as UTC (display-converted to ET); log line stays local.
+            # AUDIT-037: naive timestamps are ET per the tz.js contract (FIX-04).
             _scan_state[scanner].update({"status": status,
-                                         "last_run": datetime.utcnow().isoformat(),
+                                         "last_run": datetime.now().isoformat(),
                                          "signals": signals})
         with open(scan_log, "a", encoding="utf-8") as lf:
             lf.write(f"--- {finish_ts} END {scanner.upper()} rc={proc.returncode} ---\n")
@@ -2921,7 +3047,9 @@ def _auto_detect_scenarios() -> None:
         from prime_scenarios.prime_scenario_engine import run_detection as _rd
         approved = [s for s in _gs(limit=1000) if s.get("status") == "APPROVED"]
         result = _rd(approved)
-        _last_detection_ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        # AUDIT-037: opaque change-detection token (never parsed/displayed) —
+        # local time is fine here; kept consistent with the rest of the file.
+        _last_detection_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         n_detected = result.get("scenarios_detected", 0)
         n_inserted = result.get("scenarios_inserted", 0)
         logger.info(
@@ -3246,7 +3374,8 @@ def _run_psa_diagnostic_bg() -> None:
     """Background thread: run full diagnostic scan and update _diag_state."""
     global _diag_state
     with _diag_lock:
-        _diag_state = {"status": "running", "last_run": datetime.utcnow().isoformat(), "error": None}
+        # AUDIT-037: naive timestamps are ET per the tz.js contract (FIX-04).
+        _diag_state = {"status": "running", "last_run": datetime.now().isoformat(), "error": None}
     try:
         from prime_config.prime_config import get_config
         from prime_scanners.prime_psa_diagnostic import run_psa_diagnostic_scan
@@ -3788,7 +3917,7 @@ def _run_sectors_refresh_bg() -> None:
             return
         _sectors_refresh_state = {
             "status": "running",
-            "last_run_utc": datetime.utcnow().isoformat(),
+            "last_run_utc": datetime.now().isoformat(),
             "last_result": None,
             "error": None,
         }
@@ -3803,7 +3932,7 @@ def _run_sectors_refresh_bg() -> None:
         with _sectors_refresh_lock:
             _sectors_refresh_state = {
                 "status": "complete",
-                "last_run_utc": datetime.utcnow().isoformat(),
+                "last_run_utc": datetime.now().isoformat(),
                 "last_result": result,
                 "error": result.get("error"),
             }
@@ -3814,7 +3943,7 @@ def _run_sectors_refresh_bg() -> None:
         with _sectors_refresh_lock:
             _sectors_refresh_state = {
                 "status": "error",
-                "last_run_utc": datetime.utcnow().isoformat(),
+                "last_run_utc": datetime.now().isoformat(),
                 "last_result": None,
                 "error": str(exc),
             }

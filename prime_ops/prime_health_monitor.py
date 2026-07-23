@@ -139,28 +139,32 @@ _SECTORS_STALE_DAYS = 8
 
 
 def check_sectors_file_age() -> Optional[Dict[str, str]]:
-    """Return a WARNING alert if sectors_constituents.json has not been refreshed in 8 days.
+    """Return a WARNING alert if the sectors refresh job looks stale or has never run.
 
-    Reads last_refresh_utc from the companion metadata file written by
-    prime_sectors_refresh.  Falls back to the JSON file mtime when metadata
-    is absent (first run before any refresh has executed).
+    AUDIT-054: sectors_constituents_meta.json is written only on a successful
+    refresh (CIL #35), so its absence is itself the signal that the weekly
+    job may never have completed -- unconditionally warn rather than falling
+    back to sectors_constituents.json's mtime, which can mask a job that has
+    never fired behind a file that was merely seeded manually.
     """
-    if _SECTORS_META_PATH.exists():
-        try:
-            meta = json.loads(_SECTORS_META_PATH.read_text(encoding="utf-8"))
-            ts_str = meta.get("last_refresh_utc", "")
-            if not ts_str:
-                return None
-            last_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
-            age_days = (datetime.utcnow() - last_dt).days
-            source = "metadata"
-        except Exception:
+    if not _SECTORS_META_PATH.exists():
+        return {
+            "level": "WARNING",
+            "scanner": "sectors_refresh",
+            "message": (
+                "sectors_constituents_meta.json is missing — the weekly sectors "
+                "refresh job may never have run. Trigger it manually via "
+                "POST /api/v1/sectors/refresh/trigger to verify."
+            ),
+        }
+    try:
+        meta = json.loads(_SECTORS_META_PATH.read_text(encoding="utf-8"))
+        ts_str = meta.get("last_refresh_utc", "")
+        if not ts_str:
             return None
-    elif _SECTORS_JSON_PATH.exists():
-        mtime = datetime.utcfromtimestamp(_SECTORS_JSON_PATH.stat().st_mtime)
-        age_days = (datetime.utcnow() - mtime).days
-        source = "file mtime (no refresh metadata)"
-    else:
+        last_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+        age_days = (datetime.utcnow() - last_dt).days
+    except Exception:
         return None
 
     if age_days > _SECTORS_STALE_DAYS:
@@ -169,7 +173,7 @@ def check_sectors_file_age() -> Optional[Dict[str, str]]:
             "scanner": "sectors_refresh",
             "message": (
                 f"sectors_constituents.json not refreshed in {age_days} days "
-                f"({source}) — weekly refresh job may not be running"
+                f"(metadata) — weekly refresh job may not be running"
             ),
         }
     return None
