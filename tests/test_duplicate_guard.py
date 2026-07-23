@@ -133,5 +133,79 @@ class TestDuplicateGuard(unittest.TestCase):
         self.assertFalse(_recent_open_trade_exists("WDC", "UOA", 60, db_path=self.db))
 
 
+# ---------------------------------------------------------------------------
+# CIL-56 — MATA multi-account trade_log unique index collision
+# ---------------------------------------------------------------------------
+
+class TestMataTradeLogUniqueIndex(unittest.TestCase):
+    """CIL-56: idx_signal_dedup didn't include account, so a MATA order across
+    2+ accounts on the same symbol (sharing one entry_time) hit a UNIQUE
+    constraint violation on the second account's insert -- first account
+    recorded, the rest silently failed.
+    """
+
+    def setUp(self):
+        self.db = Path(__file__).parent / "_test_cil56.db"
+        if self.db.exists():
+            self.db.unlink()
+        init_db(self.db)
+
+    def tearDown(self):
+        if self.db.exists():
+            self.db.unlink()
+
+    def test_three_mata_accounts_write_separate_rows(self):
+        ts = datetime.now().isoformat()
+        log_ids = [
+            insert_trade(
+                strategy="MTFA", symbol="AAPL", direction="LONG", mode="LIVE",
+                order_type="MARKET", shares=10, entry_time=ts,
+                price_at_scan=100.0, entry_price=100.0, account=suffix,
+                trade_source="LIVE", db_path=self.db,
+            )
+            for suffix in ("7926", "0461", "8779")
+        ]
+        self.assertTrue(all(log_ids), "every MATA account insert must succeed")
+        self.assertEqual(len(set(log_ids)), 3, "each account must get its own log_id")
+
+        import sqlite3
+        conn = sqlite3.connect(str(self.db))
+        rows = conn.execute(
+            "SELECT account, shares FROM prime_trade_log"
+            " WHERE symbol='AAPL' AND strategy='MTFA'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({r[0] for r in rows}, {"7926", "0461", "8779"})
+
+    def test_single_account_duplicate_still_blocked(self):
+        # Same symbol/strategy/entry_time/account twice, both OPEN -> the
+        # partial unique index must still reject the second insert (dedup
+        # protection unchanged, just now keyed on account too).
+        ts = datetime.now().isoformat()
+        first = insert_trade(
+            strategy="MTFA", symbol="AAPL", direction="LONG", mode="LIVE",
+            order_type="MARKET", shares=10, entry_time=ts,
+            price_at_scan=100.0, entry_price=100.0, account="7926",
+            trade_source="LIVE", db_path=self.db,
+        )
+        self.assertTrue(first)
+        with self.assertRaises(Exception):
+            insert_trade(
+                strategy="MTFA", symbol="AAPL", direction="LONG", mode="LIVE",
+                order_type="MARKET", shares=10, entry_time=ts,
+                price_at_scan=100.0, entry_price=100.0, account="7926",
+                trade_source="LIVE", db_path=self.db,
+            )
+
+    def test_non_mata_single_order_still_works(self):
+        log_id = insert_trade(
+            strategy="PSA", symbol="WDC", direction="LONG", mode="PAPER",
+            order_type="MARKET", shares=100, entry_time=datetime.now().isoformat(),
+            price_at_scan=50.0, entry_price=50.0, trade_source="PAPER", db_path=self.db,
+        )
+        self.assertTrue(log_id)
+
+
 if __name__ == "__main__":
     unittest.main()

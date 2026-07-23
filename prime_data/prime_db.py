@@ -145,9 +145,17 @@ def init_db(db_path: Optional[Path] = None) -> Path:
         conn.execute(_PRIME_OPS_HEALTH_SCHEMA)
         conn.execute(_PRIME_POSITION_HEALTH_SCHEMA)
         conn.execute(_PRIME_ML_DATASET_SCHEMA)
+        # CIL-56: MATA orders for 2+ accounts on the same symbol share one
+        # entry_time, so the original (symbol, strategy, entry_time) key
+        # collided on the second account's insert — first account recorded,
+        # the rest silently failed the UNIQUE constraint, leaving phantom
+        # trades with missing position records. account is now part of the
+        # key. DROP + recreate (not just IF NOT EXISTS) so an existing DB's
+        # old 3-column index actually gets replaced, not left in place.
+        conn.execute("DROP INDEX IF EXISTS idx_signal_dedup")
         conn.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_dedup
-               ON prime_trade_log (symbol, strategy, entry_time)
+               ON prime_trade_log (symbol, strategy, entry_time, account)
                WHERE status = 'OPEN'"""
         )
         conn.commit()
